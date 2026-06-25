@@ -78,13 +78,15 @@ Selain argumen *CLI*, Anda dapat menyesuaikan konfigurasi baku secara permanen d
 - `FALLBACK_OLLAMA_HOST`: Host cadangan jika host utama *down*.
 - `OLLAMA_TEMPERATURE`: Angka kreativitas model (default: `0.2`).
 - `OLLAMA_THINK`: Atur ke `true`, `low`, `medium`, atau `high` jika model Anda membutuhkan waktu "*berpikir*" khusus (misalnya `deepseek-r1`). Default: `false`.
-- `OLLAMA_KEEP_ALIVE`: Jaga agar model tetap termuat di VRAM untuk durasi tertentu (contoh: `5m`).
-- `OLLAMA_NUM_CTX`: Ukuran jendela konteks (default: `4096`).
-- `OLLAMA_NUM_PARALLEL`: Paralelisme request Ollama (default: `1`).
+- `OLLAMA_KEEP_ALIVE`: Kosong berarti mengikuti default service/server Ollama; isi hanya jika butuh override request (contoh: `5m`).
+- `OLLAMA_NUM_CTX`: Kosong berarti mengikuti default service/server Ollama; isi hanya jika butuh override request (contoh: `4096`).
+- `OLLAMA_NUM_PARALLEL`: Kosong berarti mengikuti default service/server Ollama; isi hanya jika butuh override request (contoh: `1`).
 - `OLLAMA_MAX_NUM_PREDICT`: Batas maksimal token yang dihasilkan (maksimal `2048`).
 - `FILE_ANALYSIS_NUM_PREDICT_PER_FILE`: Batasan jumlah token saat menganalisis satu buah file (default: `512`).
 - `FILE_ANALYSIS_PARALLELISM`: Paralelisme eksekusi.
 - `FILE_ANALYSIS_LIMIT`: Batasan jumlah file aman maksimal untuk fitur *file analysis*.
+
+`git-ai.sh` tidak membuat, mengubah, atau melakukan reload unit systemd Ollama. Opsi request yang dibiarkan kosong akan memakai perilaku default dari service Ollama yang aktif, misalnya `/etc/systemd/system/ollama.service`.
 
 ## Panduan Pengembang & Keamanan
 

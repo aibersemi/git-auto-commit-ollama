@@ -55,14 +55,16 @@ DO_FILE_ANALYSIS=1
 USE_STRUCTURED_OUTPUT=1
 
 # Fallback minimal jika file config belum tersedia atau nilainya kosong.
+# Opsi request yang juga dikontrol service Ollama dibiarkan kosong agar
+# klien tidak menimpa default dari /etc/systemd/system/ollama.service.
 DEFAULT_MODEL="${DEFAULT_MODEL:-gemma4:e2b}"
 DEFAULT_OLLAMA_HOST="${DEFAULT_OLLAMA_HOST:-http://localhost:11434}"
 FALLBACK_OLLAMA_HOST="${FALLBACK_OLLAMA_HOST:-http://10.50.0.2:11434}"
 OLLAMA_TEMPERATURE="${OLLAMA_TEMPERATURE:-0.2}"
 OLLAMA_THINK="${OLLAMA_THINK:-false}"
 OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-}"
-OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-4096}"
-OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
+OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-}"
+OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-}"
 OLLAMA_NUM_PREDICT="${OLLAMA_NUM_PREDICT:-2048}"
 OLLAMA_MAX_NUM_PREDICT="${OLLAMA_MAX_NUM_PREDICT:-2048}"
 FILE_ANALYSIS_LIMIT="${FILE_ANALYSIS_LIMIT:-6}"
@@ -248,9 +250,9 @@ Config variables:
   OLLAMA_HOST                 Override host aktif (default dari DEFAULT_OLLAMA_HOST)
   OLLAMA_TEMPERATURE          Default ${OLLAMA_TEMPERATURE}
   OLLAMA_THINK                Default false (opsi: false|true|low|medium|high)
-  OLLAMA_KEEP_ALIVE           Contoh: 5m (jaga model tetap loaded)
-  OLLAMA_NUM_CTX              Context window request (default: ${OLLAMA_NUM_CTX})
-  OLLAMA_NUM_PARALLEL         Paralelisme request Ollama (default: ${OLLAMA_NUM_PARALLEL})
+  OLLAMA_KEEP_ALIVE           Kosong = ikuti default service/server; contoh override: 5m
+  OLLAMA_NUM_CTX              Kosong = ikuti default service/server; contoh override: 4096
+  OLLAMA_NUM_PARALLEL         Kosong = ikuti default service/server; contoh override: 1
   OLLAMA_NUM_PREDICT          Token output request (maks: ${OLLAMA_MAX_NUM_PREDICT})
   OLLAMA_MAX_NUM_PREDICT      Batas maksimum num_predict
   FILE_ANALYSIS_NUM_PREDICT_PER_FILE
