@@ -1117,7 +1117,6 @@ analyze_files_individually() {
 
   local analysis_elapsed
   analysis_elapsed=$(elapsed_since "$analysis_start")
-  echo "" >&2
   if [[ "$failed_batches" -gt 0 ]]; then
     if [[ "$sensitive_files_skipped" -gt 0 ]]; then
       step_ok "Analisis ${analysis_total} dari ${safe_total} file aman selesai dengan ${failed_batches} fallback; ${sensitive_files_skipped} file sensitif dilewati (${analysis_elapsed})"
@@ -1717,11 +1716,9 @@ do_commit() {
 
   # Interactive mode: tampilkan dan minta konfirmasi
   if [[ "$INTERACTIVE" -eq 1 ]]; then
-    echo "" >&2
     info "===== Commit Message ====="
     echo "$msg" >&2
     info "=========================="
-    echo "" >&2
     local confirm
     read -rp "Lanjutkan commit? [Y/n/e(dit)] " confirm
     case "${confirm,,}" in
@@ -1895,12 +1892,8 @@ main() {
   fi
 
   # Hasil commit disimpan paling bawah
-  echo ""
-  echo -e "${BOLD}Commit message${NC}"
-  echo -e "  ${commit_msg}"
-  echo ""
-  echo -e "${BOLD}Token usage${NC}"
-  echo -e "  ${formatted_tokens}"
+  echo -e "Commit message \"${commit_msg}\""
+  echo -e "${DIM}Token usage ${formatted_tokens}${NC}"
 }
 
 main "$@"
