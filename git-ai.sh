@@ -12,8 +12,8 @@
 # Dependencies: git, curl, jq, flock
 #
 # Usage cepat:
-#   /opt/services/utils/bin/git-ai.sh                 # stage all, generate commit, tanpa push
-#   /opt/services/utils/bin/git-ai.sh --push          # stage all, generate commit, push
+#   /opt/services/utils/bin/git-ai.sh                 # stage all, generate commit, push
+#   /opt/services/utils/bin/git-ai.sh -n              # commit tanpa push
 #   /opt/services/utils/bin/git-ai.sh -p              # git add -p
 #   /opt/services/utils/bin/git-ai.sh --dry-run       # hanya tampilkan commit message
 #
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 # ===== Version =====
-VERSION="1.5.0"
+VERSION="1.5.1"
 
 # ===== Konfigurasi =====
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -35,7 +35,7 @@ SCRIPT_CONFIG_FILE="${SCRIPT_DIR}/git-ai.conf"
 [[ -f "$SCRIPT_CONFIG_FILE" ]] && source "$SCRIPT_CONFIG_FILE"
 
 # ===== Perilaku =====
-DO_PUSH="${DEFAULT_DO_PUSH:-0}"
+DO_PUSH="${DEFAULT_DO_PUSH:-1}"
 DO_STAGE=1
 USE_PATCH=0
 DRY_RUN=0
@@ -374,8 +374,7 @@ show_help() {
   cat <<HELP
 Usage: git-ai.sh [OPTIONS]
 
-Auto stage → AI commit message (Ollama) → commit.
-Push hanya berjalan jika --push atau DEFAULT_DO_PUSH=1 aktif.
+Auto stage → AI commit message (Ollama) → commit → push.
 Output commit message:
   - Baris 1: subject singkat tanpa body/footer
 
@@ -383,8 +382,7 @@ Options:
   -h, --help                  Tampilkan bantuan
   -v, --version               Tampilkan versi
   -s, --status                Tampilkan git status saja
-      --push                  Push setelah commit
-  -n, --no-push               Commit tanpa push (default)
+  -n, --no-push               Commit tanpa push
   -p, --patch                 Staging interaktif (git add -p)
   -i, --interactive           Tampilkan commit message dan minta konfirmasi sebelum commit
       --no-stage              Jangan staging otomatis
@@ -406,7 +404,7 @@ Config:
 
 Config variables:
   DEFAULT_MODEL               Model Ollama yang selalu dipakai
-  DEFAULT_DO_PUSH             Default push setelah commit (0/1, default 0)
+  DEFAULT_DO_PUSH             Default push setelah commit (0/1, default 1)
   DEFAULT_OLLAMA_HOST         Host utama Ollama (kosong = baca service)
   FALLBACK_OLLAMA_HOST        Host cadangan jika host utama down
   AI_TEMPERATURE              Default ${AI_TEMPERATURE}
@@ -434,7 +432,6 @@ parse_args() {
       -h|--help)            show_help; exit 0 ;;
       -v|--version)         echo "git-ai version $VERSION"; exit 0 ;;
       -s|--status)          check_git_repo; git status; exit 0 ;;
-      --push)                DO_PUSH=1; shift ;;
       -n|--no-push)         DO_PUSH=0; shift ;;
       -m|--model)           die "-m/--model tidak didukung. Ubah DEFAULT_MODEL di ${SCRIPT_CONFIG_FILE}." ;;
       -p|--patch)           USE_PATCH=1; shift ;;
