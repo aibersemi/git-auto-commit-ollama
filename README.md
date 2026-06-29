@@ -20,7 +20,7 @@
 ## Instalasi
 
 ```bash
-git clone https://github.com/MrMads/git-auto-commit-ollama.git
+git clone https://github.com/aibersemi/git-auto-commit-ollama.git
 cd git-auto-commit-ollama
 make install
 ```
@@ -75,16 +75,20 @@ Selain argumen *CLI*, Anda dapat menyesuaikan konfigurasi baku secara permanen d
 **Daftar Variabel yang Didukung:**
 - `DEFAULT_MODEL`: Model yang akan digunakan (misalnya: `ministral-3:3b`, `llama3`).
 - `DEFAULT_OLLAMA_HOST`: Host dari servis Ollama (misal: `http://localhost:11434`).
-- `FALLBACK_OLLAMA_HOST`: Host cadangan jika host utama *down*.
-- `OLLAMA_TEMPERATURE`: Angka kreativitas model (default: `0.2`).
-- `OLLAMA_THINK`: Atur ke `true`, `low`, `medium`, atau `high` jika model Anda membutuhkan waktu "*berpikir*" khusus (misalnya `deepseek-r1`). Default: `false`.
-- `OLLAMA_KEEP_ALIVE`: Kosong berarti mengikuti default service/server Ollama; isi hanya jika butuh override request (contoh: `5m`).
-- `OLLAMA_NUM_CTX`: Kosong berarti mengikuti default service/server Ollama; isi hanya jika butuh override request (contoh: `4096`).
-- `OLLAMA_NUM_PARALLEL`: Kosong berarti mengikuti default service/server Ollama; isi hanya jika butuh override request (contoh: `1`).
-- `OLLAMA_MAX_NUM_PREDICT`: Batas maksimal token yang dihasilkan (maksimal `2048`).
+- `FALLBACK_OLLAMA_HOST`: Host cadangan jika host utama *down*. Kosongkan jika tidak memakai endpoint cadangan.
+- `AI_TEMPERATURE`: Angka kreativitas model (default: `0.2`).
+- `AI_THINK`: Atur ke `true`, `low`, `medium`, atau `high` jika model Anda membutuhkan waktu "*berpikir*" khusus (misalnya `deepseek-r1`). Default: `false`.
+- `AI_NUM_PREDICT`: Batas token output request utama (default: `2048`).
+- `AI_MAX_NUM_PREDICT`: Batas maksimum `num_predict` agar konfigurasi tidak melewati nilai aman (default: `2048`).
+- `FILE_ANALYSIS_LIMIT`: Batas jumlah file aman maksimal untuk fitur *file analysis*.
+- `FILE_ANALYSIS_PARALLELISM`: Jumlah request analisis file yang berjalan paralel.
 - `FILE_ANALYSIS_NUM_PREDICT_PER_FILE`: Batasan jumlah token saat menganalisis satu buah file (default: `512`).
-- `FILE_ANALYSIS_PARALLELISM`: Paralelisme eksekusi.
-- `FILE_ANALYSIS_LIMIT`: Batasan jumlah file aman maksimal untuk fitur *file analysis*.
+- `MAX_FILES_LIST`: Batas jumlah file yang ditampilkan dalam konteks nama/status Git.
+- `TOP_FILES`: Jumlah file terbesar yang dipilih untuk ringkasan hunk.
+- `MAX_HUNK_CHARS`: Batas karakter hunk per file.
+- `MAX_TOTAL_HUNKS_CHARS`: Batas total karakter hunk yang dikirim ke AI.
+
+Nama lama `OLLAMA_TEMPERATURE`, `OLLAMA_THINK`, `OLLAMA_NUM_PREDICT`, dan `OLLAMA_MAX_NUM_PREDICT` masih dibaca sebagai fallback kompatibilitas jika variabel `AI_*` tidak diisi. Opsi seperti `keep_alive`, `num_ctx`, dan `num_parallel` tidak dikirim oleh skrip ini; biarkan pengaturannya mengikuti service Ollama yang aktif.
 
 `git-ai.sh` tidak membuat, mengubah, atau melakukan reload unit systemd Ollama. Opsi request yang dibiarkan kosong akan memakai perilaku default dari service Ollama yang aktif, misalnya `/etc/systemd/system/ollama.service`.
 

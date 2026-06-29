@@ -1,0 +1,22 @@
+# Environment dan konfigurasi lokal
+.env
+.env.*
+!.env.example
+*.local.conf
+git-ai.local.conf
+
+# Log
+*.log
+logs/
+
+# Temporary/cache
+tmp/
+temp/
+.cache/
+cache/
+*.tmp
+
+# Editor/OS
+*.swp
+*.swo
+.DS_Store

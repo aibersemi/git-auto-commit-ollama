@@ -143,9 +143,8 @@ resolve_ollama_base_url() {
 
 OLLAMA_BASE_URL="$(resolve_ollama_base_url)"
 
-# URLs turunan (harus setelah config)
+# URL turunan (harus setelah config)
 OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
-OLLAMA_TAGS_URL="${OLLAMA_BASE_URL}/api/tags"
 
 # ===== Warna Output (auto disable jika non-tty / NO_COLOR) =====
 IS_TTY=0
@@ -173,7 +172,6 @@ dbg()     { if [[ "${DEBUG}" -eq 1 ]]; then echo -e "${CYAN}[debug]${NC} $*" 1>&
 
 refresh_ollama_urls() {
   OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
-  OLLAMA_TAGS_URL="${OLLAMA_BASE_URL}/api/tags"
 }
 
 resolve_ollama_fallback_url() {
@@ -411,15 +409,20 @@ Config:
 
 Config variables:
   DEFAULT_MODEL               Model Ollama yang selalu dipakai
+  DEFAULT_OLLAMA_HOST         Host utama Ollama (kosong = baca service)
+  FALLBACK_OLLAMA_HOST        Host cadangan jika host utama down
   AI_TEMPERATURE              Default ${AI_TEMPERATURE}
   AI_THINK                    Default false (opsi: false|true|low|medium|high)
   AI_NUM_PREDICT              Token output request (maks: ${AI_MAX_NUM_PREDICT})
   AI_MAX_NUM_PREDICT          Batas maksimum num_predict
-  DEFAULT_OLLAMA_HOST         Host utama Ollama (kosong = baca service)
-  FALLBACK_OLLAMA_HOST        Host cadangan jika host utama down
+  FILE_ANALYSIS_LIMIT         Batas jumlah file untuk analisis per-file
   FILE_ANALYSIS_NUM_PREDICT_PER_FILE
                               Token output analisis per file (default: ${FILE_ANALYSIS_NUM_PREDICT_PER_FILE})
   FILE_ANALYSIS_PARALLELISM   Jumlah request analisis file paralel (default: ${FILE_ANALYSIS_PARALLELISM})
+  MAX_FILES_LIST              Batas jumlah file dalam konteks nama/status Git
+  TOP_FILES                   Jumlah file terbesar untuk ringkasan hunk
+  MAX_HUNK_CHARS              Batas karakter hunk per file
+  MAX_TOTAL_HUNKS_CHARS       Batas total karakter hunk yang dikirim ke AI
 
 Ollama service:
   ${OLLAMA_SERVICE_FILE} dipakai jika DEFAULT_OLLAMA_HOST kosong.
