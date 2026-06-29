@@ -30,6 +30,7 @@ Anda adalah **Agent AI** untuk proyek/repositori **git-auto-commit-ollama**. Iku
 
 ## Dry Run dan Locking
 
+- Untuk test run dan memastikan aplikasi berjalan baik, gunakan `git-ai --dry-run`.
 - `--dry-run` wajib memakai `GIT_INDEX_FILE` sementara yang disalin dari indeks asli jika ada, lalu dibersihkan setelah selesai.
 - Dry-run boleh melakukan simulasi staging pada index sementara, tetapi tidak boleh mengubah index asli, membuat commit, atau push.
 - Locking repo wajib memakai `.git/git-ai.lock` melalui `flock -n` agar hanya satu instance `git-ai.sh` berjalan pada repo yang sama.

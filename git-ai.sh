@@ -56,6 +56,8 @@ USE_STRUCTURED_OUTPUT=1
 
 # Fallback minimal jika file config belum tersedia atau nilainya kosong.
 DEFAULT_MODEL="${DEFAULT_MODEL:-gemma4:e4b}"
+DEFAULT_OLLAMA_HOST="${DEFAULT_OLLAMA_HOST:-}"
+FALLBACK_OLLAMA_HOST="${FALLBACK_OLLAMA_HOST:-}"
 AI_TEMPERATURE="${AI_TEMPERATURE:-${OLLAMA_TEMPERATURE:-0.2}}"
 AI_THINK="${AI_THINK:-${OLLAMA_THINK:-false}}"
 AI_NUM_PREDICT="${AI_NUM_PREDICT:-${OLLAMA_NUM_PREDICT:-2048}}"
@@ -123,7 +125,13 @@ normalize_ollama_host_url() {
 }
 
 resolve_ollama_base_url() {
-  local service_host
+  local configured_host service_host
+
+  configured_host="${DEFAULT_OLLAMA_HOST:-}"
+  if [[ -n "$configured_host" ]]; then
+    normalize_ollama_host_url "$configured_host"
+    return 0
+  fi
 
   if service_host=$(read_ollama_service_env "OLLAMA_HOST"); then
     normalize_ollama_host_url "$service_host"
@@ -166,6 +174,19 @@ dbg()     { if [[ "${DEBUG}" -eq 1 ]]; then echo -e "${CYAN}[debug]${NC} $*" 1>&
 refresh_ollama_urls() {
   OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
   OLLAMA_TAGS_URL="${OLLAMA_BASE_URL}/api/tags"
+}
+
+resolve_ollama_fallback_url() {
+  local fallback_host="${FALLBACK_OLLAMA_HOST:-}"
+
+  [[ -n "$fallback_host" ]] || return 1
+  normalize_ollama_host_url "$fallback_host"
+}
+
+fetch_ollama_tags() {
+  local base_url="$1"
+
+  curl -sSf --connect-timeout 5 --max-time 10 "${base_url}/api/tags" 2>/dev/null
 }
 
 preselect_ollama_model_for_banner() {
@@ -394,12 +415,14 @@ Config variables:
   AI_THINK                    Default false (opsi: false|true|low|medium|high)
   AI_NUM_PREDICT              Token output request (maks: ${AI_MAX_NUM_PREDICT})
   AI_MAX_NUM_PREDICT          Batas maksimum num_predict
+  DEFAULT_OLLAMA_HOST         Host utama Ollama (kosong = baca service)
+  FALLBACK_OLLAMA_HOST        Host cadangan jika host utama down
   FILE_ANALYSIS_NUM_PREDICT_PER_FILE
                               Token output analisis per file (default: ${FILE_ANALYSIS_NUM_PREDICT_PER_FILE})
   FILE_ANALYSIS_PARALLELISM   Jumlah request analisis file paralel (default: ${FILE_ANALYSIS_PARALLELISM})
 
 Ollama service:
-  Host/runtime Ollama mengikuti ${OLLAMA_SERVICE_FILE}.
+  ${OLLAMA_SERVICE_FILE} dipakai jika DEFAULT_OLLAMA_HOST kosong.
 HELP
 }
 
@@ -503,13 +526,31 @@ check_deps() {
     die "AI_THINK harus salah satu: false, true, low, medium, high."
   fi
 
-  spinner_start "Menghubungi Ollama di ${OLLAMA_BASE_URL}..."
-  local tags_json
-  if ! tags_json=$(curl -sSf --max-time 10 "$OLLAMA_TAGS_URL" 2>/dev/null); then
+  local tags_json primary_url fallback_url
+  primary_url="$OLLAMA_BASE_URL"
+
+  spinner_start "Menghubungi Ollama di ${primary_url}..."
+  if tags_json=$(fetch_ollama_tags "$primary_url"); then
     spinner_stop
-    die "Ollama tidak dapat diakses di $OLLAMA_BASE_URL (tags). Pastikan service berjalan dan ${OLLAMA_SERVICE_FILE} benar."
+  else
+    spinner_stop
+    if fallback_url=$(resolve_ollama_fallback_url) && [[ "$fallback_url" != "$primary_url" ]]; then
+      warn "Ollama tidak dapat diakses di $primary_url. Mencoba fallback $fallback_url..."
+      spinner_start "Menghubungi Ollama fallback di ${fallback_url}..."
+      if tags_json=$(fetch_ollama_tags "$fallback_url"); then
+        spinner_stop
+        OLLAMA_BASE_URL="$fallback_url"
+        refresh_ollama_urls
+        step_info "Ollama host fallback aktif: ${OLLAMA_BASE_URL}"
+      else
+        spinner_stop
+        die "Ollama tidak dapat diakses di $primary_url atau fallback $fallback_url (tags). Pastikan service berjalan."
+      fi
+    else
+      die "Ollama tidak dapat diakses di $primary_url (tags). Pastikan service berjalan dan ${SCRIPT_CONFIG_FILE} atau ${OLLAMA_SERVICE_FILE} benar."
+    fi
   fi
-  spinner_stop
+  step_info "Ollama host aktif: ${OLLAMA_BASE_URL}"
 
   local available_models
   available_models=$(jq -r '.models[].name' <<<"$tags_json" 2>/dev/null | sed '/^$/d' || true)
