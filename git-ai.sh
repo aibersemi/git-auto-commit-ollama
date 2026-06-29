@@ -57,7 +57,7 @@ USE_STRUCTURED_OUTPUT=1
 # Fallback minimal jika file config belum tersedia atau nilainya kosong.
 # Opsi request yang juga dikontrol service Ollama dibiarkan kosong agar
 # klien tidak menimpa default dari /etc/systemd/system/ollama.service.
-DEFAULT_MODEL="${DEFAULT_MODEL:-gemma4:e2b}"
+DEFAULT_MODEL="${DEFAULT_MODEL:-gemma4:e4b}"
 DEFAULT_OLLAMA_HOST="${DEFAULT_OLLAMA_HOST:-http://localhost:11434}"
 FALLBACK_OLLAMA_HOST="${FALLBACK_OLLAMA_HOST:-http://10.50.0.2:11434}"
 OLLAMA_TEMPERATURE="${OLLAMA_TEMPERATURE:-0.2}"
@@ -104,7 +104,7 @@ info()    { echo -e "${BLUE}$*${NC}" 1>&2; }
 success() { echo -e "${GREEN}$*${NC}" 1>&2; }
 warn()    { echo -e "${YELLOW}$*${NC}" 1>&2; }
 err()     { echo -e "${RED}$*${NC}" 1>&2; }
-die()     { err "Error: $*"; spinner_stop 2>/dev/null; exit 1; }
+die()     { err "Error: $*"; live_status_stop 2>/dev/null || true; spinner_stop 2>/dev/null; exit 1; }
 dbg()     { if [[ "${DEBUG}" -eq 1 ]]; then echo -e "${CYAN}[debug]${NC} $*" 1>&2; fi; }
 
 refresh_ollama_urls() {
@@ -118,6 +118,9 @@ preselect_ollama_model_for_banner() {
 
 # ===== UI / Animasi Utilities =====
 SPINNER_PID=""
+LIVE_STATUS_ACTIVE=0
+LIVE_STATUS_FRAME=0
+LIVE_STATUS_LAST_MSG=""
 SCRIPT_START_EPOCH=""
 CURRENT_STEP=0
 TOTAL_STEPS=6
@@ -139,6 +142,7 @@ elapsed_since() {
 spinner_start() {
   local msg="${1:-Memproses...}"
   [[ "$IS_TTY" -eq 1 ]] || return 0
+  live_status_stop 2>/dev/null || true
   spinner_stop
   (
     local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -160,6 +164,89 @@ spinner_stop() {
     wait "$SPINNER_PID" 2>/dev/null || true
     SPINNER_PID=""
     printf '\r\033[K\033[?25h' >&2
+  fi
+}
+
+blocking_status_start() {
+  local msg="${1:-Memproses...}"
+  if [[ "$IS_TTY" -eq 1 ]]; then
+    spinner_start "$msg"
+  else
+    step_info "⟩ ${msg}"
+  fi
+}
+
+blocking_status_stop() {
+  [[ "$IS_TTY" -eq 1 ]] || return 0
+  spinner_stop
+}
+
+live_status_start() {
+  local msg="${1:-Memproses...}"
+  local plain_msg="${2:-$msg}"
+  if [[ "$IS_TTY" -ne 1 ]]; then
+    step_info "⟩ ${plain_msg}"
+    return 0
+  fi
+
+  spinner_stop
+  LIVE_STATUS_ACTIVE=1
+  LIVE_STATUS_FRAME=0
+  printf '\033[?25l' >&2
+  live_status_update "$msg"
+}
+
+live_status_update() {
+  local msg="${1:-Memproses...}"
+  [[ "$IS_TTY" -eq 1 ]] || return 0
+  [[ "$LIVE_STATUS_ACTIVE" -eq 1 ]] || return 0
+
+  local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+  local len=${#chars}
+  local frame="${chars:LIVE_STATUS_FRAME%len:1}"
+  LIVE_STATUS_LAST_MSG="$msg"
+  printf '\r  %b%s%b %s\033[K' "$CYAN" "$frame" "$NC" "$msg" >&2
+  LIVE_STATUS_FRAME=$((LIVE_STATUS_FRAME + 1))
+}
+
+live_status_print_above() {
+  local line="$1"
+  if [[ "$IS_TTY" -eq 1 && "$LIVE_STATUS_ACTIVE" -eq 1 ]]; then
+    printf '\r\033[K' >&2
+    echo -e "$line" >&2
+    live_status_update "${LIVE_STATUS_LAST_MSG:-Memproses...}"
+  else
+    echo -e "$line" >&2
+  fi
+}
+
+live_status_stop() {
+  [[ "$IS_TTY" -eq 1 ]] || return 0
+  [[ "$LIVE_STATUS_ACTIVE" -eq 1 ]] || return 0
+
+  LIVE_STATUS_ACTIVE=0
+  LIVE_STATUS_LAST_MSG=""
+  printf '\r\033[K\033[?25h' >&2
+}
+
+progress_status_text() {
+  local current="$1" total="$2" label="${3:-Memproses}" elapsed="${4:-}"
+  local width=14
+  local filled=0 percent=0
+  local bar="" i
+
+  if [[ "$total" -gt 0 ]]; then
+    filled=$((current * width / total))
+    percent=$((current * 100 / total))
+  fi
+
+  for ((i=0; i<filled; i++)); do bar+="█"; done
+  for ((i=filled; i<width; i++)); do bar+="░"; done
+
+  if [[ -n "$elapsed" ]]; then
+    printf '%s [%s] %d/%d %d%% · %s' "$label" "$bar" "$current" "$total" "$percent" "$elapsed"
+  else
+    printf '%s [%s] %d/%d %d%%' "$label" "$bar" "$current" "$total" "$percent"
   fi
 }
 
@@ -948,7 +1035,9 @@ analyze_files_individually() {
   if [[ "$sensitive_files_skipped" -gt 0 ]]; then
     step_info "  ⟩ Melewati ${sensitive_files_skipped} file sensitif; menganalisis ${analysis_total} file aman."
   fi
-  step_info "  ⟩ Mengirim ${analysis_total} file ke AI (blocking, paralel ${parallelism})..."
+  local status_msg
+  status_msg=$(progress_status_text 0 "$analysis_total" "Menganalisis file AI")
+  live_status_start "$status_msg" "Mengirim ${analysis_total} file ke AI (blocking, paralel ${parallelism})..."
 
   local running=0
   local next_job=0
@@ -1004,14 +1093,18 @@ analyze_files_individually() {
       analysis_results[i]="$analysis"
       [[ "$status" -ne 0 ]] && failed_batches=$((failed_batches + 1))
 
-      echo "" >&2
-      echo -e "  ${GREEN}→${NC} ${BOLD}${file_name}${NC}: ${DIM}${analysis}${NC}" >&2
-      progress_bar "$completed" "$analysis_total" "analisis file"
+      status_msg=$(progress_status_text "$completed" "$analysis_total" "Menganalisis file AI" "$(elapsed_since "$analysis_start")")
+      live_status_update "$status_msg"
+      live_status_print_above "  ${GREEN}→${NC} ${BOLD}${file_name}${NC}: ${DIM}${analysis}${NC}"
     done
 
     [[ "$completed" -ge "$analysis_total" ]] && break
+    status_msg=$(progress_status_text "$completed" "$analysis_total" "Menganalisis file AI" "$(elapsed_since "$analysis_start")")
+    live_status_update "$status_msg"
     [[ "$made_progress" -eq 1 ]] || sleep 0.2
   done
+
+  live_status_stop
 
   FILE_ANALYSES=""
   for ((i=0; i<analysis_total; i++)); do
@@ -1374,7 +1467,13 @@ _ollama_chat_blocking() {
   dbg "Ollama response (truncated): $(echo "$resp" | head -c 300)"
 
   echo "$resp" | jq -e . >/dev/null 2>&1 || return 1
-  dbg "Ollama usage: prompt_eval_count=$(echo "$resp" | jq -r '.prompt_eval_count // "n/a"' 2>/dev/null), eval_count=$(echo "$resp" | jq -r '.eval_count // "n/a"' 2>/dev/null)"
+  local prompt_tokens eval_tokens
+  prompt_tokens=$(echo "$resp" | jq -r '.prompt_eval_count // 0' 2>/dev/null || echo 0)
+  eval_tokens=$(echo "$resp" | jq -r '.eval_count // 0' 2>/dev/null || echo 0)
+  if [[ -f "${TOKEN_LOG_FILE:-}" ]]; then
+    echo "$((prompt_tokens + eval_tokens))" >> "$TOKEN_LOG_FILE"
+  fi
+  dbg "Ollama usage: prompt_eval_count=$prompt_tokens, eval_count=$eval_tokens"
   text=$(echo "$resp" | jq -r '.message.content // empty' 2>/dev/null || true)
   [[ -z "$text" ]] && return 1
   printf '%s' "$text"
@@ -1543,13 +1642,15 @@ generate_commit_message() {
     if [[ "$structured_available" -eq 1 ]]; then
       system_prompt=$(build_system_prompt_json)
       schema=$(build_commit_schema)
-      step_info "⟩ Mengirim prompt ke AI model (structured)..."
+      blocking_status_start "Mengirim prompt ke AI model (structured)..."
 
       if ! content=$(ollama_chat "$system_prompt" "$user_prompt" "$schema"); then
+        blocking_status_stop
         dbg "Structured output gagal (request/parse). Fallback ke plain text."
         structured_available=0
         continue
       fi
+      blocking_status_stop
 
       # Ollama mengembalikan JSON sebagai string di message.content
       if ! json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
@@ -1574,10 +1675,12 @@ generate_commit_message() {
     fi
 
     system_prompt=$(build_system_prompt_text)
-    step_info "⟩ Mengirim prompt ke AI model (plain text)..."
+    blocking_status_start "Mengirim prompt ke AI model (plain text)..."
     if ! content=$(ollama_chat "$system_prompt" "$user_prompt" ""); then
+      blocking_status_stop
       continue
     fi
+    blocking_status_stop
 
     subject=$(clean_plain_commit_message "$content")
     if validate_commit_subject "$subject"; then
@@ -1609,7 +1712,6 @@ do_commit() {
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     warn "DRY RUN: tidak commit/push dan tidak mengubah git state."
-    echo "$msg"
     return 0
   fi
 
@@ -1708,6 +1810,9 @@ release_lock() {
 }
 
 main() {
+  TOKEN_LOG_FILE=$(mktemp)
+  export TOKEN_LOG_FILE
+
   parse_args "$@"
   timer_start
 
@@ -1716,7 +1821,7 @@ main() {
   show_banner
 
   acquire_lock
-  trap 'spinner_stop; restore_cursor; cleanup_dry_run_index; release_lock' EXIT
+  trap 'live_status_stop; spinner_stop; restore_cursor; cleanup_dry_run_index; release_lock; rm -f "${TOKEN_LOG_FILE:-}"' EXIT
   setup_dry_run_index
 
   # Hitung total steps berdasarkan konfigurasi
@@ -1767,6 +1872,35 @@ main() {
     summary_detail="Mode: dry-run"
   fi
   show_summary "$summary_detail"
+
+  # Hitung total token
+  local total_tokens=0
+  if [[ -f "${TOKEN_LOG_FILE:-}" ]]; then
+    while read -r t; do
+      total_tokens=$((total_tokens + t))
+    done < "$TOKEN_LOG_FILE"
+  fi
+
+  local formatted_tokens="$total_tokens"
+  if command -v awk >/dev/null 2>&1; then
+    formatted_tokens=$(awk -v n="$total_tokens" 'BEGIN {
+      s = sprintf("%d", n)
+      out = ""
+      while (length(s) > 3) {
+        out = "." substr(s, length(s) - 2, 3) out
+        s = substr(s, 1, length(s) - 3)
+      }
+      print s out
+    }')
+  fi
+
+  # Hasil commit disimpan paling bawah
+  echo ""
+  echo -e "${BOLD}Commit message${NC}"
+  echo -e "  ${commit_msg}"
+  echo ""
+  echo -e "${BOLD}Token usage${NC}"
+  echo -e "  ${formatted_tokens}"
 }
 
 main "$@"
