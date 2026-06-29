@@ -9,11 +9,11 @@
 # - Optional analisis per-file (dibatasi) agar prompt lebih ringkas
 # - Structured output (Ollama `format`/JSON Schema) untuk hasil lebih stabil
 #
-# Dependencies: git, curl, jq
+# Dependencies: git, curl, jq, flock
 #
 # Usage cepat:
-#   /opt/services/utils/bin/git-ai.sh                 # stage all, generate commit, push
-#   /opt/services/utils/bin/git-ai.sh -n              # commit tanpa push
+#   /opt/services/utils/bin/git-ai.sh                 # stage all, generate commit, tanpa push
+#   /opt/services/utils/bin/git-ai.sh --push          # stage all, generate commit, push
 #   /opt/services/utils/bin/git-ai.sh -p              # git add -p
 #   /opt/services/utils/bin/git-ai.sh --dry-run       # hanya tampilkan commit message
 #
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 # ===== Version =====
-VERSION="1.4.18"
+VERSION="1.5.0"
 
 # ===== Konfigurasi =====
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -35,12 +35,13 @@ SCRIPT_CONFIG_FILE="${SCRIPT_DIR}/git-ai.conf"
 [[ -f "$SCRIPT_CONFIG_FILE" ]] && source "$SCRIPT_CONFIG_FILE"
 
 # ===== Perilaku =====
-DO_PUSH=1
+DO_PUSH="${DEFAULT_DO_PUSH:-0}"
 DO_STAGE=1
 USE_PATCH=0
 DRY_RUN=0
 DEBUG=0
 FORCE_DIFF=0
+ALLOW_SECRET_COMMIT=0
 NO_BANNER=0
 NO_PULL=0
 NO_VERIFY=0
@@ -69,6 +70,12 @@ MAX_FILES_LIST="${MAX_FILES_LIST:-20}"
 TOP_FILES="${TOP_FILES:-4}"
 MAX_HUNK_CHARS="${MAX_HUNK_CHARS:-1000}"
 MAX_TOTAL_HUNKS_CHARS="${MAX_TOTAL_HUNKS_CHARS:-3500}"
+MAX_SUBJECT_LENGTH="${MAX_SUBJECT_LENGTH:-120}"
+
+case "$DO_PUSH" in
+  true|TRUE|yes|YES|on|ON) DO_PUSH=1 ;;
+  false|FALSE|no|NO|off|OFF|"") DO_PUSH=0 ;;
+esac
 
 # Model selalu dikunci ke DEFAULT_MODEL dari config.
 OLLAMA_MODEL="$DEFAULT_MODEL"
@@ -367,7 +374,8 @@ show_help() {
   cat <<HELP
 Usage: git-ai.sh [OPTIONS]
 
-Auto stage → AI commit message (Ollama) → commit → push.
+Auto stage → AI commit message (Ollama) → commit.
+Push hanya berjalan jika --push atau DEFAULT_DO_PUSH=1 aktif.
 Output commit message:
   - Baris 1: subject singkat tanpa body/footer
 
@@ -375,13 +383,15 @@ Options:
   -h, --help                  Tampilkan bantuan
   -v, --version               Tampilkan versi
   -s, --status                Tampilkan git status saja
-  -n, --no-push               Commit tanpa push
+      --push                  Push setelah commit
+  -n, --no-push               Commit tanpa push (default)
   -p, --patch                 Staging interaktif (git add -p)
   -i, --interactive           Tampilkan commit message dan minta konfirmasi sebelum commit
       --no-stage              Jangan staging otomatis
       --dry-run               Hanya tampilkan commit message (tanpa ubah git state)
       --debug                 Tampilkan log debug
       --force-diff            Tetap kirim diff ke AI walau terdeteksi pola sensitif
+      --allow-secret-commit   Izinkan commit walau scanner menemukan potensi secret
       --no-file-analysis      Matikan analisis per-file (lebih cepat)
       --file-analysis-limit N Batasi jumlah file untuk analisis per-file (default: ${FILE_ANALYSIS_LIMIT})
       --file-analysis-parallelism N
@@ -396,6 +406,7 @@ Config:
 
 Config variables:
   DEFAULT_MODEL               Model Ollama yang selalu dipakai
+  DEFAULT_DO_PUSH             Default push setelah commit (0/1, default 0)
   DEFAULT_OLLAMA_HOST         Host utama Ollama (kosong = baca service)
   FALLBACK_OLLAMA_HOST        Host cadangan jika host utama down
   AI_TEMPERATURE              Default ${AI_TEMPERATURE}
@@ -410,6 +421,7 @@ Config variables:
   TOP_FILES                   Jumlah file terbesar untuk ringkasan hunk
   MAX_HUNK_CHARS              Batas karakter hunk per file
   MAX_TOTAL_HUNKS_CHARS       Batas total karakter hunk yang dikirim ke AI
+  MAX_SUBJECT_LENGTH          Panjang maksimal subject commit (default: ${MAX_SUBJECT_LENGTH})
 
 Ollama service:
   ${OLLAMA_SERVICE_FILE} dipakai jika DEFAULT_OLLAMA_HOST kosong.
@@ -422,6 +434,7 @@ parse_args() {
       -h|--help)            show_help; exit 0 ;;
       -v|--version)         echo "git-ai version $VERSION"; exit 0 ;;
       -s|--status)          check_git_repo; git status; exit 0 ;;
+      --push)                DO_PUSH=1; shift ;;
       -n|--no-push)         DO_PUSH=0; shift ;;
       -m|--model)           die "-m/--model tidak didukung. Ubah DEFAULT_MODEL di ${SCRIPT_CONFIG_FILE}." ;;
       -p|--patch)           USE_PATCH=1; shift ;;
@@ -430,6 +443,7 @@ parse_args() {
       --dry-run)            DRY_RUN=1; shift ;;
       --debug)              DEBUG=1; shift ;;
       --force-diff)         FORCE_DIFF=1; shift ;;
+      --allow-secret-commit) ALLOW_SECRET_COMMIT=1; shift ;;
       --no-file-analysis)   DO_FILE_ANALYSIS=0; shift ;;
       --file-analysis-limit)
                             [[ $# -ge 2 ]] || die "--file-analysis-limit butuh angka"
@@ -481,11 +495,14 @@ cleanup_dry_run_index() {
 check_deps() {
   show_step "Memeriksa dependensi"
 
-  for cmd in git curl jq; do
+  for cmd in git curl jq flock; do
     command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' tidak ditemukan. Install dulu."
   done
-  step_ok "git, curl, jq tersedia"
+  step_ok "git, curl, jq, flock tersedia"
 
+  if [[ ! "$DO_PUSH" =~ ^[01]$ ]]; then
+    die "DEFAULT_DO_PUSH harus 0 atau 1."
+  fi
   if [[ ! "$FILE_ANALYSIS_LIMIT" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_LIMIT" -lt 0 ]]; then
     die "FILE_ANALYSIS_LIMIT harus angka non-negatif."
   fi
@@ -514,6 +531,9 @@ check_deps() {
   fi
   if [[ ! "$AI_THINK" =~ ^(false|true|low|medium|high)$ ]]; then
     die "AI_THINK harus salah satu: false, true, low, medium, high."
+  fi
+  if [[ ! "$MAX_SUBJECT_LENGTH" =~ ^[0-9]+$ ]] || [[ "$MAX_SUBJECT_LENGTH" -lt 40 ]]; then
+    die "MAX_SUBJECT_LENGTH harus angka >= 40."
   fi
 
   local tags_json primary_url fallback_url
@@ -585,6 +605,7 @@ stage_changes() {
       die "Kamu memilih --no-stage, tapi belum ada staged changes. Jalankan git add dulu."
     fi
     step_ok "Menggunakan staged changes yang sudah ada"
+    enforce_staged_secret_policy
     return 0
   fi
 
@@ -604,11 +625,13 @@ stage_changes() {
   local stage_method="git add -A"
   [[ "$USE_PATCH" -eq 1 ]] && stage_method="git add -p"
   step_ok "${staged_count} file di-stage (${stage_method})"
+
+  enforce_staged_secret_policy
 }
 
 sensitive_pattern_regex() {
   cat <<'EOF'
-((password|passwd|secret|api[_-]?key|token|auth)[[:space:]]*['"]?[:=]['"]?[[:space:]]*['"][A-Za-z0-9_\\-]{8,}['"]|BEGIN [A-Z]+ PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pous]_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z\\-_]{35})
+(([A-Za-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*)[[:space:]]*[:=][[:space:]]*['"]?[A-Za-z0-9_./+=:@-]{12,}['"]?|BEGIN [A-Z]+ PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pous]_[A-Za-z0-9_]{30,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|sk-[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})
 EOF
 }
 
@@ -622,6 +645,115 @@ detect_sensitive_patterns() {
   sample=$(git diff --cached --no-color | head -c 100000 || true)
 
   has_sensitive_patterns "$sample"
+}
+
+is_secret_placeholder_line() {
+  local content="$1"
+  local lower
+  lower=$(printf '%s' "$content" | tr '[:upper:]' '[:lower:]')
+
+  grep -Eiq '(placeholder|changeme|change_me|change-me|dummy|sample|example|your[-_ ]?[a-z0-9_-]*|<[^>]+>|\$\{|\{\{[[:space:]]*secrets\.)' <<<"$lower"
+}
+
+detect_staged_secret_lines() {
+  local current_file="?"
+  local new_line=0
+  local line content line_no
+
+  while IFS= read -r line; do
+    case "$line" in
+      "+++ b/"*)
+        current_file="${line#+++ b/}"
+        ;;
+      "+++ /dev/null")
+        current_file="?"
+        ;;
+      @@*)
+        if [[ "$line" =~ \+([0-9]+)(,[0-9]+)?[[:space:]]@@ ]]; then
+          new_line="${BASH_REMATCH[1]}"
+        else
+          new_line=0
+        fi
+        ;;
+      +*)
+        [[ "$line" == "+++"* ]] && continue
+        content="${line#+}"
+        if has_sensitive_patterns "$content" && ! is_secret_placeholder_line "$content"; then
+          line_no="$new_line"
+          if ! [[ "$line_no" =~ ^[0-9]+$ ]] || ! [[ "$line_no" -gt 0 ]]; then
+            line_no="?"
+          fi
+          printf '%s:%s potensi secret pada baris tambahan\n' "$current_file" "$line_no"
+        fi
+        if [[ "$new_line" =~ ^[0-9]+$ ]] && [[ "$new_line" -gt 0 ]]; then
+          new_line=$((new_line + 1))
+        fi
+        ;;
+      -*)
+        ;;
+      *)
+        if [[ "$new_line" =~ ^[0-9]+$ ]] && [[ "$new_line" -gt 0 ]]; then
+          new_line=$((new_line + 1))
+        fi
+        ;;
+    esac
+  done < <(git diff --cached --no-color --unified=0 --no-ext-diff || true)
+}
+
+run_gitleaks_secret_scan() {
+  command -v gitleaks >/dev/null 2>&1 || return 1
+
+  local out status
+  set +e
+  out=$(gitleaks protect --staged --redact --no-banner 2>&1)
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] && return 1
+  if grep -Eiq '(leak|leaks|secret|finding|RuleID|Fingerprint)' <<<"$out"; then
+    printf 'gitleaks menemukan potensi secret pada staged changes\n'
+    return 0
+  fi
+
+  dbg "gitleaks scan dilewati/gagal kompatibilitas: $(printf '%s' "$out" | head -c 300)"
+  return 1
+}
+
+enforce_staged_secret_policy() {
+  local report external_report
+  report=$(detect_staged_secret_lines || true)
+  external_report=$(run_gitleaks_secret_scan || true)
+
+  if [[ -n "$external_report" ]]; then
+    [[ -n "$report" ]] && report+=$'\n'
+    report+="$external_report"
+  fi
+
+  [[ -n "$report" ]] || return 0
+
+  warn "Potensi secret terdeteksi pada staged changes:"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    warn "  - $line"
+  done < <(printf '%s\n' "$report" | head -n 20)
+
+  local total_lines
+  total_lines=$(printf '%s\n' "$report" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
+  if [[ "$total_lines" -gt 20 ]]; then
+    warn "  ... $((total_lines - 20)) temuan lain disembunyikan"
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    warn "DRY RUN: commit diblokir pada mode normal, tetapi dry-run dilanjutkan tanpa commit/push."
+    return 0
+  fi
+
+  if [[ "$ALLOW_SECRET_COMMIT" -eq 1 ]]; then
+    warn "Commit secret diizinkan oleh --allow-secret-commit. Safe mode tetap aktif kecuali --force-diff dipakai."
+    return 0
+  fi
+
+  die "Commit dibatalkan untuk mencegah secret ikut masuk commit. Hapus secret atau gunakan --allow-secret-commit jika benar-benar disengaja."
 }
 
 collect_top_files() {
@@ -1314,6 +1446,11 @@ commit_subject_quality_issue() {
   lower=$(printf '%s' "$subject" | tr '[:upper:]' '[:lower:]')
   evidence_blob="${GIT_PRIORITY_CHANGES}${DIFF_TERMS}${TOP_HUNKS}${FILE_ANALYSES}${CHANGE_PRIORITY_HINT}"
 
+  if subject_has_disallowed_prefix "$subject"; then
+    printf 'Subject memakai prefix/label seperti conventional commit atau kategori; tulis kalimat inti tanpa prefix.'
+    return 0
+  fi
+
   if grep -Eq '&' <<<"$subject"; then
     printf 'Subject memakai gaya kurang rapi; gunakan kata sambung "dan", bukan simbol "&".'
     return 0
@@ -1526,10 +1663,25 @@ _ollama_chat_blocking() {
   printf '%s' "$text"
 }
 
+subject_has_disallowed_prefix() {
+  local subject="$1"
+  grep -Eiq '^[[:space:]]*((feat|fix|docs|doc|chore|refactor|test|tests|style|perf|ci|build|revert|wip)(\([^)]+\))?[!:：]|(dokumentasi|perbaikan|pembaruan|fitur|konfigurasi|refaktor|uji)[[:space:]]*:)' <<<"$subject"
+}
+
+strip_disallowed_subject_prefix() {
+  local subject="$1"
+  subject=$(printf '%s' "$subject" | sed -E 's/^[[:space:]]*((feat|fix|docs|doc|chore|refactor|test|tests|style|perf|ci|build|revert|wip)(\([^)]+\))?[!:：][[:space:]]*|([Dd]okumentasi|[Pp]erbaikan|[Pp]embaruan|[Ff]itur|[Kk]onfigurasi|[Rr]efaktor|[Uu]ji)[[:space:]]*:[[:space:]]*)//')
+  printf '%s' "$subject"
+}
+
 validate_commit_subject() {
   local subject="$1"
   [[ -n "$subject" ]] || return 1
   [[ "${#subject}" -ge 8 ]] || return 1
+  [[ "${#subject}" -le "$MAX_SUBJECT_LENGTH" ]] || return 1
+  if subject_has_disallowed_prefix "$subject"; then
+    return 1
+  fi
   # Tolak control character (0x00-0x1f, 0x7f), bukan semua non-ASCII.
   # Bahasa Indonesia umumnya ASCII, tapi biarkan UTF-8 valid lolos.
   if printf '%s' "$subject" | LC_ALL=C grep -qP '[\x00-\x1f\x7f]'; then
@@ -1546,6 +1698,7 @@ validate_commit_subject() {
 normalize_commit_subject() {
   local subject="$1"
 
+  subject=$(strip_disallowed_subject_prefix "$subject")
   subject=$(printf '%s' "$subject" | sed -E 's/[[:space:]]*&[[:space:]]*/ dan /g')
   subject=$(printf '%s' "$subject" | sed -E 's/(^|[[:space:]])[Uu]pdate([[:space:]]|$)/\1Perbarui\2/g')
   subject=$(printf '%s' "$subject" | sed -E 's/^Pembaruan([[:space:]]|$)/Perbarui\1/g')
@@ -1553,6 +1706,11 @@ normalize_commit_subject() {
   subject=$(printf '%s' "$subject" | sed -E 's/[Pp]arallelisme/paralelisme/g; s/[Pp]aralellisme/paralelisme/g; s/[Pp]arallel([[:space:]]|$)/paralel\1/g')
   subject=$(printf '%s' "$subject" | tr -s ' ')
   subject=$(printf '%s' "$subject" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  if [[ "$MAX_SUBJECT_LENGTH" =~ ^[0-9]+$ && "${#subject}" -gt "$MAX_SUBJECT_LENGTH" ]]; then
+    subject="${subject:0:MAX_SUBJECT_LENGTH}"
+    subject="${subject% *}"
+    subject=$(printf '%s' "$subject" | sed 's/[[:space:],;:.-]*$//')
+  fi
 
   printf '%s' "$subject"
 }
@@ -1909,8 +2067,10 @@ main() {
       summary_detail="Commit: ${short_hash}"
       if [[ "$DO_PUSH" -eq 1 ]]; then
         local remote
-        remote=$(git remote | head -n 1 2>/dev/null || echo "origin")
-        summary_detail+=" → ${remote}/${branch}"
+        remote=$(git remote | head -n 1 2>/dev/null || true)
+        if [[ -n "$remote" ]]; then
+          summary_detail+=" → ${remote}/${branch}"
+        fi
       fi
     fi
   else
