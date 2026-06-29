@@ -6,7 +6,6 @@ Terima kasih sudah ingin berkontribusi ke `git-auto-commit-ollama`. Panduan ini 
 
 - [Jenis Kontribusi](#jenis-kontribusi)
 - [Sebelum Mulai](#sebelum-mulai)
-- [Setup Lokal](#setup-lokal)
 - [Standar Kode](#standar-kode)
 - [Pengujian](#pengujian)
 - [Panduan Issue](#panduan-issue)
@@ -31,48 +30,18 @@ Untuk perubahan besar, diskusikan dulu lewat issue sebelum membuat pull request.
 ## Sebelum Mulai
 
 - Baca [`README.md`](README.md) untuk memahami cara kerja dan opsi CLI.
+- Ikuti prasyarat dan instalasi dari [`README.md`](README.md), bukan dari salinan instruksi di dokumen ini.
 - Cek issue atau pull request yang sudah ada agar pekerjaan tidak duplikat.
 - Buat perubahan yang fokus pada satu masalah.
-- Jangan commit credential, token, private key, isi `.env`, log internal, atau diff dari repository privat.
+- Ikuti kebijakan data sensitif di [`SECURITY.md`](SECURITY.md).
 - Pastikan perubahan tetap cocok untuk penggunaan lokal dan jaringan internal.
-
-## Setup Lokal
-
-Clone repository:
-
-```bash
-git clone git@github.com:aibersemi/git-auto-commit-ollama.git
-cd git-auto-commit-ollama
-```
-
-Install dependensi validasi:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git curl jq util-linux shellcheck
-```
-
-Validasi awal:
-
-```bash
-bash -n git-ai.sh
-shellcheck git-ai.sh
-./git-ai.sh --help
-```
-
-Opsional, siapkan Ollama untuk smoke test runtime:
-
-```bash
-ollama serve
-ollama pull gemma4:e4b
-```
 
 ## Standar Kode
 
 Project ini adalah Bash CLI. Ikuti gaya yang sudah ada di `git-ai.sh`.
 
 - Pertahankan `#!/usr/bin/env bash` dan `set -euo pipefail`.
-- Pastikan `shellcheck git-ai.sh` bersih.
+- Pastikan lint Bash tetap bersih; command validasi utama ada di README.
 - Quote variable expansion kecuali ada alasan Bash yang jelas.
 - Gunakan fungsi kecil dengan nama yang menjelaskan perilaku.
 - Jaga output pengguna tetap berbahasa Indonesia.
@@ -84,13 +53,7 @@ Project ini adalah Bash CLI. Ikuti gaya yang sudah ada di `git-ai.sh`.
 
 ## Pengujian
 
-Minimal jalankan sebelum membuat pull request:
-
-```bash
-bash -n git-ai.sh
-shellcheck git-ai.sh
-./git-ai.sh --help >/tmp/git-ai-help.txt
-```
+Jalankan validasi dasar dari [`README.md#pengembangan`](README.md#pengembangan) sebelum membuat pull request.
 
 Untuk perubahan runtime yang menyentuh staging, prompt, commit, atau push, lakukan smoke test di repository sementara. Jangan memakai repository kerja utama untuk eksperimen yang bisa membuat commit.
 
@@ -108,8 +71,8 @@ Jika perubahan menyentuh secret detection, uji minimal:
 
 - Placeholder secret yang seharusnya boleh lewat.
 - Token nyata palsu yang seharusnya diblokir.
-- Mode `--dry-run` saat secret terdeteksi.
-- Mode `--allow-secret-commit` hanya jika perilaku override memang diubah.
+- Mode preview saat secret terdeteksi.
+- Override secret commit hanya jika perilaku override memang diubah.
 
 Jika perubahan menyentuh Ollama:
 
@@ -137,7 +100,7 @@ Untuk feature request, jelaskan:
 - Perubahan perilaku yang diusulkan.
 - Dampak terhadap keamanan, default push, dan kompatibilitas CLI.
 
-Jangan sertakan secret valid, URL internal sensitif, nama repository privat, atau diff yang tidak boleh dipublikasikan.
+Untuk laporan keamanan, jangan gunakan issue publik; ikuti [`SECURITY.md`](SECURITY.md). Untuk bug biasa, sensor log dan konfigurasi sebelum dipublikasikan.
 
 ## Panduan Pull Request
 
@@ -146,9 +109,7 @@ Alur kerja yang disarankan:
 ```bash
 git checkout -b fix/deskripsi-singkat
 # edit file
-bash -n git-ai.sh
-shellcheck git-ai.sh
-./git-ai.sh --help >/tmp/git-ai-help.txt
+# jalankan validasi dari README bagian Pengembangan
 git status
 git commit
 git push -u origin fix/deskripsi-singkat
@@ -166,15 +127,7 @@ Jaga PR tetap kecil. Jika satu perubahan membutuhkan refactor besar dan behavior
 
 ## Keamanan
 
-Project ini berinteraksi dengan diff Git, commit message, secret scanner, dan endpoint Ollama. Perlakukan semua perubahan di area ini sebagai berisiko tinggi.
-
-- Jangan menonaktifkan secret guard secara default.
-- Jangan mengirim diff detail ke layanan eksternal sebagai perilaku default.
-- Jangan menambahkan telemetry, analytics, atau network call baru tanpa pembahasan eksplisit.
-- Jangan menyimpan secret di `git-ai.conf`, test fixture, log, atau dokumentasi.
-- Sensor token, host internal, path sensitif, dan nama repository privat sebelum membuka issue atau PR.
-
-Jika menemukan celah keamanan, jangan publikasikan exploit lengkap di issue publik. Hubungi maintainer melalui kanal privat yang tersedia, atau buat laporan minimal yang menjelaskan dampak tanpa menyertakan secret atau langkah eksploitasi lengkap.
+Untuk vulnerability, threat surface, atau perubahan yang menyentuh secret handling, ikuti [`SECURITY.md`](SECURITY.md). Di pull request, jelaskan dampak keamanan dan pengujian tambahan yang dilakukan.
 
 ## Dokumentasi
 
@@ -199,10 +152,8 @@ Dokumen yang biasanya perlu ikut diperbarui:
 Sebelum submit issue atau pull request, pastikan:
 
 - Perubahan fokus pada satu masalah.
-- `bash -n git-ai.sh` lulus.
-- `shellcheck git-ai.sh` lulus.
-- `./git-ai.sh --help` masih berjalan.
+- Validasi dasar dari README sudah dijalankan.
+- Smoke test tambahan dijelaskan jika perubahan menyentuh runtime.
 - Dokumentasi sudah diperbarui jika perilaku berubah.
-- Tidak ada secret, credential, atau data internal di diff.
-- Risiko terhadap Git state pengguna sudah dipertimbangkan.
+- Catatan keamanan mengikuti SECURITY jika perubahan menyentuh area sensitif.
 - Perubahan default sudah dijelaskan dengan alasan yang jelas.

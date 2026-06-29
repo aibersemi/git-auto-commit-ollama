@@ -11,8 +11,6 @@
 - [Out of Scope](#out-of-scope)
 - [Disclosure Process](#disclosure-process)
 - [Security Design Notes](#security-design-notes)
-- [User Hardening Guide](#user-hardening-guide)
-- [Maintainer Checklist](#maintainer-checklist)
 
 ## Supported Versions
 
@@ -61,18 +59,7 @@ Jangan sertakan:
 - URL internal, hostname internal, username, atau path produksi yang sensitif.
 - Payload yang merusak data atau menjalankan aksi destruktif.
 
-Proof of concept yang ideal memakai repository sementara:
-
-```bash
-tmpdir=$(mktemp -d)
-git init "$tmpdir"
-cd "$tmpdir"
-git config user.name "security test"
-git config user.email "security-test@example.invalid"
-printf 'example\n' > sample.txt
-git add sample.txt
-/path/to/git-auto-commit-ollama/git-ai.sh --dry-run --no-push --no-banner
-```
+Untuk contoh smoke test berbasis repository sementara, gunakan pola di [`CONTRIBUTING.md#pengujian`](CONTRIBUTING.md#pengujian).
 
 ## Scope
 
@@ -131,40 +118,10 @@ Jangan mempublikasikan detail exploit sebelum fix tersedia atau sebelum ada kese
 
 Beberapa prinsip keamanan yang harus dijaga saat mengubah project:
 
-- Default harus konservatif: jangan mengirim diff detail saat pola sensitif terdeteksi.
-- `--dry-run` tidak boleh membuat commit, push, atau perubahan permanen pada Git state.
-- `--no-push` harus selalu mencegah push.
-- `--no-stage` harus memakai staged changes yang sudah ada dan tidak melakukan staging otomatis.
-- `--force-diff` dan `--allow-secret-commit` harus tetap berupa override eksplisit.
-- Config file adalah konfigurasi runtime, bukan tempat menyimpan secret.
+- Safe mode dan secret guard harus tetap konservatif secara default.
+- Override seperti `--force-diff` dan `--allow-secret-commit` harus tetap eksplisit.
 - Output debug harus berguna untuk diagnosis tanpa membocorkan credential.
 - Dependensi wajib harus tetap sedikit dan mudah diaudit.
 - Network call baru harus dibahas eksplisit sebelum diterima.
 
-## User Hardening Guide
-
-Rekomendasi untuk pengguna:
-
-- Jalankan Ollama lokal atau endpoint internal yang tepercaya.
-- Hindari `FALLBACK_OLLAMA_HOST` jika tidak diperlukan.
-- Jangan menyimpan secret di `git-ai.conf`.
-- Pasang `gitleaks` untuk secret scanning tambahan.
-- Gunakan `git-ai --dry-run` untuk repository sensitif.
-- Gunakan `git-ai --interactive` jika ingin review commit message sebelum commit.
-- Gunakan `git-ai --no-push` saat bekerja pada branch yang belum siap dipublikasikan.
-- Review `git diff --cached` sebelum commit pada perubahan konfigurasi, environment, CI, deployment, dan credential.
-- Pastikan `.env`, key file, backup, log, dan artifact sensitif masuk `.gitignore`.
-- Batasi akses filesystem dan network untuk environment otomatis yang menjalankan `git-ai`.
-
-## Maintainer Checklist
-
-Sebelum menerima perubahan yang menyentuh area keamanan:
-
-- `bash -n git-ai.sh` lulus.
-- `shellcheck git-ai.sh` lulus.
-- `./git-ai.sh --help` masih berjalan.
-- Secret guard diuji untuk kasus positif dan negatif.
-- Safe mode diuji tanpa mengirim diff detail.
-- `--dry-run`, `--no-push`, dan `--no-stage` tidak mengalami regresi.
-- Dokumentasi README, CONTRIBUTING, dan SECURITY diperbarui jika perilaku berubah.
-- Tidak ada secret, endpoint internal sensitif, atau log privat di commit.
+Panduan penggunaan aman untuk pengguna tetap berada di [`README.md#keamanan`](README.md#keamanan), sedangkan checklist kontribusi berada di [`CONTRIBUTING.md#checklist`](CONTRIBUTING.md#checklist).
