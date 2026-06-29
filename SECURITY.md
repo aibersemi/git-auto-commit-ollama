@@ -2,7 +2,7 @@
 
 `git-auto-commit-ollama` adalah Bash CLI yang membaca Git diff, membuat commit message melalui Ollama, lalu dapat menjalankan `git commit` dan `git push`. Karena tool ini menyentuh Git state, staged changes, secret scanning, dan endpoint AI lokal/internal, laporan keamanan diprioritaskan untuk dampak terhadap kerahasiaan, integritas, dan kontrol atas repository pengguna.
 
-## Daftar Isi
+## Table of Contents
 
 - [Supported Versions](#supported-versions)
 - [Reporting a Vulnerability](#reporting-a-vulnerability)
@@ -59,7 +59,7 @@ Jangan sertakan:
 - URL internal, hostname internal, username, atau path produksi yang sensitif.
 - Payload yang merusak data atau menjalankan aksi destruktif.
 
-Untuk contoh smoke test berbasis repository sementara, gunakan pola di [`CONTRIBUTING.md#pengujian`](CONTRIBUTING.md#pengujian).
+Untuk contoh smoke test berbasis repository sementara, gunakan pola di [`CONTRIBUTING.md#testing`](CONTRIBUTING.md#testing).
 
 ## Scope
 
@@ -124,4 +124,4 @@ Beberapa prinsip keamanan yang harus dijaga saat mengubah project:
 - Dependensi wajib harus tetap sedikit dan mudah diaudit.
 - Network call baru harus dibahas eksplisit sebelum diterima.
 
-Panduan penggunaan aman untuk pengguna tetap berada di [`README.md#keamanan`](README.md#keamanan), sedangkan checklist kontribusi berada di [`CONTRIBUTING.md#checklist`](CONTRIBUTING.md#checklist).
+Panduan penggunaan aman untuk pengguna tetap berada di [`README.md#security`](README.md#security), sedangkan checklist kontribusi berada di [`CONTRIBUTING.md#checklist`](CONTRIBUTING.md#checklist).

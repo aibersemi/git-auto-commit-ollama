@@ -2,7 +2,7 @@
 
 Instruksi ini berlaku untuk seluruh repository `git-auto-commit-ollama`.
 
-## Tujuan
+## Purpose
 
 Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perlakukan perubahan pada staging, commit, push, secret scanning, prompt generation, dan endpoint Ollama sebagai area berisiko tinggi.
 
@@ -12,7 +12,7 @@ Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perl
 - Bahasa Inggris boleh digunakan untuk istilah teknis, judul dokumen, heading, nama API, nama library, command, error message, nama file, nama branch, atau konsep yang lebih jelas jika tetap ditulis dalam bahasa aslinya.
 - Untuk komentar kode baru, ikuti gaya file sekitar. Tambahkan komentar hanya saat konteks lokal tidak mudah dibaca dari kode.
 
-## Peta Repo
+## Repo Map
 
 - `git-ai.sh`: CLI utama. Sebagian besar perubahan behavior ada di sini.
 - `git-ai.conf`: default runtime config. Jangan simpan secret di sini.
@@ -20,7 +20,7 @@ Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perl
 - `.github/workflows/ci.yml`: CI validasi Bash.
 - `README.md`, `CONTRIBUTING.md`, `SECURITY.md`: dokumentasi publik.
 
-## Dokumentasi
+## Documentation
 
 - Update README saat behavior pengguna, opsi CLI, config, dependensi, install, troubleshooting, atau command validasi dasar berubah.
 - Update CONTRIBUTING saat workflow kontribusi, validasi PR, atau standar kode berubah.
@@ -28,7 +28,7 @@ Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perl
 - Hindari duplikasi lintas dokumen. README menjadi sumber utama untuk penggunaan dan validasi dasar.
 - Jangan menyalin ulang detail panjang dari dokumen tersebut ke dokumen lain; cukup tautkan ke sumber utama.
 
-## Aturan Kerja
+## Work Rules
 
 - Baca file yang relevan sebelum mengubahnya.
 - Jaga perubahan tetap kecil dan sesuai permintaan.
@@ -38,7 +38,7 @@ Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perl
 - Jangan mengubah default model, default push, host fallback, atau format commit message tanpa alasan jelas dan pembaruan dokumentasi.
 - Jangan menambahkan dependensi wajib tanpa memperbarui `check_deps`, README, dan panduan kontribusi.
 
-## Gaya Bash
+## Bash Style
 
 - Pertahankan `#!/usr/bin/env bash` dan `set -euo pipefail`.
 - Ikuti gaya fungsi dan output yang sudah ada di `git-ai.sh`.
@@ -49,7 +49,7 @@ Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perl
 - Jika menambah opsi CLI, update `parse_args`, `show_help`, README, dan test/help validation yang relevan.
 - Jika mengubah config, update `git-ai.conf`, fallback default, validasi config, README, dan dokumentasi terkait.
 
-## Keamanan
+## Security
 
 - Safe mode dan secret guard harus tetap konservatif secara default.
 - `--force-diff` dan `--allow-secret-commit` harus tetap override eksplisit.
@@ -59,7 +59,7 @@ Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perl
 - Jangan menambahkan telemetry, analytics, atau network call baru tanpa pembahasan eksplisit.
 - Jangan menulis secret, token, host internal sensitif, atau log privat ke test fixture, dokumentasi, atau output debug.
 
-## Verifikasi
+## Verification
 
 Jalankan validasi dasar setelah mengubah `git-ai.sh` atau behavior yang terkait:
 

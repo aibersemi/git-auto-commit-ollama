@@ -2,19 +2,19 @@
 
 Terima kasih sudah ingin berkontribusi ke `git-auto-commit-ollama`. Panduan ini dibuat supaya perubahan tetap kecil, mudah ditinjau, dan aman untuk tool yang bekerja langsung pada Git state pengguna.
 
-## Daftar Isi
+## Table of Contents
 
-- [Jenis Kontribusi](#jenis-kontribusi)
-- [Sebelum Mulai](#sebelum-mulai)
-- [Standar Kode](#standar-kode)
-- [Pengujian](#pengujian)
-- [Panduan Issue](#panduan-issue)
-- [Panduan Pull Request](#panduan-pull-request)
-- [Keamanan](#keamanan)
-- [Dokumentasi](#dokumentasi)
+- [Contribution Types](#contribution-types)
+- [Before You Start](#before-you-start)
+- [Code Standards](#code-standards)
+- [Testing](#testing)
+- [Issue Guidelines](#issue-guidelines)
+- [Pull Request Guidelines](#pull-request-guidelines)
+- [Security](#security)
+- [Documentation](#documentation)
 - [Checklist](#checklist)
 
-## Jenis Kontribusi
+## Contribution Types
 
 Kontribusi yang paling membantu untuk project ini:
 
@@ -27,7 +27,7 @@ Kontribusi yang paling membantu untuk project ini:
 
 Untuk perubahan besar, diskusikan dulu lewat issue sebelum membuat pull request. Contohnya: mengubah default model, menambah dependensi wajib, mengganti format commit message, atau mengubah perilaku default push.
 
-## Sebelum Mulai
+## Before You Start
 
 - Baca [`README.md`](README.md) untuk memahami cara kerja dan opsi CLI.
 - Ikuti prasyarat dan instalasi dari [`README.md`](README.md), bukan dari salinan instruksi di dokumen ini.
@@ -36,7 +36,7 @@ Untuk perubahan besar, diskusikan dulu lewat issue sebelum membuat pull request.
 - Ikuti kebijakan data sensitif di [`SECURITY.md`](SECURITY.md).
 - Pastikan perubahan tetap cocok untuk penggunaan lokal dan jaringan internal.
 
-## Standar Kode
+## Code Standards
 
 Project ini adalah Bash CLI. Ikuti gaya yang sudah ada di `git-ai.sh`.
 
@@ -51,9 +51,9 @@ Project ini adalah Bash CLI. Ikuti gaya yang sudah ada di `git-ai.sh`.
 - Hindari perubahan destruktif terhadap Git state pengguna. Untuk perilaku berisiko, sediakan dry-run, konfirmasi, atau guard yang jelas.
 - Jaga secret handling tetap konservatif. Jangan melemahkan safe mode atau secret guard tanpa alasan teknis yang kuat.
 
-## Pengujian
+## Testing
 
-Jalankan validasi dasar dari [`README.md#pengembangan`](README.md#pengembangan) sebelum membuat pull request.
+Jalankan validasi dasar dari [`README.md#development`](README.md#development) sebelum membuat pull request.
 
 Untuk perubahan runtime yang menyentuh staging, prompt, commit, atau push, lakukan smoke test di repository sementara. Jangan memakai repository kerja utama untuk eksperimen yang bisa membuat commit.
 
@@ -81,7 +81,7 @@ Jika perubahan menyentuh Ollama:
 - Uji model yang belum tersedia dengan dan tanpa `--no-pull`.
 - Uji `--no-structured` jika logic structured output diubah.
 
-## Panduan Issue
+## Issue Guidelines
 
 Saat melaporkan bug, sertakan:
 
@@ -102,14 +102,14 @@ Untuk feature request, jelaskan:
 
 Untuk laporan keamanan, jangan gunakan issue publik; ikuti [`SECURITY.md`](SECURITY.md). Untuk bug biasa, sensor log dan konfigurasi sebelum dipublikasikan.
 
-## Panduan Pull Request
+## Pull Request Guidelines
 
 Alur kerja yang disarankan:
 
 ```bash
 git checkout -b fix/deskripsi-singkat
 # edit file
-# jalankan validasi dari README bagian Pengembangan
+# jalankan validasi dari README bagian Development
 git status
 git commit
 git push -u origin fix/deskripsi-singkat
@@ -125,11 +125,11 @@ Pull request sebaiknya berisi:
 
 Jaga PR tetap kecil. Jika satu perubahan membutuhkan refactor besar dan behavior change, pisahkan menjadi beberapa PR yang bisa ditinjau satu per satu.
 
-## Keamanan
+## Security
 
 Untuk vulnerability, threat surface, atau perubahan yang menyentuh secret handling, ikuti [`SECURITY.md`](SECURITY.md). Di pull request, jelaskan dampak keamanan dan pengujian tambahan yang dilakukan.
 
-## Dokumentasi
+## Documentation
 
 Update dokumentasi saat perubahan memengaruhi:
 

@@ -8,21 +8,21 @@ CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 
 `git-ai` membantu workflow commit harian: staging perubahan, membaca konteks diff, meminta model Ollama membuat subject commit satu baris, lalu commit dan push. Tool ini cocok untuk server, workstation, atau repo internal yang ingin commit message tetap ringkas tanpa mengirim kode ke layanan AI eksternal.
 
-## Daftar Isi
+## Table of Contents
 
-- [Fitur](#fitur)
-- [Cara Kerja](#cara-kerja)
-- [Prasyarat](#prasyarat)
-- [Instalasi](#instalasi)
-- [Konfigurasi](#konfigurasi)
-- [Penggunaan](#penggunaan)
-- [Keamanan](#keamanan)
+- [Features](#features)
+- [How It Works](#how-it-works)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Security](#security)
 - [Troubleshooting](#troubleshooting)
-- [Pengembangan](#pengembangan)
-- [Struktur Repo](#struktur-repo)
-- [Lisensi](#lisensi)
+- [Development](#development)
+- [Repository Structure](#repository-structure)
+- [License](#license)
 
-## Fitur
+## Features
 
 - Auto stage perubahan dengan `git add -A`, atau staging interaktif via `git add -p`.
 - Generate commit subject satu baris melalui Ollama `/api/chat`.
@@ -35,7 +35,7 @@ CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 - Lock per repository agar dua proses `git-ai` tidak berjalan bersamaan.
 - CI GitHub Actions untuk validasi syntax Bash, ShellCheck, dan output help.
 
-## Cara Kerja
+## How It Works
 
 ```mermaid
 flowchart LR
@@ -57,7 +57,7 @@ flowchart LR
 
 Commit message yang dibuat sengaja dibatasi menjadi subject satu baris tanpa body dan footer. Batas panjang default subject adalah `120` karakter.
 
-## Prasyarat
+## Prerequisites
 
 Wajib tersedia di mesin yang menjalankan CLI:
 
@@ -88,7 +88,7 @@ ollama serve
 ollama pull gemma4:e4b
 ```
 
-## Instalasi
+## Installation
 
 Clone repository:
 
@@ -122,7 +122,7 @@ Uninstall:
 make uninstall
 ```
 
-## Konfigurasi
+## Configuration
 
 Konfigurasi utama ada di [`git-ai.conf`](git-ai.conf). File ini berada satu folder dengan executable atau symlink `git-ai`, dan akan dibaca otomatis saat CLI dijalankan.
 
@@ -155,7 +155,7 @@ Jika `DEFAULT_OLLAMA_HOST` dikosongkan, script akan mencoba membaca `OLLAMA_HOST
 
 Jangan menyimpan secret di `git-ai.conf`.
 
-## Penggunaan
+## Usage
 
 Jalankan dari dalam repository Git yang memiliki perubahan:
 
@@ -219,7 +219,7 @@ git-ai --no-verify
 git-ai --debug
 ```
 
-## Keamanan
+## Security
 
 `git-ai` memiliki dua lapis proteksi saat mendeteksi potensi secret:
 
@@ -260,7 +260,7 @@ Catatan penting:
 | Hook Git menggagalkan commit | Pre-commit/pre-push hook gagal. | Perbaiki temuan hook, atau gunakan `--no-verify` jika memang disengaja. |
 | Push gagal | Branch belum punya remote, akses SSH salah, atau remote menolak push. | Cek `git remote -v`, akses SSH, dan status branch. |
 
-## Pengembangan
+## Development
 
 Validasi lokal:
 
@@ -282,7 +282,7 @@ Untuk mencoba tanpa membuat commit:
 ./git-ai.sh --dry-run --no-push
 ```
 
-## Struktur Repo
+## Repository Structure
 
 ```text
 .
@@ -292,6 +292,6 @@ Untuk mencoba tanpa membuat commit:
 `-- git-ai.sh                 # CLI utama
 ```
 
-## Lisensi
+## License
 
 Project ini menggunakan MIT License. Lihat [`LICENSE`](LICENSE) untuk teks lisensi lengkap.
