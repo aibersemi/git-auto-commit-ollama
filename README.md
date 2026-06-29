@@ -294,4 +294,4 @@ Untuk mencoba tanpa membuat commit:
 
 ## Lisensi
 
-Belum ada file `LICENSE` di repository ini. Tambahkan lisensi sebelum mendistribusikan project ke publik.
+Project ini menggunakan MIT License. Lihat [`LICENSE`](LICENSE) untuk teks lisensi lengkap.
