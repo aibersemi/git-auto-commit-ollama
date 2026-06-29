@@ -16,7 +16,7 @@ CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
-- [Security](#security)
+- [Security](SECURITY.md)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Repository Structure](#repository-structure)
@@ -218,36 +218,6 @@ git-ai --no-verify
 # Tampilkan log debug
 git-ai --debug
 ```
-
-## Security
-
-`git-ai` memiliki dua lapis proteksi saat mendeteksi potensi secret:
-
-- Secret guard pada staged changes akan membatalkan commit jika baris tambahan terlihat seperti token, password, private key, atau credential lain.
-- Safe mode akan menghindari pengiriman diff detail ke Ollama saat pola sensitif terdeteksi.
-
-Jika `gitleaks` tersedia, script juga menjalankan:
-
-```bash
-gitleaks protect --staged --redact --no-banner
-```
-
-Override tersedia, tetapi gunakan hanya untuk kasus yang benar-benar disengaja:
-
-```bash
-# Izinkan commit walau secret scanner menemukan temuan
-git-ai --allow-secret-commit
-
-# Tetap kirim diff detail ke AI walau pola sensitif terdeteksi
-git-ai --force-diff
-```
-
-Catatan penting:
-
-- Prefer jalankan Ollama secara lokal atau di jaringan internal tepercaya.
-- Review perubahan sebelum commit, terutama untuk file konfigurasi dan environment.
-- Tambahkan `.env`, credential, dan artifact sensitif lain ke `.gitignore`.
-- Gunakan `--dry-run` atau `--interactive` untuk perubahan yang berisiko.
 
 ## Troubleshooting
 

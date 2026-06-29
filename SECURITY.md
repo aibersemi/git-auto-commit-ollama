@@ -5,6 +5,7 @@
 ## Table of Contents
 
 - [Supported Versions](#supported-versions)
+- [Safe Usage](#safe-usage)
 - [Reporting a Vulnerability](#reporting-a-vulnerability)
 - [What to Include](#what-to-include)
 - [Scope](#scope)
@@ -24,6 +25,36 @@ Repository ini belum memakai release tag publik. Dukungan keamanan mengikuti bra
 | Fork lokal yang dimodifikasi | Best effort | Sertakan diff non-sensitif jika laporan hanya terjadi di fork. |
 
 Jika rilis/tag resmi ditambahkan nanti, tabel ini harus diperbarui untuk menjelaskan versi yang masih menerima patch keamanan.
+
+## Safe Usage
+
+`git-ai` memiliki dua lapis proteksi saat mendeteksi potensi secret:
+
+- Secret guard pada staged changes akan membatalkan commit jika baris tambahan terlihat seperti token, password, private key, atau credential lain.
+- Safe mode akan menghindari pengiriman diff detail ke Ollama saat pola sensitif terdeteksi.
+
+Jika `gitleaks` tersedia, script juga menjalankan:
+
+```bash
+gitleaks protect --staged --redact --no-banner
+```
+
+Override tersedia, tetapi gunakan hanya untuk kasus yang benar-benar disengaja:
+
+```bash
+# Izinkan commit walau secret scanner menemukan temuan
+git-ai --allow-secret-commit
+
+# Tetap kirim diff detail ke AI walau pola sensitif terdeteksi
+git-ai --force-diff
+```
+
+Catatan penting:
+
+- Prefer jalankan Ollama secara lokal atau di jaringan internal tepercaya.
+- Review perubahan sebelum commit, terutama untuk file konfigurasi dan environment.
+- Tambahkan `.env`, credential, dan artifact sensitif lain ke `.gitignore`.
+- Gunakan `--dry-run` atau `--interactive` untuk perubahan yang berisiko.
 
 ## Reporting a Vulnerability
 
@@ -116,12 +147,12 @@ Jangan mempublikasikan detail exploit sebelum fix tersedia atau sebelum ada kese
 
 ## Security Design Notes
 
-Beberapa prinsip keamanan yang harus dijaga saat mengubah project:
+Selain panduan penggunaan aman di atas, beberapa prinsip keamanan yang harus dijaga saat mengubah project:
 
-- Safe mode dan secret guard harus tetap konservatif secara default.
-- Override seperti `--force-diff` dan `--allow-secret-commit` harus tetap eksplisit.
+- Default proteksi tidak boleh dilemahkan tanpa alasan teknis yang kuat.
+- Override berisiko harus membutuhkan aksi eksplisit pengguna.
 - Output debug harus berguna untuk diagnosis tanpa membocorkan credential.
 - Dependensi wajib harus tetap sedikit dan mudah diaudit.
 - Network call baru harus dibahas eksplisit sebelum diterima.
 
-Panduan penggunaan aman untuk pengguna tetap berada di [`README.md#security`](README.md#security), sedangkan checklist kontribusi berada di [`CONTRIBUTING.md#checklist`](CONTRIBUTING.md#checklist).
+Checklist kontribusi berada di [`CONTRIBUTING.md#checklist`](CONTRIBUTING.md#checklist).

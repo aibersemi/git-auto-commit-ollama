@@ -10,7 +10,8 @@ Terima kasih sudah ingin berkontribusi ke `git-auto-commit-ollama`. Panduan ini 
 - [Testing](#testing)
 - [Issue Guidelines](#issue-guidelines)
 - [Pull Request Guidelines](#pull-request-guidelines)
-- [Security](#security)
+- [Security Policy](SECURITY.md)
+- [Sensitive Changes](#sensitive-changes)
 - [Documentation](#documentation)
 - [Checklist](#checklist)
 
@@ -125,7 +126,7 @@ Pull request sebaiknya berisi:
 
 Jaga PR tetap kecil. Jika satu perubahan membutuhkan refactor besar dan behavior change, pisahkan menjadi beberapa PR yang bisa ditinjau satu per satu.
 
-## Security
+## Sensitive Changes
 
 Untuk vulnerability, threat surface, atau perubahan yang menyentuh secret handling, ikuti [`SECURITY.md`](SECURITY.md). Di pull request, jelaskan dampak keamanan dan pengujian tambahan yang dilakukan.
 
