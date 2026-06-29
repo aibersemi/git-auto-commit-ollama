@@ -164,7 +164,6 @@ else
 fi
 
 info()    { echo -e "${BLUE}$*${NC}" 1>&2; }
-success() { echo -e "${GREEN}$*${NC}" 1>&2; }
 warn()    { echo -e "${YELLOW}$*${NC}" 1>&2; }
 err()     { echo -e "${RED}$*${NC}" 1>&2; }
 die()     { err "Error: $*"; live_status_stop 2>/dev/null || true; spinner_stop 2>/dev/null; exit 1; }
@@ -337,18 +336,6 @@ step_ok() {
 
 step_info() {
   echo -e "  ${DIM}$*${NC}" >&2
-}
-
-progress_bar() {
-  local current="$1" total="$2" label="${3:-}"
-  [[ "$IS_TTY" -eq 1 ]] || return 0
-  [[ "$total" -gt 0 ]] || return 0
-  local width=10
-  local filled=$((current * width / total))
-  local bar="" i
-  for ((i=0; i<filled; i++)); do bar+="█"; done
-  for ((i=filled; i<width; i++)); do bar+="░"; done
-  printf '\r  %b[%s]%b %d/%d %s' "$CYAN" "$bar" "$NC" "$current" "$total" "$label" >&2
 }
 
 show_banner() {
@@ -1003,19 +990,6 @@ build_file_analysis_batch_prompt() {
   done
 
   printf '%s' "$prompt"
-}
-
-build_file_analysis_batch_label() {
-  local start="$1"
-  local count="$2"
-  local end=$((start + count))
-  local i label=""
-
-  for ((i=start; i<end; i++)); do
-    label+="${BATCH_ANALYSIS_FILE_NAMES[$i]}, "
-  done
-
-  printf '%s' "${label%, }"
 }
 
 run_file_analysis_batch() {
