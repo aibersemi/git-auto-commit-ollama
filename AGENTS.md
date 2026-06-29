@@ -10,7 +10,6 @@ Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perl
 
 - Gunakan Bahasa Indonesia sebagai bahasa utama dalam percakapan, komentar kode, commit message, penjelasan, ringkasan kerja, dan dokumentasi.
 - Bahasa Inggris boleh digunakan untuk istilah teknis, judul dokumen, heading, nama API, nama library, command, error message, nama file, nama branch, atau konsep yang lebih jelas jika tetap ditulis dalam bahasa aslinya.
-- Untuk komentar kode baru, ikuti gaya file sekitar. Tambahkan komentar hanya saat konteks lokal tidak mudah dibaca dari kode.
 
 ## Repo Map
 
