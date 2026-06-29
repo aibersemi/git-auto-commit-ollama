@@ -1,0 +1,170 @@
+# Security Policy
+
+`git-auto-commit-ollama` adalah Bash CLI yang membaca Git diff, membuat commit message melalui Ollama, lalu dapat menjalankan `git commit` dan `git push`. Karena tool ini menyentuh Git state, staged changes, secret scanning, dan endpoint AI lokal/internal, laporan keamanan diprioritaskan untuk dampak terhadap kerahasiaan, integritas, dan kontrol atas repository pengguna.
+
+## Daftar Isi
+
+- [Supported Versions](#supported-versions)
+- [Reporting a Vulnerability](#reporting-a-vulnerability)
+- [What to Include](#what-to-include)
+- [Scope](#scope)
+- [Out of Scope](#out-of-scope)
+- [Disclosure Process](#disclosure-process)
+- [Security Design Notes](#security-design-notes)
+- [User Hardening Guide](#user-hardening-guide)
+- [Maintainer Checklist](#maintainer-checklist)
+
+## Supported Versions
+
+Repository ini belum memakai release tag publik. Dukungan keamanan mengikuti branch `main` dan versi CLI terbaru yang ada di `git-ai.sh`.
+
+| Version / branch | Supported | Notes |
+| --- | --- | --- |
+| `main` | Yes | Target utama untuk patch keamanan. |
+| `1.5.x` | Yes | Seri saat ini berdasarkan `VERSION="1.5.1"`. |
+| `< 1.5` | No | Update ke versi terbaru sebelum melaporkan kecuali isu juga berlaku di `main`. |
+| Fork lokal yang dimodifikasi | Best effort | Sertakan diff non-sensitif jika laporan hanya terjadi di fork. |
+
+Jika rilis/tag resmi ditambahkan nanti, tabel ini harus diperbarui untuk menjelaskan versi yang masih menerima patch keamanan.
+
+## Reporting a Vulnerability
+
+Laporkan kerentanan secara privat melalui GitHub Security Advisories:
+
+```text
+https://github.com/aibersemi/git-auto-commit-ollama/security/advisories/new
+```
+
+Jika private vulnerability reporting belum tersedia untuk repository ini, jangan buka issue publik berisi detail exploit, secret, atau proof of concept penuh. Buat issue publik minimal untuk meminta kontak keamanan privat, atau hubungi maintainer melalui kanal privat organisasi yang tersedia.
+
+Gunakan issue publik hanya untuk bug non-keamanan seperti typo dokumentasi, error help output, atau masalah usability yang tidak menimbulkan risiko kerahasiaan, integritas, atau akses tidak sah.
+
+## What to Include
+
+Sertakan informasi berikut agar laporan bisa ditriage cepat:
+
+- Versi script dari `git-ai --version`.
+- Commit hash atau branch yang diuji.
+- OS, shell, dan versi `git`, `curl`, `jq`, serta `flock`.
+- Apakah `gitleaks` dan `ollama` CLI tersedia.
+- Konfigurasi non-sensitif dari `git-ai.conf`.
+- Command yang dijalankan.
+- Langkah reproduksi di repository sementara.
+- Dampak keamanan yang jelas.
+- Perilaku aktual dan perilaku yang diharapkan.
+- Log yang sudah disensor.
+
+Jangan sertakan:
+
+- Secret valid, token, password, private key, cookie, session, atau credential internal.
+- Diff repository privat yang tidak boleh dibagikan.
+- URL internal, hostname internal, username, atau path produksi yang sensitif.
+- Payload yang merusak data atau menjalankan aksi destruktif.
+
+Proof of concept yang ideal memakai repository sementara:
+
+```bash
+tmpdir=$(mktemp -d)
+git init "$tmpdir"
+cd "$tmpdir"
+git config user.name "security test"
+git config user.email "security-test@example.invalid"
+printf 'example\n' > sample.txt
+git add sample.txt
+/path/to/git-auto-commit-ollama/git-ai.sh --dry-run --no-push --no-banner
+```
+
+## Scope
+
+Laporan berikut dianggap in scope:
+
+- Diff detail atau data sensitif tetap terkirim ke Ollama saat safe mode seharusnya aktif.
+- Secret guard gagal memblokir token, private key, password, atau credential yang jelas pada staged additions.
+- Opsi seperti `--force-diff` atau `--allow-secret-commit` aktif tanpa aksi eksplisit pengguna.
+- Command injection, argument injection, atau shell evaluation yang bisa dipicu oleh nama file, diff, branch, remote, config, atau output model.
+- Perubahan Git state yang tidak diminta, seperti commit, staging, atau push saat `--dry-run`, `--no-stage`, atau `--no-push` semestinya mencegahnya.
+- Race condition atau lock bypass yang memungkinkan dua proses `git-ai` merusak Git state repository yang sama.
+- Penulisan file sementara, lock file, atau cleanup yang bisa merusak file di luar area yang dimaksud.
+- Fallback host Ollama atau pembacaan service environment yang menyebabkan data dikirim ke endpoint yang tidak dikonfigurasi.
+- Log debug, error output, atau summary yang membocorkan secret staged changes.
+- Regressions pada validasi konfigurasi yang membuat perilaku keamanan berubah diam-diam.
+
+## Out of Scope
+
+Hal berikut biasanya tidak diproses sebagai kerentanan keamanan project ini:
+
+- Kualitas commit message, hallucination model, atau subject commit yang kurang akurat.
+- Perilaku yang hanya terjadi setelah pengguna sengaja menjalankan `--force-diff`, `--allow-secret-commit`, atau `--no-verify`.
+- Kerentanan pada Git, Ollama, curl, jq, flock, gitleaks, shell, OS, atau model AI pihak ketiga.
+- Workstation, repository, atau user account yang sudah dikuasai attacker sebelum `git-ai` dijalankan.
+- Repository yang berisi script hook berbahaya jika pengguna memilih menjalankan hooks Git.
+- Leak data dari endpoint Ollama yang dikonfigurasi sendiri oleh pengguna di luar kendali project ini.
+- Social engineering, phishing, spam, brute force, atau serangan terhadap akun maintainer.
+- Denial of service yang hanya menghabiskan waktu lokal pada input sangat besar tanpa dampak kerahasiaan atau integritas.
+- Permintaan bounty. Project ini belum memiliki program bounty.
+
+Jika ragu, laporkan secara privat. Maintainer akan mengklasifikasikan apakah laporan tersebut security issue, bug biasa, atau hardening request.
+
+## Disclosure Process
+
+Target respons:
+
+| Stage | Target |
+| --- | --- |
+| Acknowledgement | Dalam 7 hari kalender. |
+| Triage awal | Dalam 14 hari kalender. |
+| Update status | Setidaknya setiap 14 hari setelah triage jika isu valid belum selesai. |
+| Fix target | Sesuai severity dan kompleksitas. Isu high impact diprioritaskan. |
+
+Proses penanganan:
+
+1. Maintainer menerima laporan privat dan mengonfirmasi penerimaan.
+2. Maintainer mencoba reproduksi pada `main`.
+3. Maintainer menentukan severity, scope, dan versi terdampak.
+4. Patch disiapkan di branch/private fork jika diperlukan.
+5. Reporter diminta memverifikasi fix bila memungkinkan.
+6. Setelah fix tersedia, maintainer mempublikasikan advisory atau catatan rilis dengan detail secukupnya untuk mitigasi.
+
+Jangan mempublikasikan detail exploit sebelum fix tersedia atau sebelum ada kesepakatan disclosure dengan maintainer.
+
+## Security Design Notes
+
+Beberapa prinsip keamanan yang harus dijaga saat mengubah project:
+
+- Default harus konservatif: jangan mengirim diff detail saat pola sensitif terdeteksi.
+- `--dry-run` tidak boleh membuat commit, push, atau perubahan permanen pada Git state.
+- `--no-push` harus selalu mencegah push.
+- `--no-stage` harus memakai staged changes yang sudah ada dan tidak melakukan staging otomatis.
+- `--force-diff` dan `--allow-secret-commit` harus tetap berupa override eksplisit.
+- Config file adalah konfigurasi runtime, bukan tempat menyimpan secret.
+- Output debug harus berguna untuk diagnosis tanpa membocorkan credential.
+- Dependensi wajib harus tetap sedikit dan mudah diaudit.
+- Network call baru harus dibahas eksplisit sebelum diterima.
+
+## User Hardening Guide
+
+Rekomendasi untuk pengguna:
+
+- Jalankan Ollama lokal atau endpoint internal yang tepercaya.
+- Hindari `FALLBACK_OLLAMA_HOST` jika tidak diperlukan.
+- Jangan menyimpan secret di `git-ai.conf`.
+- Pasang `gitleaks` untuk secret scanning tambahan.
+- Gunakan `git-ai --dry-run` untuk repository sensitif.
+- Gunakan `git-ai --interactive` jika ingin review commit message sebelum commit.
+- Gunakan `git-ai --no-push` saat bekerja pada branch yang belum siap dipublikasikan.
+- Review `git diff --cached` sebelum commit pada perubahan konfigurasi, environment, CI, deployment, dan credential.
+- Pastikan `.env`, key file, backup, log, dan artifact sensitif masuk `.gitignore`.
+- Batasi akses filesystem dan network untuk environment otomatis yang menjalankan `git-ai`.
+
+## Maintainer Checklist
+
+Sebelum menerima perubahan yang menyentuh area keamanan:
+
+- `bash -n git-ai.sh` lulus.
+- `shellcheck git-ai.sh` lulus.
+- `./git-ai.sh --help` masih berjalan.
+- Secret guard diuji untuk kasus positif dan negatif.
+- Safe mode diuji tanpa mengirim diff detail.
+- `--dry-run`, `--no-push`, dan `--no-stage` tidak mengalami regresi.
+- Dokumentasi README, CONTRIBUTING, dan SECURITY diperbarui jika perilaku berubah.
+- Tidak ada secret, endpoint internal sensitif, atau log privat di commit.
