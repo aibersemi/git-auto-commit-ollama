@@ -24,7 +24,7 @@
 set -euo pipefail
 
 # ===== Version =====
-VERSION="1.4.17"
+VERSION="1.4.18"
 
 # ===== Konfigurasi =====
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -55,18 +55,11 @@ DO_FILE_ANALYSIS=1
 USE_STRUCTURED_OUTPUT=1
 
 # Fallback minimal jika file config belum tersedia atau nilainya kosong.
-# Opsi request yang juga dikontrol service Ollama dibiarkan kosong agar
-# klien tidak menimpa default dari /etc/systemd/system/ollama.service.
 DEFAULT_MODEL="${DEFAULT_MODEL:-gemma4:e4b}"
-DEFAULT_OLLAMA_HOST="${DEFAULT_OLLAMA_HOST:-http://localhost:11434}"
-FALLBACK_OLLAMA_HOST="${FALLBACK_OLLAMA_HOST:-http://10.50.0.2:11434}"
-OLLAMA_TEMPERATURE="${OLLAMA_TEMPERATURE:-0.2}"
-OLLAMA_THINK="${OLLAMA_THINK:-false}"
-OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-}"
-OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-}"
-OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-}"
-OLLAMA_NUM_PREDICT="${OLLAMA_NUM_PREDICT:-2048}"
-OLLAMA_MAX_NUM_PREDICT="${OLLAMA_MAX_NUM_PREDICT:-2048}"
+AI_TEMPERATURE="${AI_TEMPERATURE:-${OLLAMA_TEMPERATURE:-0.2}}"
+AI_THINK="${AI_THINK:-${OLLAMA_THINK:-false}}"
+AI_NUM_PREDICT="${AI_NUM_PREDICT:-${OLLAMA_NUM_PREDICT:-2048}}"
+AI_MAX_NUM_PREDICT="${AI_MAX_NUM_PREDICT:-${OLLAMA_MAX_NUM_PREDICT:-2048}}"
 FILE_ANALYSIS_LIMIT="${FILE_ANALYSIS_LIMIT:-6}"
 FILE_ANALYSIS_NUM_PREDICT_PER_FILE="${FILE_ANALYSIS_NUM_PREDICT_PER_FILE:-512}"
 FILE_ANALYSIS_PARALLELISM="${FILE_ANALYSIS_PARALLELISM:-4}"
@@ -77,11 +70,74 @@ MAX_TOTAL_HUNKS_CHARS="${MAX_TOTAL_HUNKS_CHARS:-3500}"
 
 # Model selalu dikunci ke DEFAULT_MODEL dari config.
 OLLAMA_MODEL="$DEFAULT_MODEL"
-OLLAMA_HOST="${OLLAMA_HOST:-$DEFAULT_OLLAMA_HOST}"
+OLLAMA_SERVICE_FILE="/etc/systemd/system/ollama.service"
+
+read_ollama_service_env() {
+  local key="$1"
+  local line value
+
+  [[ -r "$OLLAMA_SERVICE_FILE" ]] || return 1
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*Environment= ]] || continue
+    line="${line#*=}"
+    line="${line%$'\r'}"
+    line="${line#\"}"
+    line="${line%\"}"
+    [[ "$line" == "$key="* ]] || continue
+    value="${line#"$key="}"
+    printf '%s' "$value"
+    return 0
+  done < "$OLLAMA_SERVICE_FILE"
+
+  return 1
+}
+
+normalize_ollama_host_url() {
+  local raw="${1:-}"
+  local scheme="http"
+
+  if [[ -z "$raw" ]]; then
+    printf '%s' "http://localhost:11434"
+    return 0
+  fi
+
+  raw="${raw#\"}"
+  raw="${raw%\"}"
+  raw="${raw%/}"
+
+  if [[ "$raw" == http://* ]]; then
+    raw="${raw#http://}"
+  elif [[ "$raw" == https://* ]]; then
+    scheme="https"
+    raw="${raw#https://}"
+  fi
+
+  case "$raw" in
+    0.0.0.0:*) raw="127.0.0.1:${raw#0.0.0.0:}" ;;
+    0.0.0.0) raw="127.0.0.1" ;;
+    "[::]:"*) raw="127.0.0.1:${raw#"[::]:"}" ;;
+    "[::]") raw="127.0.0.1" ;;
+  esac
+
+  printf '%s://%s' "$scheme" "$raw"
+}
+
+resolve_ollama_base_url() {
+  local service_host
+
+  if service_host=$(read_ollama_service_env "OLLAMA_HOST"); then
+    normalize_ollama_host_url "$service_host"
+    return 0
+  fi
+
+  normalize_ollama_host_url ""
+}
+
+OLLAMA_BASE_URL="$(resolve_ollama_base_url)"
 
 # URLs turunan (harus setelah config)
-OLLAMA_API_URL="${OLLAMA_HOST}/api/chat"
-OLLAMA_TAGS_URL="${OLLAMA_HOST}/api/tags"
+OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
+OLLAMA_TAGS_URL="${OLLAMA_BASE_URL}/api/tags"
 
 # ===== Warna Output (auto disable jika non-tty / NO_COLOR) =====
 IS_TTY=0
@@ -108,8 +164,8 @@ die()     { err "Error: $*"; live_status_stop 2>/dev/null || true; spinner_stop 
 dbg()     { if [[ "${DEBUG}" -eq 1 ]]; then echo -e "${CYAN}[debug]${NC} $*" 1>&2; fi; }
 
 refresh_ollama_urls() {
-  OLLAMA_API_URL="${OLLAMA_HOST}/api/chat"
-  OLLAMA_TAGS_URL="${OLLAMA_HOST}/api/tags"
+  OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
+  OLLAMA_TAGS_URL="${OLLAMA_BASE_URL}/api/tags"
 }
 
 preselect_ollama_model_for_banner() {
@@ -334,17 +390,16 @@ Config:
 
 Config variables:
   DEFAULT_MODEL               Model Ollama yang selalu dipakai
-  OLLAMA_HOST                 Override host aktif (default dari DEFAULT_OLLAMA_HOST)
-  OLLAMA_TEMPERATURE          Default ${OLLAMA_TEMPERATURE}
-  OLLAMA_THINK                Default false (opsi: false|true|low|medium|high)
-  OLLAMA_KEEP_ALIVE           Kosong = ikuti default service/server; contoh override: 5m
-  OLLAMA_NUM_CTX              Kosong = ikuti default service/server; contoh override: 4096
-  OLLAMA_NUM_PARALLEL         Kosong = ikuti default service/server; contoh override: 1
-  OLLAMA_NUM_PREDICT          Token output request (maks: ${OLLAMA_MAX_NUM_PREDICT})
-  OLLAMA_MAX_NUM_PREDICT      Batas maksimum num_predict
+  AI_TEMPERATURE              Default ${AI_TEMPERATURE}
+  AI_THINK                    Default false (opsi: false|true|low|medium|high)
+  AI_NUM_PREDICT              Token output request (maks: ${AI_MAX_NUM_PREDICT})
+  AI_MAX_NUM_PREDICT          Batas maksimum num_predict
   FILE_ANALYSIS_NUM_PREDICT_PER_FILE
                               Token output analisis per file (default: ${FILE_ANALYSIS_NUM_PREDICT_PER_FILE})
   FILE_ANALYSIS_PARALLELISM   Jumlah request analisis file paralel (default: ${FILE_ANALYSIS_PARALLELISM})
+
+Ollama service:
+  Host/runtime Ollama mengikuti ${OLLAMA_SERVICE_FILE}.
 HELP
 }
 
@@ -427,46 +482,32 @@ check_deps() {
   if [[ ! "$FILE_ANALYSIS_PARALLELISM" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_PARALLELISM" -lt 1 ]]; then
     die "FILE_ANALYSIS_PARALLELISM harus angka >= 1."
   fi
-  if [[ -n "$OLLAMA_NUM_CTX" ]] && [[ ! "$OLLAMA_NUM_CTX" =~ ^[0-9]+$ ]]; then
-    die "OLLAMA_NUM_CTX harus angka."
+  if [[ -n "$AI_NUM_PREDICT" ]] && [[ ! "$AI_NUM_PREDICT" =~ ^[0-9]+$ ]]; then
+    die "AI_NUM_PREDICT harus angka."
   fi
-  if [[ -n "$OLLAMA_NUM_PARALLEL" ]] && [[ ! "$OLLAMA_NUM_PARALLEL" =~ ^[0-9]+$ || "$OLLAMA_NUM_PARALLEL" -lt 1 ]]; then
-    die "OLLAMA_NUM_PARALLEL harus angka >= 1."
+  if [[ ! "$AI_MAX_NUM_PREDICT" =~ ^[0-9]+$ ]] || [[ "$AI_MAX_NUM_PREDICT" -lt 1 ]]; then
+    die "AI_MAX_NUM_PREDICT harus angka >= 1."
   fi
-  if [[ -n "$OLLAMA_NUM_PREDICT" ]] && [[ ! "$OLLAMA_NUM_PREDICT" =~ ^[0-9]+$ ]]; then
-    die "OLLAMA_NUM_PREDICT harus angka."
+  if [[ -n "$AI_NUM_PREDICT" && "$AI_NUM_PREDICT" -gt "$AI_MAX_NUM_PREDICT" ]]; then
+    warn "AI_NUM_PREDICT melebihi ${AI_MAX_NUM_PREDICT}; memakai batas maksimum."
+    AI_NUM_PREDICT="$AI_MAX_NUM_PREDICT"
   fi
-  if [[ ! "$OLLAMA_MAX_NUM_PREDICT" =~ ^[0-9]+$ ]] || [[ "$OLLAMA_MAX_NUM_PREDICT" -lt 1 ]]; then
-    die "OLLAMA_MAX_NUM_PREDICT harus angka >= 1."
+  if [[ "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE" -gt "$AI_MAX_NUM_PREDICT" ]]; then
+    warn "FILE_ANALYSIS_NUM_PREDICT_PER_FILE melebihi ${AI_MAX_NUM_PREDICT}; memakai batas maksimum."
+    FILE_ANALYSIS_NUM_PREDICT_PER_FILE="$AI_MAX_NUM_PREDICT"
   fi
-  if [[ -n "$OLLAMA_NUM_PREDICT" && "$OLLAMA_NUM_PREDICT" -gt "$OLLAMA_MAX_NUM_PREDICT" ]]; then
-    warn "OLLAMA_NUM_PREDICT melebihi ${OLLAMA_MAX_NUM_PREDICT}; memakai batas maksimum."
-    OLLAMA_NUM_PREDICT="$OLLAMA_MAX_NUM_PREDICT"
+  if [[ ! "$AI_TEMPERATURE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    die "AI_TEMPERATURE harus angka (contoh 0.2)."
   fi
-  if [[ "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE" -gt "$OLLAMA_MAX_NUM_PREDICT" ]]; then
-    warn "FILE_ANALYSIS_NUM_PREDICT_PER_FILE melebihi ${OLLAMA_MAX_NUM_PREDICT}; memakai batas maksimum."
-    FILE_ANALYSIS_NUM_PREDICT_PER_FILE="$OLLAMA_MAX_NUM_PREDICT"
-  fi
-  if [[ ! "$OLLAMA_TEMPERATURE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    die "OLLAMA_TEMPERATURE harus angka (contoh 0.2)."
-  fi
-  if [[ ! "$OLLAMA_THINK" =~ ^(false|true|low|medium|high)$ ]]; then
-    die "OLLAMA_THINK harus salah satu: false, true, low, medium, high."
+  if [[ ! "$AI_THINK" =~ ^(false|true|low|medium|high)$ ]]; then
+    die "AI_THINK harus salah satu: false, true, low, medium, high."
   fi
 
-  spinner_start "Menghubungi Ollama di ${OLLAMA_HOST}..."
+  spinner_start "Menghubungi Ollama di ${OLLAMA_BASE_URL}..."
   local tags_json
   if ! tags_json=$(curl -sSf --max-time 10 "$OLLAMA_TAGS_URL" 2>/dev/null); then
     spinner_stop
-    if [[ "$OLLAMA_HOST" == "$DEFAULT_OLLAMA_HOST" && "$DEFAULT_OLLAMA_HOST" != "$FALLBACK_OLLAMA_HOST" ]]; then
-      warn "Ollama tidak dapat diakses di $OLLAMA_HOST. Mencoba fallback ${FALLBACK_OLLAMA_HOST}..."
-      OLLAMA_HOST="$FALLBACK_OLLAMA_HOST"
-      refresh_ollama_urls
-      spinner_start "Menghubungi Ollama di ${OLLAMA_HOST}..."
-      tags_json=$(curl -sSf --max-time 10 "$OLLAMA_TAGS_URL" 2>/dev/null) || { spinner_stop; die "Ollama tidak dapat diakses di $OLLAMA_HOST (tags). Pastikan server berjalan."; }
-    else
-      die "Ollama tidak dapat diakses di $OLLAMA_HOST (tags). Pastikan server berjalan."
-    fi
+    die "Ollama tidak dapat diakses di $OLLAMA_BASE_URL (tags). Pastikan service berjalan dan ${OLLAMA_SERVICE_FILE} benar."
   fi
   spinner_stop
 
@@ -484,7 +525,7 @@ check_deps() {
     fi
     if command -v ollama >/dev/null 2>&1; then
       warn "Pulling DEFAULT_MODEL: $OLLAMA_MODEL..."
-      OLLAMA_HOST="$OLLAMA_HOST" ollama pull "$OLLAMA_MODEL"
+      OLLAMA_HOST="$OLLAMA_BASE_URL" ollama pull "$OLLAMA_MODEL"
     else
       die "Model '$OLLAMA_MODEL' tidak ada di server dan CLI 'ollama' tidak ditemukan untuk melakukan pull."
     fi
@@ -1368,9 +1409,9 @@ cap_num_predict() {
   local num_predict="$1"
 
   [[ -z "$num_predict" ]] && { printf '%s' "$num_predict"; return 0; }
-  if [[ "$num_predict" =~ ^[0-9]+$ && "$OLLAMA_MAX_NUM_PREDICT" =~ ^[0-9]+$ && "$num_predict" -gt "$OLLAMA_MAX_NUM_PREDICT" ]]; then
-    dbg "num_predict ${num_predict} melebihi batas ${OLLAMA_MAX_NUM_PREDICT}; memakai batas maksimum."
-    num_predict="$OLLAMA_MAX_NUM_PREDICT"
+  if [[ "$num_predict" =~ ^[0-9]+$ && "$AI_MAX_NUM_PREDICT" =~ ^[0-9]+$ && "$num_predict" -gt "$AI_MAX_NUM_PREDICT" ]]; then
+    dbg "num_predict ${num_predict} melebihi batas ${AI_MAX_NUM_PREDICT}; memakai batas maksimum."
+    num_predict="$AI_MAX_NUM_PREDICT"
   fi
 
   printf '%s' "$num_predict"
@@ -1382,20 +1423,14 @@ ollama_chat() {
   local format_json_schema="${3:-}"   # kosong = non-structured
   local max_time="${4:-120}"          # timeout curl (default 120s)
   # Argumen ke-5 dari versi lama tetap diterima, tetapi diabaikan.
-  local num_predict_override="${6:-}" # kosong = pakai OLLAMA_NUM_PREDICT
+  local num_predict_override="${6:-}" # kosong = pakai AI_NUM_PREDICT
 
   local options num_predict
-  num_predict="$OLLAMA_NUM_PREDICT"
+  num_predict="$AI_NUM_PREDICT"
   [[ -n "$num_predict_override" ]] && num_predict="$num_predict_override"
   num_predict=$(cap_num_predict "$num_predict")
 
-  options=$(jq -n --argjson temperature "$OLLAMA_TEMPERATURE" '{temperature:$temperature}')
-  if [[ -n "$OLLAMA_NUM_CTX" ]]; then
-    options=$(jq -c --argjson n "$OLLAMA_NUM_CTX" '. + {num_ctx:$n}' <<<"$options")
-  fi
-  if [[ -n "$OLLAMA_NUM_PARALLEL" ]]; then
-    options=$(jq -c --argjson n "$OLLAMA_NUM_PARALLEL" '. + {num_parallel:$n}' <<<"$options")
-  fi
+  options=$(jq -n --argjson temperature "$AI_TEMPERATURE" '{temperature:$temperature}')
   if [[ -n "$num_predict" ]]; then
     options=$(jq -c --argjson n "$num_predict" '. + {num_predict:$n}' <<<"$options")
   fi
@@ -1437,14 +1472,9 @@ ollama_chat() {
 
   # Default nothink: kirim kontrol think ke Ollama.
   payload=$(jq -c \
-    --arg think "$OLLAMA_THINK" \
+    --arg think "$AI_THINK" \
     '. + {think: (if $think == "true" then true elif $think == "false" then false else $think end)}' \
     <<<"$payload")
-
-  # keep_alive hanya jika di-set (biar tidak mengubah default server)
-  if [[ -n "$OLLAMA_KEEP_ALIVE" ]]; then
-    payload=$(jq -c --arg ka "$OLLAMA_KEEP_ALIVE" '. + {keep_alive:$ka}' <<<"$payload")
-  fi
 
   dbg "Ollama model: ${OLLAMA_MODEL}"
   dbg "Ollama options: $(jq -c '.options' <<<"$payload" 2>/dev/null || printf '{}')"
