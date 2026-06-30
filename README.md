@@ -1,8 +1,12 @@
+<div align="center">
+
 # Git Auto Commit Ollama
 
 [![CI](https://github.com/aibersemi/git-auto-commit-ollama/actions/workflows/ci.yml/badge.svg)](https://github.com/aibersemi/git-auto-commit-ollama/actions/workflows/ci.yml)
 ![Bash](https://img.shields.io/badge/Bash-CLI-4EAA25?logo=gnubash&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-local_AI-111827)
+
+</div>
 
 CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 
