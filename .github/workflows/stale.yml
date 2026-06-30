@@ -11,7 +11,7 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9
+      - uses: actions/stale@eb5cf3af3ac0a1aa4c9c45633dd1ae542a27a899 # v10.3.0
         with:
           stale-issue-message: 'Issue ini telah ditandai sebagai kedaluwarsa (stale) karena tidak ada aktivitas selama 60 hari. Jika masalah ini masih relevan, silakan tinggalkan komentar. Jika tidak, issue ini akan ditutup dalam 7 hari.'
           stale-pr-message: 'Pull Request ini telah ditandai sebagai kedaluwarsa karena tidak ada pembaruan selama 60 hari. Harap berikan pembaruan atau PR ini akan ditutup otomatis.'
