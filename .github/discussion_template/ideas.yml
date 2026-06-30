@@ -1,0 +1,22 @@
+title: "[Ide] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Punya ide cemerlang untuk meningkatkan `git-auto-commit-ollama`? 
+        Kami sangat ingin mendengarnya! Bagikan pemikiran Anda di bawah ini.
+  - type: textarea
+    id: ide
+    attributes:
+      label: Jelaskan Ide Anda
+      description: Ceritakan apa ide fitur atau perbaikan yang Anda pikirkan.
+      placeholder: "Contoh: Saya ingin ada opsi untuk menambahkan emoji otomatis di setiap commit message..."
+    validations:
+      required: true
+  - type: textarea
+    id: alasan
+    attributes:
+      label: Mengapa ini penting?
+      description: Bagaimana fitur/ide ini akan membantu Anda atau komunitas secara keseluruhan?
+    validations:
+      required: true

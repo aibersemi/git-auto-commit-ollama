@@ -1,0 +1,22 @@
+title: "[Tanya] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Terima kasih telah bertanya di komunitas `git-auto-commit-ollama`!
+        Silakan isi formulir di bawah ini agar kami dapat memberikan jawaban yang akurat.
+  - type: textarea
+    id: pertanyaan
+    attributes:
+      label: Apa yang ingin Anda tanyakan?
+      description: Jelaskan kebingungan atau pertanyaan Anda secara detail.
+      placeholder: "Contoh: Bagaimana cara mengganti default model dari gemma ke llama3?"
+    validations:
+      required: true
+  - type: input
+    id: versi
+    attributes:
+      label: Versi OS dan Ollama
+      description: Tuliskan OS (misal Ubuntu 22.04) dan versi Ollama Anda (jika relevan dengan pertanyaan).
+    validations:
+      required: false

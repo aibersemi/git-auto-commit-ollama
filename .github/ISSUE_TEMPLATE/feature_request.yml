@@ -1,0 +1,33 @@
+name: "✨ Permintaan Fitur"
+description: Ajukan ide untuk fitur baru atau penyempurnaan fitur yang ada
+title: "[Fitur]: "
+labels: ["enhancement"]
+assignees:
+  - aibersemi
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Kami selalu mencari cara untuk membuat tool ini lebih baik! Silakan ajukan ide fitur Anda di bawah ini.
+  - type: textarea
+    id: masalah
+    attributes:
+      label: Apakah fitur ini berkaitan dengan suatu masalah?
+      description: Jelaskan masalah apa yang membuat Anda menginginkan fitur ini.
+      placeholder: "Contoh: Saya sering merasa frustrasi ketika..."
+    validations:
+      required: true
+  - type: textarea
+    id: solusi
+    attributes:
+      label: Jelaskan solusi/fitur yang Anda inginkan
+      description: Tuliskan secara detail fitur seperti apa yang Anda bayangkan.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatif
+    attributes:
+      label: Alternatif yang sudah Anda coba (Opsional)
+      description: Apakah ada cara lain yang selama ini Anda gunakan untuk mengatasi masalah tersebut?
+    validations:
+      required: false

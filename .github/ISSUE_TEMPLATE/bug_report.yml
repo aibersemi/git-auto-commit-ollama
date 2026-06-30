@@ -1,0 +1,58 @@
+name: "🐛 Laporan Bug"
+description: Laporkan bug atau error pada git-auto-commit-ollama
+title: "[Bug]: "
+labels: ["bug"]
+assignees:
+  - aibersemi
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Terima kasih telah meluangkan waktu untuk melaporkan bug ini! Harap isi formulir di bawah ini dengan sebaik-baiknya.
+  - type: textarea
+    id: deskripsi
+    attributes:
+      label: Deskripsi Bug
+      description: Jelaskan dengan jelas dan singkat apa bug yang terjadi saat menggunakan git-ai.sh.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduksi
+    attributes:
+      label: Langkah-langkah Mereproduksi
+      description: Tuliskan langkah-langkah detail agar kami bisa mereproduksi bug ini di mesin kami.
+      value: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Hasil yang Diharapkan
+      description: Jelaskan apa yang seharusnya terjadi jika bug ini tidak ada.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Sistem Operasi
+      placeholder: "Contoh: Ubuntu 22.04 LTS"
+    validations:
+      required: true
+  - type: input
+    id: ollama_version
+    attributes:
+      label: Versi Ollama
+      placeholder: "Contoh: 0.1.28 (dapat dilihat dengan mengetik 'ollama --version')"
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Output / Log Error (Opsional)
+      description: Silakan salin (copy) log error dari terminal Anda ke sini.
+      render: shell
+    validations:
+      required: false

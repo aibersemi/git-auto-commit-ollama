@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Memantau pembaruan untuk GitHub Actions di .github/workflows/
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    reviewers:
+      - "aibersemi"
