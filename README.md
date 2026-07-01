@@ -5,6 +5,7 @@
 [![CI](https://github.com/aibersemi/git-auto-commit-ollama/actions/workflows/ci.yml/badge.svg)](https://github.com/aibersemi/git-auto-commit-ollama/actions/workflows/ci.yml)
 ![Bash](https://img.shields.io/badge/Bash-CLI-4EAA25?logo=gnubash&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-local_AI-111827)
+[![Saweria](https://img.shields.io/badge/Support-Saweria-F97316)](https://saweria.co/aibersemi)
 
 </div>
 
@@ -24,6 +25,7 @@ CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Repository Structure](#repository-structure)
+- [Support](#support)
 - [License](#license)
 
 ## Features
@@ -265,6 +267,10 @@ Untuk mencoba tanpa membuat commit:
 |-- git-ai.conf               # konfigurasi default runtime
 `-- git-ai.sh                 # CLI utama
 ```
+
+## Support
+
+Jika project ini membantu workflow Anda, dukungan bisa dikirim melalui [Saweria](https://saweria.co/aibersemi).
 
 ## License
 
