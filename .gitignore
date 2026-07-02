@@ -17,6 +17,7 @@ cache/
 *.tmp
 
 # Editor/OS
+.vscode/
 *.swp
 *.swo
 .DS_Store
