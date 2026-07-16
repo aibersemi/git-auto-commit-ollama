@@ -11,7 +11,7 @@
 
 CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 
-`git-ai` membantu workflow commit harian: staging perubahan, membaca konteks diff, meminta model Ollama membuat subject commit satu baris, lalu commit dan push. Tool ini cocok untuk server, workstation, atau repo internal yang ingin commit message tetap ringkas tanpa mengirim kode ke layanan AI eksternal.
+`git-ai` membantu workflow commit harian: staging perubahan, membaca konteks diff, meminta model Ollama membuat commit message Conventional Commit berbahasa Inggris, lalu commit dan push. Tool ini cocok untuk server, workstation, atau repo internal yang ingin commit message tetap informatif tanpa mengirim kode ke layanan AI eksternal.
 
 ## Table of Contents
 
@@ -31,9 +31,12 @@ CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 ## Features
 
 - Auto stage perubahan dengan `git add -A`, atau staging interaktif via `git add -p`.
-- Generate commit subject satu baris melalui Ollama `/api/chat`.
+- Spinner saat `git add -A` dan secret scan staged changes berjalan di terminal, dengan status teks pada output non-interaktif.
+- Generate commit message Conventional Commit melalui Ollama `/api/chat`.
+- Semua output CLI dan commit message dihasilkan dalam bahasa Inggris.
 - Structured output JSON Schema untuk hasil commit message yang lebih stabil.
 - Analisis per-file opsional supaya prompt tetap fokus pada perubahan penting.
+- Prioritaskan capability, API, integritas data, security, dan user flow; artefak generated hanya menjadi konteks pendukung.
 - Safe mode saat pola sensitif terdeteksi, sehingga diff detail tidak dikirim ke model.
 - Secret guard untuk staged changes, dengan dukungan tambahan `gitleaks` jika tersedia.
 - Auto-push ke remote upstream, atau set upstream pertama kali jika belum ada.
@@ -54,14 +57,16 @@ flowchart LR
   E --> F
   F --> G[Bangun konteks diff]
   G --> H[Analisis per-file opsional]
-  H --> I[Generate subject via Ollama]
+  H --> I[Generate commit message via Ollama]
   I --> J[git commit]
   J --> K{Push aktif?}
   K -->|ya| L[git push]
   K -->|tidak| M[Selesai]
 ```
 
-Commit message yang dibuat sengaja dibatasi menjadi subject satu baris tanpa body dan footer. Batas panjang default subject adalah `120` karakter.
+Commit message memakai format Conventional Commit tanpa scope: `<type>: <summary>`. Jika hanya satu file yang berubah, message hanya berisi subject. Jika lebih dari satu file berubah, message menambahkan 1-6 bullet penting setelah satu baris kosong. Batas total default message adalah `65536` karakter dan dapat diatur melalui `MAX_COMMIT_MESSAGE_LENGTH`; subject tidak dibatasi menjadi 72 atau 120 karakter.
+
+Saat source change dan artefak generated muncul bersamaan, `git-ai` memilih tema subject dari perubahan fungsional seperti capability domain, API, integritas data, security, atau user flow. File generated—misalnya client API, schema, snapshot, dan hasil codegen—tidak menjadi tema utama atau bullet mandiri, kecuali tidak ada source change lain.
 
 ## Prerequisites
 
@@ -144,7 +149,7 @@ Nilai default saat ini:
 | `AI_THINK` | `false` | Opsi thinking Ollama: `false`, `true`, `low`, `medium`, atau `high`. |
 | `AI_NUM_PREDICT` | `2048` | Token output request utama. |
 | `AI_MAX_NUM_PREDICT` | `2048` | Batas maksimum `num_predict`. |
-| `MAX_SUBJECT_LENGTH` | `120` | Panjang maksimal subject commit. |
+| `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Panjang maksimal seluruh commit message. |
 | `FILE_ANALYSIS_LIMIT` | `6` | Batas jumlah file untuk analisis per-file. |
 | `FILE_ANALYSIS_PARALLELISM` | `4` | Jumlah request analisis file paralel. |
 | `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `512` | Token output untuk analisis per-file. |

@@ -2,23 +2,23 @@
 #
 # git-ai.sh - Git AI Commit Assistant (Ollama)
 # ------------------------------------------------------
-# Ringkasan:
-# - Auto stage (opsional) -> generate commit message via Ollama -> commit -> push (opsional)
-# - Format message: 1 baris subject tanpa body/footer
-# - Safe mode: sembunyikan diff detail jika terdeteksi pola sensitif
-# - Optional analisis per-file (dibatasi) agar prompt lebih ringkas
-# - Structured output (Ollama `format`/JSON Schema) untuk hasil lebih stabil
+# Summary:
+# - Auto-stage (optional) -> generate a commit message with Ollama -> commit -> push (optional)
+# - Message format: Conventional Commit subject with an optional bullet body
+# - Safe mode: hide detailed diffs when sensitive patterns are detected
+# - Optional per-file analysis (limited) for a more concise prompt
+# - Structured output (Ollama `format`/JSON Schema) for more consistent results
 #
 # Dependencies: git, curl, jq, flock
 #
-# Usage cepat:
-#   /opt/services/utils/bin/git-ai.sh                 # stage all, generate commit, push
-#   /opt/services/utils/bin/git-ai.sh -n              # commit tanpa push
+# Quick usage:
+#   /opt/services/utils/bin/git-ai.sh                 # stage all, generate commit message, push
+#   /opt/services/utils/bin/git-ai.sh -n              # commit without pushing
 #   /opt/services/utils/bin/git-ai.sh -p              # git add -p
-#   /opt/services/utils/bin/git-ai.sh --dry-run       # hanya tampilkan commit message
+#   /opt/services/utils/bin/git-ai.sh --dry-run       # only display the commit message
 #
 # Config:
-#   bin/git-ai.conf                 # konfigurasi default di satu folder dengan script
+#   bin/git-ai.conf                 # default configuration next to this script
 #
 
 set -euo pipefail
@@ -26,15 +26,15 @@ set -euo pipefail
 # ===== Version =====
 VERSION="1.5.1"
 
-# ===== Konfigurasi =====
+# ===== Configuration =====
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_CONFIG_FILE="${SCRIPT_DIR}/git-ai.conf"
 
-# Load config file di folder script jika ada.
+# Load the config file from the script directory when present.
 # shellcheck source=/dev/null
 [[ -f "$SCRIPT_CONFIG_FILE" ]] && source "$SCRIPT_CONFIG_FILE"
 
-# ===== Perilaku =====
+# ===== Behavior =====
 DO_PUSH="${DEFAULT_DO_PUSH:-1}"
 DO_STAGE=1
 USE_PATCH=0
@@ -55,7 +55,7 @@ DO_FILE_ANALYSIS=1
 # Structured output (Ollama `format`)
 USE_STRUCTURED_OUTPUT=1
 
-# Fallback minimal jika file config belum tersedia atau nilainya kosong.
+# Minimal fallback when the config file is unavailable or its value is empty.
 DEFAULT_MODEL="${DEFAULT_MODEL:-gemma4:e4b}"
 DEFAULT_OLLAMA_HOST="${DEFAULT_OLLAMA_HOST:-}"
 FALLBACK_OLLAMA_HOST="${FALLBACK_OLLAMA_HOST:-}"
@@ -70,14 +70,15 @@ MAX_FILES_LIST="${MAX_FILES_LIST:-20}"
 TOP_FILES="${TOP_FILES:-4}"
 MAX_HUNK_CHARS="${MAX_HUNK_CHARS:-1000}"
 MAX_TOTAL_HUNKS_CHARS="${MAX_TOTAL_HUNKS_CHARS:-3500}"
-MAX_SUBJECT_LENGTH="${MAX_SUBJECT_LENGTH:-120}"
+MAX_COMMIT_MESSAGE_LENGTH="${MAX_COMMIT_MESSAGE_LENGTH:-65536}"
+MAX_BODY_BULLETS=6
 
 case "$DO_PUSH" in
   true|TRUE|yes|YES|on|ON) DO_PUSH=1 ;;
   false|FALSE|no|NO|off|OFF|"") DO_PUSH=0 ;;
 esac
 
-# Model selalu dikunci ke DEFAULT_MODEL dari config.
+# The model is always set from DEFAULT_MODEL in the config.
 OLLAMA_MODEL="$DEFAULT_MODEL"
 OLLAMA_SERVICE_FILE="/etc/systemd/system/ollama.service"
 
@@ -150,13 +151,15 @@ resolve_ollama_base_url() {
 
 OLLAMA_BASE_URL="$(resolve_ollama_base_url)"
 
-# URL turunan (harus setelah config)
+# Derived URL (must come after the config)
 OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
 
-# ===== Warna Output (auto disable jika non-tty / NO_COLOR) =====
+# ===== Terminal output =====
+# Interactive status indicators require a terminal; NO_COLOR only disables colors.
 IS_TTY=0
-if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
-  IS_TTY=1
+[[ -t 2 ]] && IS_TTY=1
+
+if [[ "$IS_TTY" -eq 1 && -z "${NO_COLOR:-}" ]]; then
   RED='\033[0;31m'
   GREEN='\033[0;32m'
   YELLOW='\033[1;33m'
@@ -216,23 +219,24 @@ elapsed_since() {
   if [[ "$diff" -ge 60 ]]; then
     printf '%dm%ds' $((diff/60)) $((diff%60))
   else
-    printf '%d detik' "$diff"
+    printf '%d seconds' "$diff"
   fi
 }
 
 spinner_start() {
-  local msg="${1:-Memproses...}"
+  local msg="${1:-Processing...}"
   [[ "$IS_TTY" -eq 1 ]] || return 0
   live_status_stop 2>/dev/null || true
   spinner_stop
+
+  local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+  printf '\033[?25l\r  %b%s%b %s' "$CYAN" "${chars:0:1}" "$NC" "$msg" >&2
   (
-    local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    local i=0 len=${#chars}
-    printf '\033[?25l' >&2
+    local i=1 len=${#chars}
     while true; do
+      sleep 0.08
       printf '\r  %b%s%b %s' "$CYAN" "${chars:i%len:1}" "$NC" "$msg" >&2
       i=$((i + 1))
-      sleep 0.08
     done
   ) &
   SPINNER_PID=$!
@@ -249,7 +253,7 @@ spinner_stop() {
 }
 
 blocking_status_start() {
-  local msg="${1:-Memproses...}"
+  local msg="${1:-Processing...}"
   if [[ "$IS_TTY" -eq 1 ]]; then
     spinner_start "$msg"
   else
@@ -263,7 +267,7 @@ blocking_status_stop() {
 }
 
 live_status_start() {
-  local msg="${1:-Memproses...}"
+  local msg="${1:-Processing...}"
   local plain_msg="${2:-$msg}"
   if [[ "$IS_TTY" -ne 1 ]]; then
     step_info "⟩ ${plain_msg}"
@@ -278,7 +282,7 @@ live_status_start() {
 }
 
 live_status_update() {
-  local msg="${1:-Memproses...}"
+  local msg="${1:-Processing...}"
   [[ "$IS_TTY" -eq 1 ]] || return 0
   [[ "$LIVE_STATUS_ACTIVE" -eq 1 ]] || return 0
 
@@ -295,7 +299,7 @@ live_status_print_above() {
   if [[ "$IS_TTY" -eq 1 && "$LIVE_STATUS_ACTIVE" -eq 1 ]]; then
     printf '\r\033[K' >&2
     echo -e "$line" >&2
-    live_status_update "${LIVE_STATUS_LAST_MSG:-Memproses...}"
+    live_status_update "${LIVE_STATUS_LAST_MSG:-Processing...}"
   else
     echo -e "$line" >&2
   fi
@@ -311,7 +315,7 @@ live_status_stop() {
 }
 
 progress_status_text() {
-  local current="$1" total="$2" label="${3:-Memproses}" elapsed="${4:-}"
+  local current="$1" total="$2" label="${3:-Processing}" elapsed="${4:-}"
   local width=14
   local filled=0 percent=0
   local bar="" i
@@ -359,7 +363,7 @@ show_banner() {
 show_summary() {
   local elapsed_text
   elapsed_text=$(elapsed_since "$SCRIPT_START_EPOCH")
-  echo -e "${GREEN}✅ Selesai dalam ${elapsed_text}${NC}" >&2
+  echo -e "${GREEN}✅ Completed in ${elapsed_text}${NC}" >&2
   if [[ -n "${1:-}" ]]; then
     echo -e "  ${DIM}${1}${NC}" >&2
   fi
@@ -374,55 +378,56 @@ show_help() {
   cat <<HELP
 Usage: git-ai.sh [OPTIONS]
 
-Auto stage → AI commit message (Ollama) → commit → push.
+Auto-stage → AI commit message (Ollama) → commit → push.
 Output commit message:
-  - Baris 1: subject singkat tanpa body/footer
+  - Line 1: <type>: <summary> (without a scope)
+  - One staged file: no body; multiple files: 1-${MAX_BODY_BULLETS} relevant bullet(s)
 
 Options:
-  -h, --help                  Tampilkan bantuan
-  -v, --version               Tampilkan versi
-  -s, --status                Tampilkan git status saja
-  -n, --no-push               Commit tanpa push
-  -p, --patch                 Staging interaktif (git add -p)
-  -i, --interactive           Tampilkan commit message dan minta konfirmasi sebelum commit
-      --no-stage              Jangan staging otomatis
-      --dry-run               Hanya tampilkan commit message (tanpa ubah git state)
-      --debug                 Tampilkan log debug
-      --force-diff            Tetap kirim diff ke AI walau terdeteksi pola sensitif
-      --allow-secret-commit   Izinkan commit walau scanner menemukan potensi secret
-      --no-file-analysis      Matikan analisis per-file (lebih cepat)
-      --file-analysis-limit N Batasi jumlah file untuk analisis per-file (default: ${FILE_ANALYSIS_LIMIT})
+  -h, --help                  Show help
+  -v, --version               Show version
+  -s, --status                Show Git status only
+  -n, --no-push               Commit without pushing
+  -p, --patch                 Interactive staging (git add -p)
+  -i, --interactive           Show the commit message and ask for confirmation before committing
+      --no-stage              Do not stage changes automatically
+      --dry-run               Only display the commit message (do not change Git state)
+      --debug                 Show debug logs
+      --force-diff            Send the diff to AI even when sensitive patterns are detected
+      --allow-secret-commit   Allow committing when the scanner finds a potential secret
+      --no-file-analysis      Disable per-file analysis (faster)
+      --file-analysis-limit N Limit the number of files for per-file analysis (default: ${FILE_ANALYSIS_LIMIT})
       --file-analysis-parallelism N
-                              Jumlah request analisis file paralel (default: ${FILE_ANALYSIS_PARALLELISM})
-      --no-structured         Matikan structured output (fallback ke plain text)
-      --no-pull               Jangan auto-pull model jika tidak ada
-      --no-banner             Jangan tampilkan banner awal
-      --no-verify             Git commit tanpa menjalankan hooks (git commit --no-verify)
+                              Number of parallel file-analysis requests (default: ${FILE_ANALYSIS_PARALLELISM})
+      --no-structured         Disable structured output (fall back to plain text)
+      --no-pull               Do not auto-pull a missing model
+      --no-banner             Do not show the initial banner
+      --no-verify             Commit without running Git hooks (git commit --no-verify)
 
 Config:
   ${SCRIPT_CONFIG_FILE}
 
 Config variables:
-  DEFAULT_MODEL               Model Ollama yang selalu dipakai
-  DEFAULT_DO_PUSH             Default push setelah commit (0/1, default 1)
-  DEFAULT_OLLAMA_HOST         Host utama Ollama (kosong = baca service)
-  FALLBACK_OLLAMA_HOST        Host cadangan jika host utama down
+  DEFAULT_MODEL               Ollama model that is always used
+  DEFAULT_DO_PUSH             Default push after a commit (0/1, default 1)
+  DEFAULT_OLLAMA_HOST         Primary Ollama host (empty = read service)
+  FALLBACK_OLLAMA_HOST        Backup host when the primary host is unavailable
   AI_TEMPERATURE              Default ${AI_TEMPERATURE}
-  AI_THINK                    Default false (opsi: false|true|low|medium|high)
-  AI_NUM_PREDICT              Token output request (maks: ${AI_MAX_NUM_PREDICT})
-  AI_MAX_NUM_PREDICT          Batas maksimum num_predict
-  FILE_ANALYSIS_LIMIT         Batas jumlah file untuk analisis per-file
+  AI_THINK                    Default false (options: false|true|low|medium|high)
+  AI_NUM_PREDICT              Output tokens per request (max: ${AI_MAX_NUM_PREDICT})
+  AI_MAX_NUM_PREDICT          Maximum num_predict value
+  FILE_ANALYSIS_LIMIT         Maximum number of files for per-file analysis
   FILE_ANALYSIS_NUM_PREDICT_PER_FILE
-                              Token output analisis per file (default: ${FILE_ANALYSIS_NUM_PREDICT_PER_FILE})
-  FILE_ANALYSIS_PARALLELISM   Jumlah request analisis file paralel (default: ${FILE_ANALYSIS_PARALLELISM})
-  MAX_FILES_LIST              Batas jumlah file dalam konteks nama/status Git
-  TOP_FILES                   Jumlah file terbesar untuk ringkasan hunk
-  MAX_HUNK_CHARS              Batas karakter hunk per file
-  MAX_TOTAL_HUNKS_CHARS       Batas total karakter hunk yang dikirim ke AI
-  MAX_SUBJECT_LENGTH          Panjang maksimal subject commit (default: ${MAX_SUBJECT_LENGTH})
+                              Output tokens per file analysis (default: ${FILE_ANALYSIS_NUM_PREDICT_PER_FILE})
+  FILE_ANALYSIS_PARALLELISM   Number of parallel file-analysis requests (default: ${FILE_ANALYSIS_PARALLELISM})
+  MAX_FILES_LIST              Maximum number of files in the Git name/status context
+  TOP_FILES                   Number of largest files summarized by hunks
+  MAX_HUNK_CHARS              Maximum hunk characters per file
+  MAX_TOTAL_HUNKS_CHARS       Maximum total hunk characters sent to AI
+  MAX_COMMIT_MESSAGE_LENGTH   Maximum complete commit-message length (default: ${MAX_COMMIT_MESSAGE_LENGTH})
 
 Ollama service:
-  ${OLLAMA_SERVICE_FILE} dipakai jika DEFAULT_OLLAMA_HOST kosong.
+  ${OLLAMA_SERVICE_FILE} is used when DEFAULT_OLLAMA_HOST is empty.
 HELP
 }
 
@@ -433,7 +438,7 @@ parse_args() {
       -v|--version)         echo "git-ai version $VERSION"; exit 0 ;;
       -s|--status)          check_git_repo; git status; exit 0 ;;
       -n|--no-push)         DO_PUSH=0; shift ;;
-      -m|--model)           die "-m/--model tidak didukung. Ubah DEFAULT_MODEL di ${SCRIPT_CONFIG_FILE}." ;;
+      -m|--model)           die "-m/--model is not supported. Change DEFAULT_MODEL in ${SCRIPT_CONFIG_FILE}." ;;
       -p|--patch)           USE_PATCH=1; shift ;;
       -i|--interactive)     INTERACTIVE=1; shift ;;
       --no-stage)           DO_STAGE=0; shift ;;
@@ -443,13 +448,13 @@ parse_args() {
       --allow-secret-commit) ALLOW_SECRET_COMMIT=1; shift ;;
       --no-file-analysis)   DO_FILE_ANALYSIS=0; shift ;;
       --file-analysis-limit)
-                            [[ $# -ge 2 ]] || die "--file-analysis-limit butuh angka"
-                            [[ "$2" =~ ^[0-9]+$ ]] || die "--file-analysis-limit harus angka non-negatif"
+                            [[ $# -ge 2 ]] || die "--file-analysis-limit requires a number"
+                            [[ "$2" =~ ^[0-9]+$ ]] || die "--file-analysis-limit must be a non-negative number"
                             FILE_ANALYSIS_LIMIT="$2"; shift 2 ;;
       --file-analysis-parallelism)
-                            [[ $# -ge 2 ]] || die "--file-analysis-parallelism butuh angka"
-                            [[ "$2" =~ ^[0-9]+$ ]] || die "--file-analysis-parallelism harus angka >= 1"
-                            [[ "$2" -ge 1 ]] || die "--file-analysis-parallelism harus angka >= 1"
+                            [[ $# -ge 2 ]] || die "--file-analysis-parallelism requires a number"
+                            [[ "$2" =~ ^[0-9]+$ ]] || die "--file-analysis-parallelism must be a number >= 1"
+                            [[ "$2" -ge 1 ]] || die "--file-analysis-parallelism must be a number >= 1"
                             FILE_ANALYSIS_PARALLELISM="$2"; shift 2 ;;
       --no-structured)      USE_STRUCTURED_OUTPUT=0; shift ;;
       --no-pull)            NO_PULL=1; shift ;;
@@ -461,7 +466,7 @@ parse_args() {
 }
 
 check_git_repo() {
-  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Bukan git repository"
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not a Git repository"
 }
 
 setup_dry_run_index() {
@@ -478,7 +483,7 @@ setup_dry_run_index() {
   fi
 
   export GIT_INDEX_FILE="$DRY_RUN_INDEX_FILE"
-  dbg "Dry-run index aktif: $DRY_RUN_INDEX_FILE"
+  dbg "Dry-run index enabled: $DRY_RUN_INDEX_FILE"
 }
 
 cleanup_dry_run_index() {
@@ -490,95 +495,95 @@ cleanup_dry_run_index() {
 }
 
 check_deps() {
-  show_step "Memeriksa dependensi"
+  show_step "Checking dependencies"
 
   for cmd in git curl jq flock; do
-    command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' tidak ditemukan. Install dulu."
+    command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' was not found. Install it first."
   done
-  step_ok "git, curl, jq, flock tersedia"
+  step_ok "git, curl, jq, and flock are available"
 
   if [[ ! "$DO_PUSH" =~ ^[01]$ ]]; then
-    die "DEFAULT_DO_PUSH harus 0 atau 1."
+    die "DEFAULT_DO_PUSH must be 0 or 1."
   fi
   if [[ ! "$FILE_ANALYSIS_LIMIT" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_LIMIT" -lt 0 ]]; then
-    die "FILE_ANALYSIS_LIMIT harus angka non-negatif."
+    die "FILE_ANALYSIS_LIMIT must be a non-negative number."
   fi
   if [[ ! "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE" -lt 1 ]]; then
-    die "FILE_ANALYSIS_NUM_PREDICT_PER_FILE harus angka >= 1."
+    die "FILE_ANALYSIS_NUM_PREDICT_PER_FILE must be a number >= 1."
   fi
   if [[ ! "$FILE_ANALYSIS_PARALLELISM" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_PARALLELISM" -lt 1 ]]; then
-    die "FILE_ANALYSIS_PARALLELISM harus angka >= 1."
+    die "FILE_ANALYSIS_PARALLELISM must be a number >= 1."
   fi
   if [[ -n "$AI_NUM_PREDICT" ]] && [[ ! "$AI_NUM_PREDICT" =~ ^[0-9]+$ ]]; then
-    die "AI_NUM_PREDICT harus angka."
+    die "AI_NUM_PREDICT must be a number."
   fi
   if [[ ! "$AI_MAX_NUM_PREDICT" =~ ^[0-9]+$ ]] || [[ "$AI_MAX_NUM_PREDICT" -lt 1 ]]; then
-    die "AI_MAX_NUM_PREDICT harus angka >= 1."
+    die "AI_MAX_NUM_PREDICT must be a number >= 1."
   fi
   if [[ -n "$AI_NUM_PREDICT" && "$AI_NUM_PREDICT" -gt "$AI_MAX_NUM_PREDICT" ]]; then
-    warn "AI_NUM_PREDICT melebihi ${AI_MAX_NUM_PREDICT}; memakai batas maksimum."
+    warn "AI_NUM_PREDICT exceeds ${AI_MAX_NUM_PREDICT}; using the maximum."
     AI_NUM_PREDICT="$AI_MAX_NUM_PREDICT"
   fi
   if [[ "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE" -gt "$AI_MAX_NUM_PREDICT" ]]; then
-    warn "FILE_ANALYSIS_NUM_PREDICT_PER_FILE melebihi ${AI_MAX_NUM_PREDICT}; memakai batas maksimum."
+    warn "FILE_ANALYSIS_NUM_PREDICT_PER_FILE exceeds ${AI_MAX_NUM_PREDICT}; using the maximum."
     FILE_ANALYSIS_NUM_PREDICT_PER_FILE="$AI_MAX_NUM_PREDICT"
   fi
   if [[ ! "$AI_TEMPERATURE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    die "AI_TEMPERATURE harus angka (contoh 0.2)."
+    die "AI_TEMPERATURE must be a number (for example, 0.2)."
   fi
   if [[ ! "$AI_THINK" =~ ^(false|true|low|medium|high)$ ]]; then
-    die "AI_THINK harus salah satu: false, true, low, medium, high."
+    die "AI_THINK must be one of: false, true, low, medium, high."
   fi
-  if [[ ! "$MAX_SUBJECT_LENGTH" =~ ^[0-9]+$ ]] || [[ "$MAX_SUBJECT_LENGTH" -lt 40 ]]; then
-    die "MAX_SUBJECT_LENGTH harus angka >= 40."
+  if [[ ! "$MAX_COMMIT_MESSAGE_LENGTH" =~ ^[0-9]+$ ]] || [[ "$MAX_COMMIT_MESSAGE_LENGTH" -lt 24 ]]; then
+    die "MAX_COMMIT_MESSAGE_LENGTH must be a number >= 24."
   fi
 
   local tags_json primary_url fallback_url
   primary_url="$OLLAMA_BASE_URL"
 
-  spinner_start "Menghubungi Ollama di ${primary_url}..."
+  spinner_start "Contacting Ollama at ${primary_url}..."
   if tags_json=$(fetch_ollama_tags "$primary_url"); then
     spinner_stop
   else
     spinner_stop
     if fallback_url=$(resolve_ollama_fallback_url) && [[ "$fallback_url" != "$primary_url" ]]; then
-      warn "Ollama tidak dapat diakses di $primary_url. Mencoba fallback $fallback_url..."
-      spinner_start "Menghubungi Ollama fallback di ${fallback_url}..."
+      warn "Ollama is unavailable at $primary_url. Trying fallback $fallback_url..."
+      spinner_start "Contacting fallback Ollama at ${fallback_url}..."
       if tags_json=$(fetch_ollama_tags "$fallback_url"); then
         spinner_stop
         OLLAMA_BASE_URL="$fallback_url"
         refresh_ollama_urls
-        step_info "Ollama host fallback aktif: ${OLLAMA_BASE_URL}"
+        step_info "Fallback Ollama host enabled: ${OLLAMA_BASE_URL}"
       else
         spinner_stop
-        die "Ollama tidak dapat diakses di $primary_url atau fallback $fallback_url (tags). Pastikan service berjalan."
+        die "Ollama is unavailable at $primary_url or fallback $fallback_url (tags). Ensure the service is running."
       fi
     else
-      die "Ollama tidak dapat diakses di $primary_url (tags). Pastikan service berjalan dan ${SCRIPT_CONFIG_FILE} atau ${OLLAMA_SERVICE_FILE} benar."
+      die "Ollama is unavailable at $primary_url (tags). Ensure the service is running and ${SCRIPT_CONFIG_FILE} or ${OLLAMA_SERVICE_FILE} is correct."
     fi
   fi
-  step_info "Ollama host aktif: ${OLLAMA_BASE_URL}"
+  step_info "Active Ollama host: ${OLLAMA_BASE_URL}"
 
   local available_models
   available_models=$(jq -r '.models[].name' <<<"$tags_json" 2>/dev/null | sed '/^$/d' || true)
 
   OLLAMA_MODEL="$DEFAULT_MODEL"
-  step_info "Model dari DEFAULT_MODEL: ${OLLAMA_MODEL}"
+  step_info "Model from DEFAULT_MODEL: ${OLLAMA_MODEL}"
 
   if ! printf '%s\n' "$available_models" | grep -Fxq -- "$OLLAMA_MODEL"; then
-    warn "Model DEFAULT_MODEL '$OLLAMA_MODEL' tidak ditemukan."
+    warn "DEFAULT_MODEL '$OLLAMA_MODEL' was not found."
 
     if [[ "$NO_PULL" -eq 1 ]]; then
-      die "Model '$OLLAMA_MODEL' tidak ada di server dan --no-pull aktif. Pull dulu: ollama pull $OLLAMA_MODEL"
+      die "Model '$OLLAMA_MODEL' is not on the server and --no-pull is enabled. Pull it first: ollama pull $OLLAMA_MODEL"
     fi
     if command -v ollama >/dev/null 2>&1; then
       warn "Pulling DEFAULT_MODEL: $OLLAMA_MODEL..."
       OLLAMA_HOST="$OLLAMA_BASE_URL" ollama pull "$OLLAMA_MODEL"
     else
-      die "Model '$OLLAMA_MODEL' tidak ada di server dan CLI 'ollama' tidak ditemukan untuk melakukan pull."
+      die "Model '$OLLAMA_MODEL' is not on the server and the 'ollama' CLI was not found to pull it."
     fi
   fi
-  step_ok "Model ${OLLAMA_MODEL} aktif di Ollama"
+  step_ok "Model ${OLLAMA_MODEL} is active in Ollama"
 }
 
 has_any_changes() {
@@ -590,18 +595,18 @@ has_staged_changes() {
 }
 
 stage_changes() {
-  show_step "Staging perubahan"
+  show_step "Staging changes"
 
   if ! has_any_changes; then
-    warn "Tidak ada perubahan untuk di-commit."
+    warn "No changes to commit."
     exit 0
   fi
 
   if [[ "$DO_STAGE" -eq 0 ]]; then
     if ! has_staged_changes; then
-      die "Kamu memilih --no-stage, tapi belum ada staged changes. Jalankan git add dulu."
+      die "You selected --no-stage, but there are no staged changes. Run git add first."
     fi
-    step_ok "Menggunakan staged changes yang sudah ada"
+    step_ok "Using existing staged changes"
     enforce_staged_secret_policy
     return 0
   fi
@@ -609,11 +614,16 @@ stage_changes() {
   if [[ "$USE_PATCH" -eq 1 ]]; then
     git add -p
   else
-    git add -A
+    blocking_status_start "Scanning, hashing, and staging working-tree changes..."
+    if ! git add -A; then
+      blocking_status_stop
+      die "Failed to stage changes."
+    fi
+    blocking_status_stop
   fi
 
   if ! has_staged_changes; then
-    warn "Tidak ada staged changes setelah proses staging."
+    warn "No staged changes after staging."
     exit 0
   fi
 
@@ -621,7 +631,7 @@ stage_changes() {
   staged_count=$(git diff --cached --name-only | wc -l)
   local stage_method="git add -A"
   [[ "$USE_PATCH" -eq 1 ]] && stage_method="git add -p"
-  step_ok "${staged_count} file di-stage (${stage_method})"
+  step_ok "${staged_count} file(s) staged (${stage_method})"
 
   enforce_staged_secret_policy
 }
@@ -680,7 +690,7 @@ detect_staged_secret_lines() {
           if ! [[ "$line_no" =~ ^[0-9]+$ ]] || ! [[ "$line_no" -gt 0 ]]; then
             line_no="?"
           fi
-          printf '%s:%s potensi secret pada baris tambahan\n' "$current_file" "$line_no"
+          printf '%s:%s potential secret on added line\n' "$current_file" "$line_no"
         fi
         if [[ "$new_line" =~ ^[0-9]+$ ]] && [[ "$new_line" -gt 0 ]]; then
           new_line=$((new_line + 1))
@@ -708,18 +718,21 @@ run_gitleaks_secret_scan() {
 
   [[ "$status" -eq 0 ]] && return 1
   if grep -Eiq '(leak|leaks|secret|finding|RuleID|Fingerprint)' <<<"$out"; then
-    printf 'gitleaks menemukan potensi secret pada staged changes\n'
+    printf 'gitleaks found a potential secret in staged changes\n'
     return 0
   fi
 
-  dbg "gitleaks scan dilewati/gagal kompatibilitas: $(printf '%s' "$out" | head -c 300)"
+  dbg "gitleaks scan skipped/failed compatibility check: $(printf '%s' "$out" | head -c 300)"
   return 1
 }
 
 enforce_staged_secret_policy() {
   local report external_report
+
+  blocking_status_start "Scanning staged changes for potential secrets..."
   report=$(detect_staged_secret_lines || true)
   external_report=$(run_gitleaks_secret_scan || true)
+  blocking_status_stop
 
   if [[ -n "$external_report" ]]; then
     [[ -n "$report" ]] && report+=$'\n'
@@ -728,7 +741,7 @@ enforce_staged_secret_policy() {
 
   [[ -n "$report" ]] || return 0
 
-  warn "Potensi secret terdeteksi pada staged changes:"
+  warn "Potential secrets detected in staged changes:"
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     warn "  - $line"
@@ -737,36 +750,43 @@ enforce_staged_secret_policy() {
   local total_lines
   total_lines=$(printf '%s\n' "$report" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
   if [[ "$total_lines" -gt 20 ]]; then
-    warn "  ... $((total_lines - 20)) temuan lain disembunyikan"
+    warn "  ... $((total_lines - 20)) additional findings hidden"
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    warn "DRY RUN: commit diblokir pada mode normal, tetapi dry-run dilanjutkan tanpa commit/push."
+    warn "DRY RUN: the commit would be blocked normally, but dry-run continues without commit/push."
     return 0
   fi
 
   if [[ "$ALLOW_SECRET_COMMIT" -eq 1 ]]; then
-    warn "Commit secret diizinkan oleh --allow-secret-commit. Safe mode tetap aktif kecuali --force-diff dipakai."
+    warn "Secret commit allowed by --allow-secret-commit. Safe mode remains active unless --force-diff is used."
     return 0
   fi
 
-  die "Commit dibatalkan untuk mencegah secret ikut masuk commit. Hapus secret atau gunakan --allow-secret-commit jika benar-benar disengaja."
+  die "Commit cancelled to prevent a secret from being committed. Remove the secret or use --allow-secret-commit only when intentional."
 }
 
 collect_top_files() {
-  local tmp
+  local tmp generated_tmp source_file
   tmp=$(mktemp)
-  # Pastikan temp file dibersihkan meski fungsi gagal di tengah jalan
-  trap 'rm -f "$tmp"' RETURN
+  generated_tmp=$(mktemp)
+  # Ensure the temporary file is removed even if this function fails midway.
+  trap 'rm -f "$tmp" "$generated_tmp"' RETURN
   while IFS=$'\t' read -r add del path; do
     [[ -z "${path:-}" ]] && continue
     [[ "${add:-0}" == "-" ]] && add=0
     [[ "${del:-0}" == "-" ]] && del=0
     local total=$((add + del))
-    printf "%s\t%s\n" "$total" "$path" >> "$tmp"
+    if is_generated_path "$path"; then
+      printf "%s\t%s\n" "$total" "$path" >> "$generated_tmp"
+    else
+      printf "%s\t%s\n" "$total" "$path" >> "$tmp"
+    fi
   done < <(git diff --cached --numstat || true)
 
-  sort -nrk1,1 "$tmp" | head -n "$TOP_FILES" | cut -f2- || true
+  source_file="$tmp"
+  [[ -s "$source_file" ]] || source_file="$generated_tmp"
+  sort -nrk1,1 "$source_file" | head -n "$TOP_FILES" | cut -f2- || true
 }
 
 collect_top_hunks() {
@@ -793,22 +813,29 @@ collect_top_hunks() {
 }
 
 collect_priority_changes() {
-  local out="" status path1 path2
+  local out="" generated_out="" entry status path1 path2
 
   while IFS=$'\t' read -r status path1 path2; do
     [[ -z "${status:-}" || -z "${path1:-}" ]] && continue
 
     case "$status" in
-      R*) out+="Rename: ${path1} -> ${path2}"$'\n' ;;
-      C*) out+="Copy: ${path1} -> ${path2}"$'\n' ;;
-      D)  out+="Delete: ${path1}"$'\n' ;;
-      A)  out+="Add: ${path1}"$'\n' ;;
-      M)  out+="Modify: ${path1}"$'\n' ;;
-      *)  out+="${status}: ${path1}"$'\n' ;;
+      R*) entry="Rename: ${path1} -> ${path2}" ;;
+      C*) entry="Copy: ${path1} -> ${path2}" ;;
+      D)  entry="Delete: ${path1}" ;;
+      A)  entry="Add: ${path1}" ;;
+      M)  entry="Modify: ${path1}" ;;
+      *)  entry="${status}: ${path1}" ;;
     esac
-  done < <(git diff --cached --name-status -M | head -n "$MAX_FILES_LIST" || true)
 
-  printf '%s' "$out"
+    if is_generated_path "${path2:-$path1}"; then
+      generated_out+="$entry"$'\n'
+    else
+      out+="$entry"$'\n'
+    fi
+  done < <(git diff --cached --name-status -M || true)
+
+  [[ -n "$out" ]] || out="$generated_out"
+  printf '%s' "$out" | head -n "$MAX_FILES_LIST" || true
 }
 
 collect_diff_terms() {
@@ -830,7 +857,7 @@ add_change_focus_term() {
   [[ "${#term}" -ge 3 ]] || return 0
 
   case "${term,,}" in
-    src|lib|app|bin|cmd|pkg|test|tests|spec|docs|doc|the|and|untuk|yang|dan|file|utils)
+    src|lib|app|bin|cmd|pkg|test|tests|spec|docs|doc|the|and|file|utils)
       return 0
       ;;
   esac
@@ -856,9 +883,9 @@ add_path_focus_terms() {
     case "${part,,}" in
       *model*) add_change_focus_term "model" ;;
       *service*) add_change_focus_term "service" ;;
-      *config*) add_change_focus_term "konfigurasi" ;;
+      *config*) add_change_focus_term "configuration" ;;
       *schema*) add_change_focus_term "schema" ;;
-      *migration*) add_change_focus_term "migrasi" ;;
+      *migration*) add_change_focus_term "migration" ;;
     esac
   done < <(printf '%s\n' "$path" | tr '/._-' '\n' | sed '/^$/d')
 }
@@ -901,6 +928,36 @@ is_code_path() {
   [[ "$path" =~ \.(py|js|jsx|ts|tsx|go|rs|java|kt|php|rb|cs|cpp|c|h|swift|scala|sh|bash|zsh)$ ]]
 }
 
+is_generated_path() {
+  local path="${1,,}"
+  [[ "$path" =~ (^|/)(generated|__generated__|codegen|vendor)(/|$) || "$path" =~ \.(generated|gen)\.[^.]+$ ]]
+}
+
+is_test_path() {
+  local path="${1,,}"
+  [[ "$path" =~ (^|/)(test|tests|spec|specs)(/|\.|$) || "$path" =~ (\.test|\.spec|_test)\.[^.]+$ ]]
+}
+
+is_frontend_path() {
+  local path="${1,,}"
+  [[ "$path" =~ (^|/)(frontend|client|web)(/|$) || "$path" =~ \.(jsx|tsx|vue|svelte)$ ]]
+}
+
+is_api_path() {
+  local path="${1,,}"
+  [[ "$path" =~ (^|/)(api|apis|routes?|endpoints?)(/|\.|$) ]]
+}
+
+is_database_path() {
+  local path="${1,,}"
+  [[ "$path" =~ (^|/)(migrations?|models?|schema|schemas|database|db|sql)(/|\.|$) || "$path" =~ \.(sql|prisma)$ ]]
+}
+
+is_security_path() {
+  local path="${1,,}"
+  [[ "$path" =~ (capabilit|permission|authoriz|auth|csrf|security|middleware) ]]
+}
+
 classify_change_context() {
   local status path1 path2 path
 
@@ -910,6 +967,15 @@ classify_change_context() {
   HAS_SCHEMA_API_DB_CHANGE=0
   HAS_CODE_CHANGE=0
   HAS_DOC_CHANGE=0
+  HAS_GENERATED_CHANGE=0
+  HAS_API_CHANGE=0
+  HAS_DATABASE_CHANGE=0
+  HAS_SECURITY_CHANGE=0
+  HAS_FRONTEND_CHANGE=0
+  HAS_TEST_CHANGE=0
+  HAS_FUNCTIONAL_CHANGE=0
+  GENERATED_FILE_COUNT=0
+  FUNCTIONAL_FILE_COUNT=0
   DELETE_FOCUS_LABEL=""
   RENAME_FOCUS_LABEL=""
   CHANGE_FOCUS_TERMS=""
@@ -922,34 +988,48 @@ classify_change_context() {
         HAS_RENAME=1
         path="${path2:-$path1}"
         [[ -n "$RENAME_FOCUS_LABEL" ]] || RENAME_FOCUS_LABEL=$(path_subject_label "$path")
-        add_path_focus_terms "$path1"
-        add_path_focus_terms "$path"
         ;;
       D)
         HAS_DELETE=1
         path="$path1"
         [[ -n "$DELETE_FOCUS_LABEL" ]] || DELETE_FOCUS_LABEL=$(path_subject_label "$path")
-        add_path_focus_terms "$path"
         ;;
       A)
         path="$path1"
-        add_path_focus_terms "$path"
         ;;
       *)
         path="$path1"
-        add_path_focus_terms "$path"
         ;;
     esac
+
+    if is_generated_path "$path"; then
+      HAS_GENERATED_CHANGE=1
+      GENERATED_FILE_COUNT=$((GENERATED_FILE_COUNT + 1))
+      continue
+    fi
+
+    if [[ "$status" == R* ]]; then
+      add_path_focus_terms "$path1"
+      add_path_focus_terms "$path"
+    else
+      add_path_focus_terms "$path"
+    fi
 
     is_doc_path "$path" && HAS_DOC_CHANGE=1
     is_config_path "$path" && HAS_CONFIG_CHANGE=1
     is_schema_api_db_path "$path" && HAS_SCHEMA_API_DB_CHANGE=1
     is_code_path "$path" && HAS_CODE_CHANGE=1
-  done < <(git diff --cached --name-status -M | head -n "$MAX_FILES_LIST" || true)
+    is_api_path "$path" && HAS_API_CHANGE=1
+    is_database_path "$path" && HAS_DATABASE_CHANGE=1
+    is_security_path "$path" && HAS_SECURITY_CHANGE=1
+    is_frontend_path "$path" && HAS_FRONTEND_CHANGE=1
+    is_test_path "$path" && HAS_TEST_CHANGE=1
 
-  if grep -Eq '[A-Z][A-Z0-9_]{2,}|\.service|\.env|\.ya?ml|\.toml|\.json' <<<"${DIFF_TERMS:-}"; then
-    HAS_CONFIG_CHANGE=1
-  fi
+    if is_code_path "$path" || is_api_path "$path" || is_database_path "$path" || is_security_path "$path" || is_frontend_path "$path"; then
+      HAS_FUNCTIONAL_CHANGE=1
+      FUNCTIONAL_FILE_COUNT=$((FUNCTIONAL_FILE_COUNT + 1))
+    fi
+  done < <(git diff --cached --name-status -M || true)
 
   local term
   while IFS= read -r term; do
@@ -957,18 +1037,50 @@ classify_change_context() {
   done < <(printf '%s\n' "${DIFF_TERMS:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d')
 }
 
+build_semantic_change_summary() {
+  local functional=()
+  local supporting=()
+
+  [[ "${HAS_DATABASE_CHANGE:-0}" -eq 1 ]] && functional+=("data model, migrations, or database integrity")
+  [[ "${HAS_API_CHANGE:-0}" -eq 1 ]] && functional+=("API or endpoint behavior")
+  [[ "${HAS_SECURITY_CHANGE:-0}" -eq 1 ]] && functional+=("authorization, permissions, or request security")
+  [[ "${HAS_FRONTEND_CHANGE:-0}" -eq 1 ]] && functional+=("frontend integration or user flow")
+  [[ "${HAS_CONFIG_CHANGE:-0}" -eq 1 ]] && functional+=("runtime or service behavior")
+  [[ "${HAS_DELETE:-0}" -eq 1 || "${HAS_RENAME:-0}" -eq 1 ]] && functional+=("structural cleanup or relocation")
+  [[ "${HAS_TEST_CHANGE:-0}" -eq 1 ]] && supporting+=("test coverage")
+  [[ "${HAS_DOC_CHANGE:-0}" -eq 1 ]] && supporting+=("documentation")
+  if [[ "${HAS_GENERATED_CHANGE:-0}" -eq 1 ]]; then
+    supporting+=("${GENERATED_FILE_COUNT} generated artifact(s), which must not lead the subject when functional changes exist")
+  fi
+
+  if [[ "${#functional[@]}" -gt 0 ]]; then
+    printf 'Functional themes to prioritize:\n'
+    printf '%s\n' "${functional[@]}"
+  fi
+  if [[ "${#supporting[@]}" -gt 0 ]]; then
+    printf 'Supporting themes:\n'
+    printf '%s\n' "${supporting[@]}"
+  fi
+  if [[ "${#functional[@]}" -eq 0 && "${#supporting[@]}" -eq 0 ]]; then
+    printf 'No semantic category was inferred; use the most concrete changed domain term.'
+  fi
+}
+
 build_change_priority_hint() {
   local hints=()
 
-  [[ "${HAS_DELETE:-0}" -eq 1 ]] && hints+=("delete file: ${DELETE_FOCUS_LABEL:-file}")
-  [[ "${HAS_RENAME:-0}" -eq 1 ]] && hints+=("rename/move file: ${RENAME_FOCUS_LABEL:-file}")
-  [[ "${HAS_CONFIG_CHANGE:-0}" -eq 1 ]] && hints+=("config/runtime/service/env")
-  [[ "${HAS_SCHEMA_API_DB_CHANGE:-0}" -eq 1 ]] && hints+=("API/schema/database")
-  [[ "${HAS_CODE_CHANGE:-0}" -eq 1 ]] && hints+=("kode/logika")
-  [[ "${HAS_DOC_CHANGE:-0}" -eq 1 ]] && hints+=("dokumentasi")
+  [[ "${HAS_DATABASE_CHANGE:-0}" -eq 1 ]] && hints+=("data model, migration, or database integrity")
+  [[ "${HAS_API_CHANGE:-0}" -eq 1 ]] && hints+=("API or endpoint behavior")
+  [[ "${HAS_SECURITY_CHANGE:-0}" -eq 1 ]] && hints+=("authorization, permissions, or request security")
+  [[ "${HAS_FRONTEND_CHANGE:-0}" -eq 1 ]] && hints+=("frontend integration or user flow")
+  [[ "${HAS_CONFIG_CHANGE:-0}" -eq 1 ]] && hints+=("runtime or service behavior")
+  [[ "${HAS_DELETE:-0}" -eq 1 || "${HAS_RENAME:-0}" -eq 1 ]] && hints+=("structural cleanup or relocation")
+  [[ "${HAS_TEST_CHANGE:-0}" -eq 1 ]] && hints+=("tests")
+  [[ "${HAS_DOC_CHANGE:-0}" -eq 1 ]] && hints+=("documentation")
+  [[ "${HAS_GENERATED_CHANGE:-0}" -eq 1 ]] && hints+=("generated artifacts (supporting only)")
 
   if [[ "${#hints[@]}" -eq 0 ]]; then
-    printf 'perubahan file staged'
+    printf 'staged file changes'
   else
     printf '%s\n' "${hints[@]}"
   fi
@@ -989,6 +1101,7 @@ collect_context() {
     DIFF_TERMS=$(collect_diff_terms)
   fi
   classify_change_context
+  SEMANTIC_CHANGE_SUMMARY=$(build_semantic_change_summary)
   CHANGE_PRIORITY_HINT=$(build_change_priority_hint)
   FILES_CHANGED=$(git diff --cached --name-only | head -n "$MAX_FILES_LIST" | tr '\n' ', ' | sed 's/, $//' || true)
   if [[ "$safe_mode" -eq 1 ]]; then
@@ -999,7 +1112,7 @@ collect_context() {
 }
 
 # ===== Per-File Analysis =====
-SYSTEM_PROMPT_FILE_ANALYSIS_BATCH='Kamu adalah penganalisis git diff. Analisis setiap file secara terpisah dalam Bahasa Indonesia. Output wajib JSON valid sesuai schema. Untuk setiap file, isi "file" dengan nama file persis dari input dan "analysis" dengan 1-2 kalimat jelas: sebutkan perubahan utama, konteks penting, dan dampaknya terhadap repo. Jangan pakai markdown dan jangan beri jawaban umum.'
+SYSTEM_PROMPT_FILE_ANALYSIS_BATCH='You are a Git diff analyst. Analyze each file separately in English. Output valid JSON that conforms to the schema. For each file, set "file" to the exact input filename and provide one or two clear sentences covering the behavior, domain capability, or user-facing impact added by the diff. Treat generated files as supporting artifacts, not primary features. Do not use Markdown, summarize only file names, or give generic answers.'
 
 split_diff_to_chunks() {
   local diff_content="$1"
@@ -1016,6 +1129,11 @@ split_diff_to_chunks() {
     fi
   done <<< "$diff_content"
   [[ -n "$chunk" ]] && DIFF_CHUNKS+=("$chunk")
+}
+
+diff_chunk_file_name() {
+  local chunk="$1"
+  printf '%s\n' "$chunk" | head -n 1 | sed -e 's#.* b/##'
 }
 
 add_analysis_index() {
@@ -1111,7 +1229,7 @@ build_file_analysis_batch_prompt() {
   local end=$((start + count))
   local i prompt
 
-  prompt='Analisis diff berikut per file. Kembalikan JSON dengan array "files" sesuai urutan input. Wajib ada satu item untuk setiap [FILE]. Buat analysis spesifik berdasarkan diff, bukan jawaban umum.'
+  prompt='Analyze the following diff one file at a time. Return JSON with a "files" array in the input order. Include exactly one item for every [FILE]. Make each analysis specific to the diff, not a generic response.'
 
   for ((i=start; i<end; i++)); do
     prompt+=$'\n\n[FILE]\n'"${BATCH_ANALYSIS_FILE_NAMES[$i]}"
@@ -1136,12 +1254,12 @@ run_file_analysis_batch() {
   if content=$(ollama_chat "$SYSTEM_PROMPT_FILE_ANALYSIS_BATCH" "$prompt" "$schema" 60 1 "$batch_num_predict") \
     && json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
     printf '%s\n' "$json" > "$output_file"
-    dbg "Batch analisis ${batch_no} selesai (${count} file)"
+    dbg "Analysis batch ${batch_no} completed (${count} file(s))"
     return 0
   fi
 
   printf '{"files":[]}\n' > "$output_file"
-  dbg "Batch analisis ${batch_no} gagal; memakai fallback per file"
+  dbg "Analysis batch ${batch_no} failed; using per-file fallback"
   return 1
 }
 
@@ -1165,33 +1283,46 @@ analyze_files_individually() {
   [[ "$total_files" -eq 0 ]] && return 1
 
   local safe_chunks=()
+  local generated_chunks=()
   local sensitive_files_skipped=0
-  local chunk
+  local chunk file_name
   for chunk in "${DIFF_CHUNKS[@]}"; do
     if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$chunk"; then
       sensitive_files_skipped=$((sensitive_files_skipped + 1))
       continue
     fi
 
-    safe_chunks+=("$chunk")
+    file_name=$(diff_chunk_file_name "$chunk")
+    if is_generated_path "$file_name"; then
+      generated_chunks+=("$chunk")
+    else
+      safe_chunks+=("$chunk")
+    fi
   done
 
-  local safe_total=${#safe_chunks[@]}
-  if [[ "$safe_total" -eq 0 ]]; then
+  local safe_total=$(( ${#safe_chunks[@]} + ${#generated_chunks[@]} ))
+  local generated_files_deprioritized=${#generated_chunks[@]}
+  if [[ "${#safe_chunks[@]}" -eq 0 && "${#generated_chunks[@]}" -gt 0 ]]; then
+    safe_chunks=("${generated_chunks[@]}")
+    generated_files_deprioritized=0
+  fi
+
+  local analysis_candidate_total=${#safe_chunks[@]}
+  if [[ "$analysis_candidate_total" -eq 0 ]]; then
     if [[ "$sensitive_files_skipped" -gt 0 ]]; then
-      step_info "  ⟩ Melewati ${sensitive_files_skipped} file sensitif; tidak ada file aman untuk analisis per-file."
+      step_info "  ⟩ Skipping ${sensitive_files_skipped} sensitive file(s); no safe files remain for per-file analysis."
     fi
     return 1
   fi
 
   local limit="$FILE_ANALYSIS_LIMIT"
   [[ "$limit" -le 0 ]] && return 1
-  [[ "$limit" -gt "$safe_total" ]] && limit="$safe_total"
+  [[ "$limit" -gt "$analysis_candidate_total" ]] && limit="$analysis_candidate_total"
 
   local analysis_indices=()
-  mapfile -t analysis_indices < <(build_analysis_indices "$safe_total" "$limit")
+  mapfile -t analysis_indices < <(build_analysis_indices "$analysis_candidate_total" "$limit")
 
-  dbg "Menganalisis per-file: total $total_files, aman $safe_total, sensitif $sensitive_files_skipped, limit $limit, sampel: ${analysis_indices[*]}"
+  dbg "Per-file analysis: total $total_files, safe $safe_total, generated-deprioritized $generated_files_deprioritized, sensitive $sensitive_files_skipped, limit $limit, samples: ${analysis_indices[*]}"
 
   FILE_ANALYSES=""
   local analysis_total=${#analysis_indices[@]}
@@ -1201,11 +1332,11 @@ analyze_files_individually() {
   BATCH_ANALYSIS_FILE_NAMES=()
   BATCH_ANALYSIS_DIFF_CHUNKS=()
 
-  local selected_index file_name truncated_chunk
+  local selected_index truncated_chunk
   for selected_index in "${analysis_indices[@]}"; do
     chunk="${safe_chunks[$((selected_index - 1))]}"
 
-    file_name=$(echo "$chunk" | head -n 1 | sed -e 's#.* b/##')
+    file_name=$(diff_chunk_file_name "$chunk")
     truncated_chunk=$(echo "$chunk" | head -c "$MAX_HUNK_CHARS")
 
     BATCH_ANALYSIS_FILE_NAMES+=("$file_name")
@@ -1221,11 +1352,14 @@ analyze_files_individually() {
   [[ "$parallelism" -gt "$analysis_total" ]] && parallelism="$analysis_total"
 
   if [[ "$sensitive_files_skipped" -gt 0 ]]; then
-    step_info "  ⟩ Melewati ${sensitive_files_skipped} file sensitif; menganalisis ${analysis_total} file aman."
+    step_info "  ⟩ Skipping ${sensitive_files_skipped} sensitive file(s); analyzing ${analysis_total} safe file(s)."
+  fi
+  if [[ "$generated_files_deprioritized" -gt 0 ]]; then
+    step_info "  ⟩ Deprioritizing ${generated_files_deprioritized} generated file(s) for semantic analysis."
   fi
   local status_msg
-  status_msg=$(progress_status_text 0 "$analysis_total" "Menganalisis file AI")
-  live_status_start "$status_msg" "Mengirim ${analysis_total} file ke AI (blocking, paralel ${parallelism})..."
+  status_msg=$(progress_status_text 0 "$analysis_total" "Analyzing files with AI")
+  live_status_start "$status_msg" "Sending ${analysis_total} file(s) to AI (blocking, parallelism ${parallelism})..."
 
   local running=0
   local next_job=0
@@ -1275,19 +1409,19 @@ analyze_files_individually() {
       analysis=$(echo "$analysis" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 
       if [[ -z "$analysis" ]]; then
-        analysis="Perubahan pada file $file_name"
+        analysis="Changes in $file_name"
       fi
 
       analysis_results[i]="$analysis"
       [[ "$status" -ne 0 ]] && failed_batches=$((failed_batches + 1))
 
-      status_msg=$(progress_status_text "$completed" "$analysis_total" "Menganalisis file AI" "$(elapsed_since "$analysis_start")")
+      status_msg=$(progress_status_text "$completed" "$analysis_total" "Analyzing files with AI" "$(elapsed_since "$analysis_start")")
       live_status_update "$status_msg"
       live_status_print_above "  ${GREEN}→${NC} ${BOLD}${file_name}${NC}: ${DIM}${analysis}${NC}"
     done
 
     [[ "$completed" -ge "$analysis_total" ]] && break
-    status_msg=$(progress_status_text "$completed" "$analysis_total" "Menganalisis file AI" "$(elapsed_since "$analysis_start")")
+    status_msg=$(progress_status_text "$completed" "$analysis_total" "Analyzing files with AI" "$(elapsed_since "$analysis_start")")
     live_status_update "$status_msg"
     [[ "$made_progress" -eq 1 ]] || sleep 0.2
   done
@@ -1297,7 +1431,7 @@ analyze_files_individually() {
   FILE_ANALYSES=""
   for ((i=0; i<analysis_total; i++)); do
     file_name="${BATCH_ANALYSIS_FILE_NAMES[$i]}"
-    analysis="${analysis_results[$i]:-Perubahan pada file $file_name}"
+    analysis="${analysis_results[$i]:-Changes in $file_name}"
     FILE_ANALYSES+=$'<file name="'${file_name}$'">\n'${analysis}$'\n</file>\n'
   done
 
@@ -1307,48 +1441,66 @@ analyze_files_individually() {
   analysis_elapsed=$(elapsed_since "$analysis_start")
   if [[ "$failed_batches" -gt 0 ]]; then
     if [[ "$sensitive_files_skipped" -gt 0 ]]; then
-      step_ok "Analisis ${analysis_total} dari ${safe_total} file aman selesai dengan ${failed_batches} fallback; ${sensitive_files_skipped} file sensitif dilewati (${analysis_elapsed})"
+      step_ok "Analyzed ${analysis_total} of ${safe_total} safe file(s) with ${failed_batches} fallback(s); skipped ${sensitive_files_skipped} sensitive file(s) (${analysis_elapsed})"
     else
-      step_ok "Analisis ${analysis_total} dari ${total_files} file selesai dengan ${failed_batches} fallback (${analysis_elapsed})"
+      step_ok "Analyzed ${analysis_total} of ${total_files} file(s) with ${failed_batches} fallback(s) (${analysis_elapsed})"
     fi
   else
     if [[ "$sensitive_files_skipped" -gt 0 ]]; then
-      step_ok "Analisis ${analysis_total} dari ${safe_total} file aman selesai; ${sensitive_files_skipped} file sensitif dilewati (${analysis_elapsed})"
+      step_ok "Analyzed ${analysis_total} of ${safe_total} safe file(s); skipped ${sensitive_files_skipped} sensitive file(s) (${analysis_elapsed})"
     else
-      step_ok "Analisis ${analysis_total} dari ${total_files} file selesai (${analysis_elapsed})"
+      step_ok "Analyzed ${analysis_total} of ${total_files} file(s) (${analysis_elapsed})"
     fi
   fi
 }
 
 # ===== Prompt Builder =====
 build_system_prompt_text() {
+  local body_rule
+  if [[ "${STAGED_FILE_COUNT:-0}" -le 1 ]]; then
+    body_rule='The staged change has one file: output only the subject line and no body.'
+  else
+    body_rule="The staged change has multiple files: add a blank line followed by 1-${MAX_BODY_BULLETS} bullet lines. Each bullet must start with \"- \", describe an important diff-backed change, use imperative English, and end with a period."
+  fi
+
   cat <<EOF
-Kamu adalah senior software engineer.
+You are a senior software engineer.
 
-Tugasmu: buat 1 baris subject commit dalam Bahasa Indonesia.
+Your task: write an English Conventional Commit message without a scope.
 
-Aturan:
-1) Output WAJIB 1 baris plain text (tanpa markdown, tanpa JSON, tanpa code block).
-2) Jangan gunakan prefix conventional commit (feat/fix/docs/dll), cukup kalimat inti.
-3) Subject harus ringkas dan spesifik.
-4) Jangan menulis body atau footer.
-5) Jangan akhiri subject dengan tanda titik.
-6) Utamakan tema prioritas dari Git: delete/rename, config/runtime/service/env, API/schema/database, kode/logika, lalu dokumentasi.
-7) Hindari istilah generik seperti "struktur proyek" atau "perubahan umum"; gunakan istilah konkret dari diff.
-dan ingat selalu gunakan Bahasa Indonesia.
+Rules:
+1) The first line must be exactly: <type>: <summary>.
+2) Use exactly one type from: feat, fix, refactor, docs, test, chore, build, ci, perf, style, revert.
+3) Do not add a scope such as feat(auth):, Markdown, JSON, a code block, footer, or extra prose.
+4) The summary must be concise, specific, and must not end with a period.
+5) ${body_rule}
+6) Choose the subject from the primary functional capability, user flow, domain model, API behavior, data integrity, or security change. Treat tests and documentation as supporting evidence.
+7) Generated clients, schemas, types, snapshots, and codegen output are supporting artifacts. Do not lead the subject with them when source changes exist; mention them only with the feature they support.
+8) Treat config, file moves, and deletions as the primary theme only when they are the central behavior change, not merely implementation details of a feature.
+9) Avoid generic phrases such as "project structure", "general changes", "features", "components", or "configuration" when concrete diff terminology is available.
+Always use English.
 EOF
 }
 
 build_system_prompt_json() {
+  local body_rule
+  if [[ "${STAGED_FILE_COUNT:-0}" -le 1 ]]; then
+    body_rule='bullets (required): an empty array because exactly one file is staged.'
+  else
+    body_rule="bullets (required): an array containing 1-${MAX_BODY_BULLETS} important diff-backed changes. Each item uses imperative English and ends with a period; do not include the \"- \" marker."
+  fi
+
   cat <<EOF
-Kamu adalah senior software engineer.
+You are a senior software engineer.
 
-Isi field berikut berdasarkan perubahan yang diberikan:
-- subject (wajib): 1 baris, Bahasa Indonesia, ringkas, spesifik, tanpa titik di akhir.
+Fill the following field based on the supplied changes:
+- type (required): one of feat, fix, refactor, docs, test, chore, build, ci, perf, style, revert.
+- summary (required): one concise, specific English sentence fragment without a type prefix, scope, or trailing period.
+- ${body_rule}
 
-Dilarang menulis body/footer. Hanya subject.
-Utamakan fakta dari Git: delete/rename, config/runtime/service/env, API/schema/database, kode/logika, lalu dokumentasi. Hindari istilah generik; gunakan istilah konkret dari path, module, service, env var, schema, API, atau file jika relevan.
-dan ingat selalu gunakan Bahasa Indonesia.
+Do not add a scope, Markdown, a footer, or information absent from the supplied changes.
+Prioritize the primary functional capability, user flow, domain model, API behavior, data integrity, or security change. Treat tests, documentation, and generated artifacts as supporting evidence. Do not lead the subject with generated clients, schemas, types, snapshots, or codegen output when source changes exist. Avoid generic terms; use concrete terminology from paths, modules, services, environment variables, schemas, APIs, or files when relevant.
+Always use English.
 EOF
 }
 
@@ -1356,13 +1508,16 @@ build_user_prompt() {
   local safe_mode="$1"
 
   local prompt
-  prompt="Analisis perubahan berikut dan buat commit message yang paling tepat dan ingat selalu gunakan Bahasa Indonesia.
+  prompt="Analyze the following changes and write the most suitable commit message. Always use English.
 
-[PERUBAHAN PRIORITAS DARI GIT]
+[PRIORITY CHANGES FROM GIT]
 ${GIT_PRIORITY_CHANGES}
 
-[PRIORITAS TEMA UNIVERSAL]
+[UNIVERSAL THEME PRIORITIES]
 ${CHANGE_PRIORITY_HINT}
+
+[SEMANTIC CHANGE SUMMARY]
+${SEMANTIC_CHANGE_SUMMARY}
 
 [NAME-STATUS]
 ${NAME_STATUS}
@@ -1373,28 +1528,34 @@ ${GIT_SUMMARY}
 [STAT]
 ${STAT}
 
-[ISTILAH KONKRET DARI DIFF]
+[CONCRETE TERMS FROM DIFF]
 ${DIFF_TERMS}
 
-[ATURAN PEMILIHAN SUBJECT]
-- Utamakan perubahan eksplisit dari [PERUBAHAN PRIORITAS DARI GIT].
-- Gunakan [PRIORITAS TEMA UNIVERSAL] untuk memilih tema commit.
-- Jangan ganti delete/rename/config/API/schema/kode dengan istilah generik.
-- Jangan tulis domain spesifik seperti GPU, database, API, schema, atau service kecuali terlihat di diff/path.
-- Hindari \"struktur proyek\", \"pembaruan umum\", atau \"berbagai perubahan\" jika ada istilah konkret.
-- Gunakan kata sambung \"dan\", bukan simbol \"&\".
-- Jika banyak perubahan, rangkum maksimal 2 tema paling penting.
-- Prioritas tema: delete/rename/move file > config/runtime/service/env > API/schema/database > kode/logika > dokumentasi."
+[COMMIT MESSAGE RULES]
+- Prioritize explicit changes from [PRIORITY CHANGES FROM GIT].
+- Use [UNIVERSAL THEME PRIORITIES] to choose the commit theme.
+- Use [SEMANTIC CHANGE SUMMARY] to distinguish primary functional work from supporting artifacts.
+- Do not replace delete/rename/config/API/schema/code with generic terms.
+- Do not mention a specific domain such as GPU, database, API, schema, or service unless it appears in the diff or path.
+- Avoid \"project structure\", \"general update\", \"various changes\", \"features\", \"components\", or \"configuration\" when concrete terminology is available.
+- Use the word \"and\", not the \"&\" symbol.
+- Infer one Conventional Commit type without a scope.
+- The subject must use the format <type>: <summary> and must not end with a period.
+- For one staged file, return no body. For multiple staged files, return 1-${MAX_BODY_BULLETS} important, diff-backed bullets in imperative English; each bullet ends with a period.
+- Group related files into one capability-level bullet instead of listing implementation artifacts individually.
+- Generated clients, schemas, types, snapshots, and codegen output are supporting artifacts. Do not make them the subject or a standalone bullet when source changes exist; combine them with the API or frontend integration they support.
+- When there are many changes, summarize the most important functional themes and do not exceed ${MAX_BODY_BULLETS} bullets.
+- Theme priority: domain capability and user flow > API/data integrity/security > frontend integration > runtime behavior > structural cleanup > tests/documentation > generated artifacts."
 
   if [[ -n "${FILE_ANALYSES:-}" ]]; then
-    prompt+=$'\n\n[ANALISIS PER-FILE]\n'"$FILE_ANALYSES"
+    prompt+=$'\n\n[PER-FILE ANALYSIS]\n'"$FILE_ANALYSES"
   elif [[ "$safe_mode" -eq 0 ]]; then
     prompt+=$'\n\n[DIFF DETAIL]\n'"$TOP_HUNKS"
   else
-    prompt+=$'\n\nCatatan: Safe mode aktif, tidak mengirim diff detail.'
+    prompt+=$'\n\nNote: Safe mode is active, so detailed diffs are not sent.'
   fi
 
-  prompt+=$'\n\nBerikan output sesuai aturan.'
+  prompt+=$'\n\nReturn output that follows the rules.'
   echo "$prompt"
 }
 
@@ -1416,82 +1577,94 @@ subject_matches_change_focus() {
 subject_mentions_structural_change() {
   local lower
   lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  grep -Eiq 'hapus|delete|remove|pindah|rename|move|migrasi|bersih|buang|ganti|replace|arsip|hapuskan' <<<"$lower"
+  grep -Eiq 'delete|remove|rename|move|migrate|clean|replace|archive' <<<"$lower"
 }
 
 subject_mentions_config_change() {
   local lower
   lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  grep -Eiq 'konfigurasi|config|setting|service|runtime|env|variabel|paralel|timeout|limit|opsi|server|deploy|deployment' <<<"$lower"
+  grep -Eiq 'configuration|config|setting|service|runtime|env|variable|parallel|timeout|limit|option|server|deploy|deployment' <<<"$lower"
 }
 
 subject_mentions_schema_api_db_change() {
   local lower
   lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  grep -Eiq 'api|schema|skema|database|db|migrasi|query|endpoint|route|proto|graphql|sql|model data' <<<"$lower"
+  grep -Eiq 'api|schema|database|db|migration|query|endpoint|route|proto|graphql|sql|data model' <<<"$lower"
 }
 
 subject_mentions_doc_change() {
   local lower
   lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  grep -Eiq 'dokumen|dokumentasi|panduan|readme|runbook|protokol|instruksi|catatan|docs' <<<"$lower"
+  grep -Eiq 'document|documentation|guide|readme|runbook|protocol|instruction|note|docs' <<<"$lower"
 }
 
-commit_subject_quality_issue() {
-  local subject="$1"
-  local lower evidence_blob
-  lower=$(printf '%s' "$subject" | tr '[:upper:]' '[:lower:]')
+commit_message_quality_issue() {
+  local message="$1"
+  local subject summary lower evidence_blob
+  subject=${message%%$'\n'*}
+  summary=${subject#*: }
+  lower=$(printf '%s' "$message" | tr '[:upper:]' '[:lower:]')
   evidence_blob="${GIT_PRIORITY_CHANGES}${DIFF_TERMS}${TOP_HUNKS}${FILE_ANALYSES}${CHANGE_PRIORITY_HINT}"
 
-  if subject_has_disallowed_prefix "$subject"; then
-    printf 'Subject memakai prefix/label seperti conventional commit atau kategori; tulis kalimat inti tanpa prefix.'
+  if ! grep -Eiq '^(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert): [^[:space:]].*$' <<<"$subject"; then
+    printf 'Subject must use an allowed Conventional Commit type followed by a colon and summary, without a scope.'
     return 0
   fi
 
-  if grep -Eq '&' <<<"$subject"; then
-    printf 'Subject memakai gaya kurang rapi; gunakan kata sambung "dan", bukan simbol "&".'
+  if grep -Eq '&' <<<"$message"; then
+    printf 'Commit message uses an untidy style; use the word "and" instead of the "&" symbol.'
     return 0
   fi
 
-  if grep -Eq 'struktur[[:space:]-]*proyek|pembaruan umum|perubahan umum|berbagai perubahan|beberapa perubahan' <<<"$lower"; then
-    printf 'Subject terlalu generik; gunakan tema konkret dari Git seperti delete/rename, config/runtime, API/schema/database, kode, atau dokumentasi.'
+  if grep -Eq 'project[[:space:]-]*structure|general update|general changes|various changes|several changes' <<<"$lower"; then
+    printf 'Commit message is too generic; use a concrete Git theme such as delete/rename, config/runtime, API/schema/database, code, or documentation.'
+    return 0
+  fi
+
+  if [[ "${HAS_FUNCTIONAL_CHANGE:-0}" -eq 1 ]] && grep -Eiq 'generated (types?|client|schema)|type generation|code generation|generated api' <<<"$summary"; then
+    printf 'Subject leads with generated output even though functional source changes exist; lead with the domain capability, API behavior, security, or frontend user flow instead.'
+    return 0
+  fi
+
+  if [[ "${HAS_FUNCTIONAL_CHANGE:-0}" -eq 1 ]] && grep -Eiq '^(add|create|implement|update) (features|components|configuration|settings)$|^(add|create|implement|update) [a-z0-9 -]+ (features|components|configuration)$' <<<"$summary"; then
+    printf 'Subject is too generic for a functional change; name the concrete domain capability, API behavior, security control, or frontend flow.'
     return 0
   fi
 
   if grep -Eq 'gpu|cuda|nvidia|rocm' <<<"$lower" && ! grep -Eiq 'gpu|cuda|nvidia|rocm' <<<"$evidence_blob"; then
-    printf 'Subject menyebut GPU/hardware, tetapi sinyal itu tidak terlihat di diff/path; gunakan istilah konkret yang ada di Git.'
+    printf 'Commit message mentions GPU or hardware, but that signal is absent from the diff or path; use concrete Git terminology.'
     return 0
   fi
 
-  if [[ "${HAS_DELETE:-0}" -eq 1 || "${HAS_RENAME:-0}" -eq 1 ]]; then
-    if subject_mentions_structural_change "$subject" || subject_matches_change_focus "$subject"; then
+  if [[ "${HAS_API_CHANGE:-0}" -eq 1 || "${HAS_DATABASE_CHANGE:-0}" -eq 1 ]]; then
+    if subject_mentions_schema_api_db_change "$summary" || subject_matches_change_focus "$summary"; then
       return 1
     fi
-    printf 'Subject belum membawa tema delete/rename file, padahal itu tema prioritas tertinggi.'
+    printf 'Subject does not cover the API, data model, or database theme that is central to the changed source files.'
     return 0
   fi
 
-  if [[ "${HAS_CONFIG_CHANGE:-0}" -eq 1 ]]; then
-    if subject_mentions_config_change "$subject" || subject_matches_change_focus "$subject"; then
+  if [[ ( "${HAS_DELETE:-0}" -eq 1 || "${HAS_RENAME:-0}" -eq 1 ) && "${HAS_FUNCTIONAL_CHANGE:-0}" -eq 0 ]]; then
+    if subject_mentions_structural_change "$summary" || subject_matches_change_focus "$summary"; then
       return 1
     fi
-    printf 'Subject belum membawa tema config/runtime/service/env, padahal itu tema prioritas tertinggi yang tersedia.'
+    printf 'Subject does not cover the structural cleanup or relocation that is the primary changed theme.'
     return 0
   fi
 
-  if [[ "${HAS_SCHEMA_API_DB_CHANGE:-0}" -eq 1 ]]; then
-    if subject_mentions_schema_api_db_change "$subject" || subject_matches_change_focus "$subject"; then
+  if [[ "${HAS_CONFIG_CHANGE:-0}" -eq 1 && "${HAS_API_CHANGE:-0}" -eq 0 && "${HAS_DATABASE_CHANGE:-0}" -eq 0 && "${HAS_FRONTEND_CHANGE:-0}" -eq 0 ]]; then
+    if subject_mentions_config_change "$summary" || subject_matches_change_focus "$summary"; then
       return 1
     fi
-    printf 'Subject belum membawa tema API/schema/database, padahal itu tema prioritas tertinggi yang tersedia.'
+    printf 'Subject does not cover the runtime or service behavior that is central to the changed files.'
     return 0
   fi
 
   if [[ "${HAS_DOC_CHANGE:-0}" -eq 1 && "${HAS_CODE_CHANGE:-0}" -eq 0 ]]; then
-    if subject_mentions_doc_change "$subject" || subject_matches_change_focus "$subject"; then
+    if subject_mentions_doc_change "$summary" || subject_matches_change_focus "$summary"; then
       return 1
     fi
-    printf 'Subject belum membawa tema dokumentasi/panduan, padahal perubahan hanya dokumentasi.'
+    printf 'Subject does not cover documentation or guidance, even though the changes are documentation-only.'
     return 0
   fi
 
@@ -1500,22 +1673,22 @@ commit_subject_quality_issue() {
 
 build_quality_retry_prompt() {
   local base_prompt="$1"
-  local previous_subject="$2"
+  local previous_message="$2"
   local issue="$3"
 
   cat <<EOF
 ${base_prompt}
 
-[KOREKSI SUBJECT SEBELUMNYA]
-Subject sebelumnya:
-${previous_subject}
+[PREVIOUS COMMIT MESSAGE CORRECTION]
+Previous commit message:
+${previous_message}
 
-Masalah:
+Issue:
 ${issue}
 
-Tulis ulang subject menjadi lebih akurat, konkret, dan tetap ringkas.
-Ikuti prioritas tema universal: delete/rename/move file > config/runtime/service/env > API/schema/database > kode/logika > dokumentasi.
-Berikan HANYA 1 baris subject commit tanpa markdown, tanpa JSON tambahan, tanpa body/footer.
+Rewrite the complete commit message to be more accurate, concrete, and concise.
+Follow the semantic priority: domain capability and user flow > API/data integrity/security > frontend integration > runtime behavior > structural cleanup > tests/documentation > generated artifacts.
+Return only the required format: <type>: <summary>, optionally followed by a blank line and the required bullet body. Do not use a scope, Markdown, extra JSON, or a footer.
 EOF
 }
 
@@ -1562,7 +1735,7 @@ cap_num_predict() {
 
   [[ -z "$num_predict" ]] && { printf '%s' "$num_predict"; return 0; }
   if [[ "$num_predict" =~ ^[0-9]+$ && "$AI_MAX_NUM_PREDICT" =~ ^[0-9]+$ && "$num_predict" -gt "$AI_MAX_NUM_PREDICT" ]]; then
-    dbg "num_predict ${num_predict} melebihi batas ${AI_MAX_NUM_PREDICT}; memakai batas maksimum."
+    dbg "num_predict ${num_predict} exceeds ${AI_MAX_NUM_PREDICT}; using the maximum."
     num_predict="$AI_MAX_NUM_PREDICT"
   fi
 
@@ -1572,10 +1745,10 @@ cap_num_predict() {
 ollama_chat() {
   local system_prompt="$1"
   local user_prompt="$2"
-  local format_json_schema="${3:-}"   # kosong = non-structured
+  local format_json_schema="${3:-}"   # empty = non-structured
   local max_time="${4:-120}"          # timeout curl (default 120s)
-  # Argumen ke-5 dari versi lama tetap diterima, tetapi diabaikan.
-  local num_predict_override="${6:-}" # kosong = pakai AI_NUM_PREDICT
+  # The fifth argument from earlier versions is still accepted but ignored.
+  local num_predict_override="${6:-}" # empty = use AI_NUM_PREDICT
 
   local options num_predict
   num_predict="$AI_NUM_PREDICT"
@@ -1622,7 +1795,7 @@ ollama_chat() {
       }')
   fi
 
-  # Default nothink: kirim kontrol think ke Ollama.
+  # Send the think control to Ollama, defaulting to no thinking.
   payload=$(jq -c \
     --arg think "$AI_THINK" \
     '. + {think: (if $think == "true" then true elif $think == "false" then false else $think end)}' \
@@ -1639,7 +1812,7 @@ _ollama_chat_blocking() {
   local payload="$1"
   local max_time="$2"
 
-  # Pastikan Ollama mengembalikan satu response utuh.
+  # Ensure Ollama returns one complete response.
   local blocking_payload
   blocking_payload=$(jq -c '.stream = false' <<<"$payload")
 
@@ -1660,76 +1833,140 @@ _ollama_chat_blocking() {
   printf '%s' "$text"
 }
 
-subject_has_disallowed_prefix() {
-  local subject="$1"
-  grep -Eiq '^[[:space:]]*((feat|fix|docs|doc|chore|refactor|test|tests|style|perf|ci|build|revert|wip)(\([^)]+\))?[!:：]|(dokumentasi|perbaikan|pembaruan|fitur|konfigurasi|refaktor|uji)[[:space:]]*:)' <<<"$subject"
+is_allowed_commit_type() {
+  case "$1" in
+    feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
-strip_disallowed_subject_prefix() {
-  local subject="$1"
-  subject=$(printf '%s' "$subject" | sed -E 's/^[[:space:]]*((feat|fix|docs|doc|chore|refactor|test|tests|style|perf|ci|build|revert|wip)(\([^)]+\))?[!:：][[:space:]]*|([Dd]okumentasi|[Pp]erbaikan|[Pp]embaruan|[Ff]itur|[Kk]onfigurasi|[Rr]efaktor|[Uu]ji)[[:space:]]*:[[:space:]]*)//')
-  printf '%s' "$subject"
+normalize_commit_type() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 
-validate_commit_subject() {
-  local subject="$1"
-  [[ -n "$subject" ]] || return 1
-  [[ "${#subject}" -ge 8 ]] || return 1
-  [[ "${#subject}" -le "$MAX_SUBJECT_LENGTH" ]] || return 1
-  if subject_has_disallowed_prefix "$subject"; then
+normalize_commit_summary() {
+  local summary="$1"
+
+  summary=$(printf '%s' "$summary" | sed -E 's/[[:space:]]*&[[:space:]]*/ and /g')
+  summary=$(printf '%s' "$summary" | sed -E 's/[Pp]arallelisme/parallelism/g; s/[Pp]aralellism/parallelism/g; s/[Pp]arallel([[:space:]]|$)/parallel\1/g')
+  summary=$(printf '%s' "$summary" | tr -s ' ')
+  summary=$(printf '%s' "$summary" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//')
+
+  printf '%s' "$summary"
+}
+
+normalize_commit_bullet() {
+  local bullet="$1"
+
+  bullet=$(printf '%s' "$bullet" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+  bullet=$(printf '%s' "$bullet" | sed -E 's/[[:space:]]*&[[:space:]]*/ and /g')
+  bullet=$(printf '%s' "$bullet" | tr -s ' ')
+  bullet=$(printf '%s' "$bullet" | sed -E 's/[!?:;]+$//')
+  [[ -z "$bullet" || "$bullet" == *. ]] || bullet+="."
+
+  printf '%s' "$bullet"
+}
+
+validate_commit_summary() {
+  local summary="$1"
+
+  [[ -n "$summary" ]] || return 1
+  [[ "${#summary}" -ge 8 ]] || return 1
+  [[ "$summary" != *$'\n'* && "$summary" != *$'\r'* ]] || return 1
+  [[ "$summary" != *'`'* && "$summary" != *'*'* && "$summary" != '#'* && "$summary" != '>'* ]] || return 1
+  [[ "$summary" != *'.' ]] || return 1
+  if grep -Eiq '^[[:space:]]*(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert)(\([^)]+\))?[!:：]' <<<"$summary"; then
     return 1
   fi
-  # Tolak control character (0x00-0x1f, 0x7f), bukan semua non-ASCII.
-  # Bahasa Indonesia umumnya ASCII, tapi biarkan UTF-8 valid lolos.
-  if printf '%s' "$subject" | LC_ALL=C grep -qP '[\x00-\x1f\x7f]'; then
-    return 1
-  fi
-  # Hanya tolak subject yang berakhir titik (konvensi commit message).
-  # Tanda baca lain seperti ), >, dll diizinkan.
-  if echo "$subject" | grep -Eq '\.$'; then
-    return 1
-  fi
-  echo "$subject" | grep -Eq '^[[:space:]]*[^[:space:]].*$'
+  printf '%s' "$summary" | LC_ALL=C grep -qP '[\x00-\x1f\x7f]' && return 1
+  printf '%s' "$summary" | grep -Eq '^[[:space:]]*[^[:space:]].*$'
 }
 
-normalize_commit_subject() {
-  local subject="$1"
+validate_commit_bullet() {
+  local bullet="$1"
 
-  subject=$(strip_disallowed_subject_prefix "$subject")
-  subject=$(printf '%s' "$subject" | sed -E 's/[[:space:]]*&[[:space:]]*/ dan /g')
-  subject=$(printf '%s' "$subject" | sed -E 's/(^|[[:space:]])[Uu]pdate([[:space:]]|$)/\1Perbarui\2/g')
-  subject=$(printf '%s' "$subject" | sed -E 's/^Pembaruan([[:space:]]|$)/Perbarui\1/g')
-  subject=$(printf '%s' "$subject" | sed -E 's/[Bb]atas [Pp]arallel([[:space:]]|$)/batas paralel\1/g; s/[Bb]atas [Pp]aralel([[:space:]]|$)/batas paralel\1/g')
-  subject=$(printf '%s' "$subject" | sed -E 's/[Pp]arallelisme/paralelisme/g; s/[Pp]aralellisme/paralelisme/g; s/[Pp]arallel([[:space:]]|$)/paralel\1/g')
-  subject=$(printf '%s' "$subject" | tr -s ' ')
-  subject=$(printf '%s' "$subject" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-  if [[ "$MAX_SUBJECT_LENGTH" =~ ^[0-9]+$ && "${#subject}" -gt "$MAX_SUBJECT_LENGTH" ]]; then
-    subject="${subject:0:MAX_SUBJECT_LENGTH}"
-    subject="${subject% *}"
-    subject=$(printf '%s' "$subject" | sed 's/[[:space:],;:.-]*$//')
-  fi
-
-  printf '%s' "$subject"
-}
-
-clean_plain_commit_message() {
-  local msg="$1"
-
-  msg=$(echo "$msg" | sed "s/^\`\`\`.*//g; s/\`\`\`$//g")
-  local subject
-  subject=$(echo "$msg" | sed '/^[[:space:]]*$/d' | head -n 1 | sed 's/\*\*//g; s/\*//g; s/`//g')
-  subject=$(echo "$subject" | sed -E 's/^[[:space:]]*[-*]+[[:space:]]*//')
-  subject=$(echo "$subject" | tr -s ' ')
-  subject=$(echo "$subject" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[\.[:space:]]*$//')
-  subject=$(normalize_commit_subject "$subject")
-
-  printf '%s' "$subject"
+  [[ -n "$bullet" ]] || return 1
+  [[ "$bullet" != *$'\n'* && "$bullet" != *$'\r'* ]] || return 1
+  [[ "$bullet" != *'`'* && "$bullet" != *'*'* && "$bullet" != '```'* && "$bullet" != '#'* && "$bullet" != '>'* ]] || return 1
+  [[ "$bullet" == *. ]] || return 1
+  printf '%s' "$bullet" | LC_ALL=C grep -qP '[\x00-\x1f\x7f]' && return 1
+  printf '%s' "$bullet" | grep -Eq '^[[:space:]]*[^[:space:]].*$'
 }
 
 compose_commit_message() {
-  local subject="$1"
+  local type="$1"
+  local summary="$2"
+  shift 2
+  local bullet
 
-  printf '%s' "$subject"
+  printf '%s: %s' "$type" "$summary"
+  if [[ "$#" -gt 0 ]]; then
+    printf '\n\n'
+    for bullet in "$@"; do
+      printf -- '- %s\n' "$bullet"
+    done
+  fi
+}
+
+validate_commit_message_fields() {
+  local type="$1"
+  local summary="$2"
+  shift 2
+  local bullet message normalized_bullet normalized_existing
+  local i j
+  local -a bullets=("$@")
+
+  is_allowed_commit_type "$type" || return 1
+  validate_commit_summary "$summary" || return 1
+
+  if [[ "${STAGED_FILE_COUNT:-0}" -le 1 ]]; then
+    [[ "$#" -eq 0 ]] || return 1
+  else
+    [[ "$#" -ge 1 && "$#" -le "$MAX_BODY_BULLETS" ]] || return 1
+  fi
+
+  for ((i=0; i<${#bullets[@]}; i++)); do
+    bullet="${bullets[i]}"
+    validate_commit_bullet "$bullet" || return 1
+    normalized_bullet=$(printf '%s' "$bullet" | tr '[:upper:]' '[:lower:]')
+    for ((j=0; j<i; j++)); do
+      normalized_existing=$(printf '%s' "${bullets[j]}" | tr '[:upper:]' '[:lower:]')
+      [[ "$normalized_bullet" != "$normalized_existing" ]] || return 1
+    done
+  done
+
+  message=$(compose_commit_message "$type" "$summary" "$@")
+  [[ "${#message}" -le "$MAX_COMMIT_MESSAGE_LENGTH" ]]
+}
+
+clean_plain_commit_message() {
+  local message="$1"
+  local line line_number=0 type summary bullet
+  local -a bullets=()
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    if [[ "$line_number" -eq 0 ]]; then
+      if [[ "$line" =~ ^(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert):[[:space:]]+(.+)$ ]]; then
+        type=$(normalize_commit_type "${BASH_REMATCH[1]}")
+        summary=$(normalize_commit_summary "${BASH_REMATCH[2]}")
+      else
+        return 1
+      fi
+    elif [[ -z "${line//[[:space:]]/}" ]]; then
+      :
+    elif [[ "$line" =~ ^-[[:space:]]+(.+)$ ]]; then
+      bullet=$(normalize_commit_bullet "${BASH_REMATCH[1]}")
+      bullets+=("$bullet")
+    else
+      return 1
+    fi
+    line_number=$((line_number + 1))
+  done <<< "$message"
+
+  [[ "$line_number" -gt 0 ]] || return 1
+  validate_commit_message_fields "$type" "$summary" "${bullets[@]}" || return 1
+  compose_commit_message "$type" "$summary" "${bullets[@]}"
 }
 
 append_fallback_topic() {
@@ -1743,82 +1980,148 @@ append_fallback_topic() {
   FALLBACK_TOPICS+=("$topic")
 }
 
-build_fallback_subject() {
+build_fallback_summary() {
   FALLBACK_TOPICS=()
 
-  [[ "${HAS_DELETE:-0}" -eq 1 ]] && append_fallback_topic "hapus ${DELETE_FOCUS_LABEL:-file}"
-  [[ "${HAS_RENAME:-0}" -eq 1 ]] && append_fallback_topic "pindahkan ${RENAME_FOCUS_LABEL:-file}"
-  [[ "${HAS_CONFIG_CHANGE:-0}" -eq 1 ]] && append_fallback_topic "perbarui konfigurasi"
-  [[ "${HAS_SCHEMA_API_DB_CHANGE:-0}" -eq 1 ]] && append_fallback_topic "perbarui API/schema"
-  [[ "${HAS_CODE_CHANGE:-0}" -eq 1 ]] && append_fallback_topic "perbarui logika kode"
-  [[ "${HAS_DOC_CHANGE:-0}" -eq 1 ]] && append_fallback_topic "perbarui dokumentasi"
+  [[ "${HAS_DELETE:-0}" -eq 1 ]] && append_fallback_topic "remove ${DELETE_FOCUS_LABEL:-file}"
+  [[ "${HAS_RENAME:-0}" -eq 1 ]] && append_fallback_topic "move ${RENAME_FOCUS_LABEL:-file}"
+  [[ "${HAS_CONFIG_CHANGE:-0}" -eq 1 ]] && append_fallback_topic "update configuration"
+  [[ "${HAS_SCHEMA_API_DB_CHANGE:-0}" -eq 1 ]] && append_fallback_topic "update API/schema"
+  [[ "${HAS_CODE_CHANGE:-0}" -eq 1 ]] && append_fallback_topic "update code logic"
+  [[ "${HAS_DOC_CHANGE:-0}" -eq 1 ]] && append_fallback_topic "update documentation"
 
-  local subject
+  local summary
   case "${#FALLBACK_TOPICS[@]}" in
     0)
-      subject="Perbarui ${FILES_CHANGED:-beberapa berkas}"
+      summary="update ${FILES_CHANGED:-staged files}"
       ;;
     1)
-      subject="${FALLBACK_TOPICS[0]}"
+      summary="${FALLBACK_TOPICS[0]}"
       ;;
     2)
-      subject="${FALLBACK_TOPICS[0]} dan ${FALLBACK_TOPICS[1]}"
+      summary="${FALLBACK_TOPICS[0]} and ${FALLBACK_TOPICS[1]}"
       ;;
     *)
-      subject="${FALLBACK_TOPICS[0]}, ${FALLBACK_TOPICS[1]}, dan ${FALLBACK_TOPICS[2]}"
+      summary="${FALLBACK_TOPICS[0]}, ${FALLBACK_TOPICS[1]}, and ${FALLBACK_TOPICS[2]}"
       ;;
   esac
 
-  subject=$(normalize_commit_subject "$subject")
+  summary=$(normalize_commit_summary "$summary")
 
-  printf '%s' "$subject"
+  printf '%s' "$summary"
+}
+
+build_fallback_type() {
+  if [[ "${HAS_DOC_CHANGE:-0}" -eq 1 && "${HAS_CODE_CHANGE:-0}" -eq 0 && "${HAS_CONFIG_CHANGE:-0}" -eq 0 && "${HAS_SCHEMA_API_DB_CHANGE:-0}" -eq 0 ]]; then
+    printf 'docs'
+  elif [[ "${HAS_DELETE:-0}" -eq 1 || "${HAS_RENAME:-0}" -eq 1 ]]; then
+    printf 'refactor'
+  else
+    printf 'chore'
+  fi
+}
+
+build_fallback_bullets() {
+  [[ "${STAGED_FILE_COUNT:-0}" -gt 1 ]] || return 0
+
+  local status path1 path2 action count=0
+  while IFS=$'\t' read -r status path1 path2; do
+    [[ -n "${status:-}" && -n "${path1:-}" ]] || continue
+    case "$status" in
+      A)  action="Add ${path1}." ;;
+      D)  action="Remove ${path1}." ;;
+      R*) action="Rename ${path1} to ${path2:-$path1}." ;;
+      *)  action="Update ${path1}." ;;
+    esac
+    printf '%s\n' "$action"
+    count=$((count + 1))
+    [[ "$count" -ge "$MAX_BODY_BULLETS" ]] && break
+  done < <(git diff --cached --name-status -M | head -n "$MAX_BODY_BULLETS" || true)
+}
+
+build_fallback_commit_message() {
+  local type summary message
+  local -a bullets=()
+
+  type=$(build_fallback_type)
+  summary=$(build_fallback_summary)
+  if [[ "${STAGED_FILE_COUNT:-0}" -gt 1 ]]; then
+    mapfile -t bullets < <(build_fallback_bullets)
+    [[ "${#bullets[@]}" -gt 0 ]] || bullets=("Update staged files.")
+  fi
+
+  message=$(compose_commit_message "$type" "$summary" "${bullets[@]}")
+  while [[ "${#message}" -gt "$MAX_COMMIT_MESSAGE_LENGTH" && "${#bullets[@]}" -gt 1 ]]; do
+    unset 'bullets[-1]'
+    message=$(compose_commit_message "$type" "$summary" "${bullets[@]}")
+  done
+
+  if [[ "${#message}" -gt "$MAX_COMMIT_MESSAGE_LENGTH" ]]; then
+    type='ci'
+    summary='update it'
+    if [[ "${STAGED_FILE_COUNT:-0}" -gt 1 ]]; then
+      bullets=("Update.")
+    else
+      bullets=()
+    fi
+    message=$(compose_commit_message "$type" "$summary" "${bullets[@]}")
+  fi
+
+  printf '%s' "$message"
 }
 
 build_commit_schema() {
-  jq -n '
+  local min_bullets=0
+  [[ "${STAGED_FILE_COUNT:-0}" -gt 1 ]] && min_bullets=1
+
+  jq -n --argjson min_bullets "$min_bullets" --argjson max_bullets "$MAX_BODY_BULLETS" '
     {
       type: "object",
       additionalProperties: false,
       properties: {
-        subject: {type:"string"}
+        type: {type:"string", enum:["feat", "fix", "refactor", "docs", "test", "chore", "build", "ci", "perf", "style", "revert"]},
+        summary: {type:"string"},
+        bullets: {
+          type:"array",
+          minItems:$min_bullets,
+          maxItems:$max_bullets,
+          items:{type:"string"}
+        }
       },
-      required: ["subject"]
+      required: ["type", "summary", "bullets"]
     }
     '
 }
 
 compose_commit_from_json() {
   local json="$1"
+  local type summary bullet
+  local -a bullets=()
 
-  local subject
-  subject=$(echo "$json" | jq -r '.subject // empty')
-  subject=$(echo "$subject" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' )
-  subject="${subject//\`/}"
-  subject=$(echo "$subject" | tr -s ' ')
-  while [[ "$subject" =~ [[:punct:][:space:]]$ ]]; do
-    subject="${subject%?}"
-  done
-  subject=$(normalize_commit_subject "$subject")
-  [[ -z "$subject" ]] && return 1
+  echo "$json" | jq -e '(.type | type == "string") and (.summary | type == "string") and (.bullets | type == "array")' >/dev/null || return 1
+  type=$(echo "$json" | jq -r '.type // empty')
+  summary=$(echo "$json" | jq -r '.summary // empty')
+  type=$(normalize_commit_type "$type")
+  summary=$(normalize_commit_summary "$summary")
+  while IFS= read -r bullet; do
+    bullets+=("$(normalize_commit_bullet "$bullet")")
+  done < <(echo "$json" | jq -r '.bullets // [] | .[]')
 
-  if ! validate_commit_subject "$subject"; then
-    return 1
-  fi
-
-  compose_commit_message "$subject"
+  validate_commit_message_fields "$type" "$summary" "${bullets[@]}" || return 1
+  compose_commit_message "$type" "$summary" "${bullets[@]}"
 }
 
 generate_commit_message() {
-  # Step headers dipanggil dari main() untuk menghindari subshell counter issue
+  # Step headers are called from main() to avoid a subshell counter issue.
 
   local safe_mode=0
   if [[ "$FORCE_DIFF" -eq 0 ]] && detect_sensitive_patterns; then
     safe_mode=1
-    warn "Terdeteksi pola sensitif. Safe mode aktif (tidak mengirim diff detail)."
+    warn "Sensitive patterns detected. Safe mode enabled (detailed diffs are not sent)."
   fi
 
   collect_context "$safe_mode"
-  step_ok "Konteks: ${STAGED_FILE_COUNT} file staged"
+  step_ok "Context: ${STAGED_FILE_COUNT} file(s) staged"
 
   FILE_ANALYSES=""
   if [[ "$DO_FILE_ANALYSIS" -eq 1 ]]; then
@@ -1826,7 +2129,7 @@ generate_commit_message() {
   fi
 
   local attempts=3
-  local system_prompt base_user_prompt user_prompt schema content json subject commit_msg quality_issue
+  local system_prompt base_user_prompt user_prompt schema content json commit_msg quality_issue
   local structured_available="$USE_STRUCTURED_OUTPUT"
   base_user_prompt=$(build_user_prompt "$safe_mode")
   user_prompt="$base_user_prompt"
@@ -1835,7 +2138,7 @@ generate_commit_message() {
   for ((i=1; i<=attempts; i++)); do
     dbg "Attempt $i/$attempts"
     [[ "$i" -gt 1 ]] && {
-      step_info "Percobaan ulang $i/$attempts..."
+      step_info "Retry $i/$attempts..."
       dbg "Retry delay: ${retry_delay}s"
       sleep "$retry_delay"
       retry_delay=$((retry_delay * 2))
@@ -1844,26 +2147,26 @@ generate_commit_message() {
     if [[ "$structured_available" -eq 1 ]]; then
       system_prompt=$(build_system_prompt_json)
       schema=$(build_commit_schema)
-      blocking_status_start "Mengirim prompt ke AI model (structured)..."
+      blocking_status_start "Sending prompt to AI model (structured)..."
 
       if ! content=$(ollama_chat "$system_prompt" "$user_prompt" "$schema"); then
         blocking_status_stop
-        dbg "Structured output gagal (request/parse). Fallback ke plain text."
+        dbg "Structured output failed (request/parse). Falling back to plain text."
         structured_available=0
         continue
       fi
       blocking_status_stop
 
-      # Ollama mengembalikan JSON sebagai string di message.content
+      # Ollama returns JSON as a string in message.content.
       if ! json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
-        dbg "Structured output bukan JSON valid."
+        dbg "Structured output is not valid JSON."
         structured_available=0
         continue
       fi
 
       if commit_msg=$(compose_commit_from_json "$json"); then
-        if quality_issue=$(commit_subject_quality_issue "$commit_msg"); then
-          dbg "Subject perlu retry: $quality_issue"
+        if quality_issue=$(commit_message_quality_issue "$commit_msg"); then
+          dbg "Commit message needs retry: $quality_issue"
           user_prompt=$(build_quality_retry_prompt "$base_user_prompt" "$commit_msg" "$quality_issue")
           commit_msg=""
           continue
@@ -1871,24 +2174,22 @@ generate_commit_message() {
         break
       fi
 
-      dbg "JSON valid tapi gagal compose/validasi subject."
+      dbg "JSON is valid but commit-message composition/validation failed."
       structured_available=0
       continue
     fi
 
     system_prompt=$(build_system_prompt_text)
-    blocking_status_start "Mengirim prompt ke AI model (plain text)..."
+    blocking_status_start "Sending prompt to AI model (plain text)..."
     if ! content=$(ollama_chat "$system_prompt" "$user_prompt" ""); then
       blocking_status_stop
       continue
     fi
     blocking_status_stop
 
-    subject=$(clean_plain_commit_message "$content")
-    if validate_commit_subject "$subject"; then
-      commit_msg=$(compose_commit_message "$subject")
-      if quality_issue=$(commit_subject_quality_issue "$commit_msg"); then
-        dbg "Subject perlu retry: $quality_issue"
+    if commit_msg=$(clean_plain_commit_message "$content"); then
+      if quality_issue=$(commit_message_quality_issue "$commit_msg"); then
+        dbg "Commit message needs retry: $quality_issue"
         user_prompt=$(build_quality_retry_prompt "$base_user_prompt" "$commit_msg" "$quality_issue")
         commit_msg=""
         continue
@@ -1896,13 +2197,12 @@ generate_commit_message() {
       break
     fi
 
-    user_prompt="${base_user_prompt}"$'\n\n[RETRY]\nOutput kamu sebelumnya tidak valid. Berikan HANYA 1 baris subject commit plain text, tanpa type prefix, tanpa body/footer.'
+    user_prompt="${base_user_prompt}"$'\n\n[RETRY]\nYour previous output was invalid. Return only a plain-text Conventional Commit message without a scope or Markdown. Use <type>: <summary>; include the required bullet body only when multiple files are staged.'
   done
 
   if [[ -z "${commit_msg:-}" ]]; then
-    warn "Gagal generate subject dari AI. Menggunakan fallback."
-    subject=$(build_fallback_subject)
-    commit_msg=$(compose_commit_message "$subject")
+    warn "Failed to generate a valid commit message from AI. Using fallback."
+    commit_msg=$(build_fallback_commit_message)
   fi
 
   printf '%s' "$commit_msg"
@@ -1913,19 +2213,19 @@ do_commit() {
   show_step "Commit"
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    warn "DRY RUN: tidak commit/push dan tidak mengubah git state."
+    warn "DRY RUN: no commit, push, or Git state changes."
     return 0
   fi
 
-  # Interactive mode: tampilkan dan minta konfirmasi
+  # Interactive mode: show the message and ask for confirmation.
   if [[ "$INTERACTIVE" -eq 1 ]]; then
     info "===== Commit Message ====="
     echo "$msg" >&2
     info "=========================="
     local confirm
-    read -rp "Lanjutkan commit? [Y/n/e(dit)] " confirm
+    read -rp "Continue with commit? [Y/n/e(dit)] " confirm
     case "${confirm,,}" in
-      n|no)  warn "Commit dibatalkan."; exit 0 ;;
+      n|no)  warn "Commit cancelled."; exit 0 ;;
       e|edit)
         local tmpfile_edit
         tmpfile_edit=$(mktemp --suffix=.gitcommit)
@@ -1933,9 +2233,9 @@ do_commit() {
         ${EDITOR:-vi} "$tmpfile_edit"
         msg=$(cat "$tmpfile_edit")
         rm -f "$tmpfile_edit"
-        [[ -z "$(echo "$msg" | sed '/^[[:space:]]*$/d')" ]] && { warn "Commit message kosong. Dibatalkan."; exit 0; }
+        [[ -z "$(echo "$msg" | sed '/^[[:space:]]*$/d')" ]] && { warn "Commit message is empty. Cancelled."; exit 0; }
         ;;
-      *)  ;; # default: lanjut
+      *)  ;; # default: continue
     esac
   fi
 
@@ -1958,7 +2258,7 @@ do_commit() {
 
 do_push() {
   [[ "$DRY_RUN" -eq 1 ]] && return 0
-  [[ "$DO_PUSH" -eq 0 ]] && { step_info "Push dilewati (--no-push)"; return 0; }
+  [[ "$DO_PUSH" -eq 0 ]] && { step_info "Push skipped (--no-push)"; return 0; }
 
   show_step "Push"
 
@@ -1966,11 +2266,11 @@ do_push() {
   branch=$(git branch --show-current 2>/dev/null || echo "?")
 
   if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-    spinner_start "Pushing ke remote..."
+    spinner_start "Pushing to remote..."
     git push
     spinner_stop
     remote=$(git remote | head -n 1 || echo "origin")
-    step_ok "Pushed ke ${remote}/${branch}"
+    step_ok "Pushed to ${remote}/${branch}"
     return 0
   fi
 
@@ -1981,14 +2281,14 @@ do_push() {
   fi
 
   if [[ -z "$remote" ]]; then
-    warn "Tidak ada remote repository. Skip push."
+    warn "No remote repository. Skipping push."
     return 0
   fi
 
-  spinner_start "Pushing ke ${remote}/${branch}..."
+  spinner_start "Pushing to ${remote}/${branch}..."
   git push -u "$remote" "$branch"
   spinner_stop
-  step_ok "Pushed ke ${remote}/${branch}"
+  step_ok "Pushed to ${remote}/${branch}"
 }
 
 acquire_lock() {
@@ -1997,7 +2297,7 @@ acquire_lock() {
   LOCK_FILE="${git_dir}/git-ai.lock"
   exec 200>"$LOCK_FILE"
   if ! flock -n 200; then
-    die "git-ai sudah berjalan di repo ini. Tunggu proses sebelumnya selesai."
+    die "git-ai is already running in this repository. Wait for the previous process to finish."
   fi
   dbg "Lock acquired: $LOCK_FILE"
 }
@@ -2024,15 +2324,15 @@ main() {
   trap 'live_status_stop; spinner_stop; restore_cursor; cleanup_dry_run_index; release_lock; rm -f "${TOKEN_LOG_FILE:-}"' EXIT
   setup_dry_run_index
 
-  # Hitung total steps berdasarkan konfigurasi
-  # Base: deps(1) + stage(2) + analyze+generate(3) + commit(4) + push(5)
+  # Calculate total steps from the configuration.
+  # Base: dependencies (1) + stage (2) + analyze/generate (3) + commit (4) + push (5)
   TOTAL_STEPS=5
   [[ "$DO_PUSH" -eq 0 ]] && TOTAL_STEPS=$((TOTAL_STEPS - 1))
 
   check_deps
   stage_changes
 
-  show_step "Menganalisis & membuat commit message"
+  show_step "Analyzing changes and creating commit message"
 
   local commit_msg_file
   commit_msg_file=$(mktemp)
@@ -2044,7 +2344,7 @@ main() {
 
   local gen_elapsed
   gen_elapsed=$(elapsed_since "$gen_start")
-  step_ok "Commit message diterima (${gen_elapsed})"
+  step_ok "Commit message received (${gen_elapsed})"
 
   local commit_msg
   commit_msg=$(cat "$commit_msg_file")
@@ -2053,7 +2353,7 @@ main() {
   do_commit "$commit_msg"
   do_push
 
-  # Summary akhir
+  # Final summary
   local summary_detail=""
   if [[ "$DRY_RUN" -eq 0 ]]; then
     local short_hash
@@ -2075,7 +2375,7 @@ main() {
   fi
   show_summary "$summary_detail"
 
-  # Hitung total token
+  # Calculate total tokens
   local total_tokens=0
   if [[ -f "${TOKEN_LOG_FILE:-}" ]]; then
     while read -r t; do
@@ -2096,7 +2396,7 @@ main() {
     }')
   fi
 
-  # Hasil commit disimpan paling bawah
+  # Keep the commit result at the bottom.
   echo -e "Commit message \"${commit_msg}\""
   echo -e "${DIM}Token usage ${formatted_tokens}${NC}"
 }
