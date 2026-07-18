@@ -1,6 +1,6 @@
 # Security Policy
 
-`git-auto-commit-ollama` adalah Bash CLI yang membaca Git diff, membuat commit message melalui Ollama, lalu dapat menjalankan `git commit` dan `git push`. Karena tool ini menyentuh Git state, staged changes, secret scanning, dan endpoint AI lokal/internal, laporan keamanan diprioritaskan untuk dampak terhadap kerahasiaan, integritas, dan kontrol atas repository pengguna.
+`git-auto-commit-ollama` adalah Bash CLI yang membaca Git diff, membuat commit message melalui endpoint Ollama yang dikonfigurasi, lalu dapat menjalankan `git commit` dan `git push`. Karena tool ini menyentuh Git state, staged changes, secret scanning, dan endpoint jaringan, laporan keamanan diprioritaskan untuk dampak terhadap kerahasiaan, integritas, dan kontrol atas repository pengguna.
 
 ## Table of Contents
 
@@ -15,23 +15,25 @@
 
 ## Supported Versions
 
-Repository ini belum memakai release tag publik. Dukungan keamanan mengikuti branch `main` dan versi CLI terbaru yang ada di `git-ai.sh`.
+Repository saat ini belum memiliki tag Git pada riwayat yang tersedia. Dukungan keamanan mengikuti branch `main` dan revisi terbaru `git-ai.sh`. Nilai `VERSION` pada script adalah identitas versi CLI, bukan janji bahwa seluruh seri minor menerima backport keamanan.
 
 | Version / branch | Supported | Notes |
 | --- | --- | --- |
 | `main` | Yes | Target utama untuk patch keamanan. |
-| `1.5.x` | Yes | Seri saat ini berdasarkan `VERSION="1.5.1"`. |
-| `< 1.5` | No | Update ke versi terbaru sebelum melaporkan kecuali isu juga berlaku di `main`. |
+| Versi script saat ini (`1.5.1`) | Yes | Didukung selama sesuai dengan revisi terbaru di `main`. |
+| Commit atau salinan lama | Tidak dijamin | Update ke `main`; laporan tetap berguna jika isu juga berlaku pada versi terbaru. |
 | Fork lokal yang dimodifikasi | Best effort | Sertakan diff non-sensitif jika laporan hanya terjadi di fork. |
 
-Jika rilis/tag resmi ditambahkan nanti, tabel ini harus diperbarui untuk menjelaskan versi yang masih menerima patch keamanan.
+Jika release tag resmi atau maintenance branch ditambahkan, tabel ini harus diperbarui untuk menjelaskan versi yang masih menerima patch keamanan.
 
 ## Safe Usage
 
-`git-ai` memiliki dua lapis proteksi saat mendeteksi potensi secret:
+`git-ai` mengirim konteks perubahan ke endpoint Ollama yang aktif. Konteks tersebut dapat mencakup nama dan status file, statistik dan ringkasan Git, potongan diff, serta diff yang dipakai dalam request analisis per-file. Endpoint dapat berada di mesin lokal atau host jaringan lain; tool ini tidak menjamin data tetap berada di mesin yang menjalankan CLI.
+
+`git-ai` memiliki dua proteksi yang bekerja secara terpisah saat mendeteksi potensi secret:
 
 - Secret guard pada staged changes akan membatalkan commit jika baris tambahan terlihat seperti token, password, private key, atau credential lain.
-- Safe mode akan menghindari pengiriman diff detail ke Ollama saat pola sensitif terdeteksi.
+- Safe mode akan menghapus detail diff dari prompt utama dan melewati file sensitif pada analisis per-file saat pola bawaan terdeteksi. Metadata Git dan diff file lain yang tidak terdeteksi sensitif masih dapat dikirim.
 
 Jika `gitleaks` tersedia, script juga menjalankan:
 
@@ -49,12 +51,24 @@ git-ai --allow-secret-commit
 git-ai --force-diff
 ```
 
+Kedua override tidak saling menggantikan:
+
+- `--allow-secret-commit` hanya melewati pembatalan commit; safe mode tetap aktif jika pola sensitif terdeteksi.
+- `--force-diff` mengizinkan pengiriman diff detail, tetapi tidak melewati secret guard.
+- Untuk mengizinkan commit sekaligus mengirim diff yang terdeteksi sensitif, pengguna harus memilih kedua opsi secara eksplisit.
+
 Catatan penting:
 
-- Prefer jalankan Ollama secara lokal atau di jaringan internal tepercaya.
+- Prefer jalankan Ollama secara lokal atau di jaringan tepercaya. Periksa `DEFAULT_OLLAMA_HOST` dan kosongkan `FALLBACK_OLLAMA_HOST` jika endpoint cadangan tidak digunakan.
+- `git-ai.conf` di-`source` sebagai shell code. Perlakukan file tersebut sebagai code tepercaya, batasi siapa yang dapat mengubahnya, dan jangan menjalankan config dari sumber yang tidak dipercaya.
 - Review perubahan sebelum commit, terutama untuk file konfigurasi dan environment.
 - Tambahkan `.env`, credential, dan artifact sensitif lain ke `.gitignore`.
-- Gunakan `--dry-run` atau `--interactive` untuk perubahan yang berisiko.
+- Gunakan `--no-stage` untuk membatasi analisis ke perubahan yang sudah ditinjau, `--interactive` untuk meninjau message, dan `--no-push` untuk memisahkan commit dari push.
+- `--dry-run` memakai index sementara dan tidak membuat commit, push, atau perubahan permanen pada Git state. Mode ini tetap menghubungi Ollama, melakukan warm-up, dan dapat menjalankan `ollama pull`; tambahkan `--no-pull` jika model baru tidak boleh dipasang.
+- Jika secret guard menemukan temuan pada dry-run, script memperingatkan lalu tetap membuat preview tanpa commit atau push.
+- `--no-verify` diterapkan sebagai `git commit --no-verify`, yang melewati `pre-commit` dan `commit-msg`; hook lain seperti `pre-push` tetap berjalan pada tahapnya masing-masing.
+
+Deteksi secret bersifat best effort dan dapat menghasilkan false positive atau false negative. Safe mode bawaan dan hasil `gitleaks` juga tidak selalu mendeteksi pola yang sama. Jangan mengandalkan scanner sebagai pengganti review staged changes.
 
 ## Reporting a Vulnerability
 
@@ -99,8 +113,8 @@ Laporan berikut dianggap in scope:
 - Diff detail atau data sensitif tetap terkirim ke Ollama saat safe mode seharusnya aktif.
 - Secret guard gagal memblokir token, private key, password, atau credential yang jelas pada staged additions.
 - Opsi seperti `--force-diff` atau `--allow-secret-commit` aktif tanpa aksi eksplisit pengguna.
-- Command injection, argument injection, atau shell evaluation yang bisa dipicu oleh nama file, diff, branch, remote, config, atau output model.
-- Perubahan Git state yang tidak diminta, seperti commit, staging, atau push saat `--dry-run`, `--no-stage`, atau `--no-push` semestinya mencegahnya.
+- Command injection, argument injection, atau shell evaluation tak terduga yang dipicu oleh nama file, diff, branch, remote, nilai config saat digunakan, atau output model.
+- Perubahan permanen pada index asli atau refs, commit, atau push saat `--dry-run`; staging otomatis saat `--no-stage`; atau push saat `--no-push`.
 - Race condition atau lock bypass yang memungkinkan dua proses `git-ai` merusak Git state repository yang sama.
 - Penulisan file sementara, lock file, atau cleanup yang bisa merusak file di luar area yang dimaksud.
 - Fallback host Ollama atau pembacaan service environment yang menyebabkan data dikirim ke endpoint yang tidak dikonfigurasi.
@@ -112,10 +126,11 @@ Laporan berikut dianggap in scope:
 Hal berikut biasanya tidak diproses sebagai kerentanan keamanan project ini:
 
 - Kualitas commit message, hallucination model, atau subject commit yang kurang akurat.
-- Perilaku yang hanya terjadi setelah pengguna sengaja menjalankan `--force-diff`, `--allow-secret-commit`, atau `--no-verify`.
+- Pengiriman diff sensitif yang memang diotorisasi dengan `--force-diff`, commit yang memang diotorisasi dengan `--allow-secret-commit`, atau bypass hook commit yang memang diminta dengan `--no-verify`. Kerusakan di luar batas masing-masing override tetap in scope.
 - Kerentanan pada Git, Ollama, curl, jq, flock, gitleaks, shell, OS, atau model AI pihak ketiga.
 - Workstation, repository, atau user account yang sudah dikuasai attacker sebelum `git-ai` dijalankan.
-- Repository yang berisi script hook berbahaya jika pengguna memilih menjalankan hooks Git.
+- Perintah yang memang ditulis secara eksplisit di `git-ai.conf`, karena file tersebut sengaja di-`source` sebagai trusted shell code. Bypass izin tulis config atau evaluasi ulang nilai config yang tidak semestinya tetap in scope.
+- Repository yang berisi script hook berbahaya jika pengguna memilih menjalankan hooks Git. `--no-verify` melewati `pre-commit` dan `commit-msg`, tetapi tidak menonaktifkan `pre-push`.
 - Leak data dari endpoint Ollama yang dikonfigurasi sendiri oleh pengguna di luar kendali project ini.
 - Social engineering, phishing, spam, brute force, atau serangan terhadap akun maintainer.
 - Denial of service yang hanya menghabiskan waktu lokal pada input sangat besar tanpa dampak kerahasiaan atau integritas.
@@ -151,6 +166,10 @@ Selain panduan penggunaan aman di atas, beberapa prinsip keamanan yang harus dij
 
 - Default proteksi tidak boleh dilemahkan tanpa alasan teknis yang kuat.
 - Override berisiko harus membutuhkan aksi eksplisit pengguna.
+- Batas setiap override harus tetap independen: izin commit tidak otomatis menjadi izin pengiriman diff, dan sebaliknya.
+- Endpoint utama/fallback dan setiap network call yang dapat menerima konteks repository harus terlihat dan terdokumentasi.
+- Config yang di-`source` harus diperlakukan sebagai trusted code; nilai config tetap harus di-quote dan divalidasi saat digunakan.
+- Dry-run harus mengisolasi perubahan Git melalui index sementara, walaupun operasi jaringan dan auto-pull tetap dapat terjadi.
 - Output debug harus berguna untuk diagnosis tanpa membocorkan credential.
 - Dependensi wajib harus tetap sedikit dan mudah diaudit.
 - Network call baru harus dibahas eksplisit sebelum diterima.

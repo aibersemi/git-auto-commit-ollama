@@ -226,16 +226,16 @@ warm_ollama_model() {
   local running_models
 
   if running_models=$(fetch_ollama_running_models) && is_ollama_model_loaded "$running_models"; then
-    dbg "Model ${OLLAMA_MODEL} sudah ter-load; mengirim readiness ping tanpa output."
-    ping_ollama_model || die "Model ${OLLAMA_MODEL} sudah ter-load, tetapi readiness ping ke Ollama gagal."
+    dbg "Model ${OLLAMA_MODEL} is already loaded; sending a silent readiness ping."
+    ping_ollama_model || die "Model ${OLLAMA_MODEL} is already loaded, but the Ollama readiness ping failed."
     return 0
   fi
 
-  dbg "Model ${OLLAMA_MODEL} belum ter-load; memulai warm-up."
-  blocking_status_start "Memuat model ${OLLAMA_MODEL}..."
+  dbg "Model ${OLLAMA_MODEL} is not loaded; starting warm-up."
+  blocking_status_start "Loading model ${OLLAMA_MODEL}..."
   if ! ping_ollama_model; then
     blocking_status_stop
-    die "Gagal memuat dan memverifikasi model ${OLLAMA_MODEL}."
+    die "Failed to load and verify model ${OLLAMA_MODEL}."
   fi
   blocking_status_stop
 }
