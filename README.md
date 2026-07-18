@@ -32,6 +32,7 @@ CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 
 - Auto stage perubahan dengan `git add -A`, atau staging interaktif via `git add -p`.
 - Spinner saat `git add -A` dan secret scan staged changes berjalan di terminal, dengan status teks pada output non-interaktif.
+- Preflight Ollama memeriksa apakah model sudah ada di memori; model yang belum ter-load dipanaskan dengan spinner sebelum proses Git dimulai.
 - Generate commit message Conventional Commit melalui Ollama `/api/chat`.
 - Semua output CLI dan commit message dihasilkan dalam bahasa Inggris.
 - Structured output JSON Schema untuk hasil commit message yang lebih stabil.
@@ -48,7 +49,8 @@ CLI Bash untuk membuat commit message Git secara otomatis dengan Ollama.
 
 ```mermaid
 flowchart LR
-  A[Perubahan Git] --> B{Mode staging}
+  A[Perubahan Git] --> O[Verifikasi dan panaskan model Ollama]
+  O --> B{Mode staging}
   B -->|default| C[git add -A]
   B -->|--patch| D[git add -p]
   B -->|--no-stage| E[Pakai staged changes]

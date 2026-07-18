@@ -153,6 +153,7 @@ OLLAMA_BASE_URL="$(resolve_ollama_base_url)"
 
 # Derived URL (must come after the config)
 OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
+OLLAMA_PS_URL="${OLLAMA_BASE_URL}/api/ps"
 
 # ===== Terminal output =====
 # Interactive status indicators require a terminal; NO_COLOR only disables colors.
@@ -181,6 +182,7 @@ dbg()     { if [[ "${DEBUG}" -eq 1 ]]; then echo -e "${CYAN}[debug]${NC} $*" 1>&
 
 refresh_ollama_urls() {
   OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
+  OLLAMA_PS_URL="${OLLAMA_BASE_URL}/api/ps"
 }
 
 resolve_ollama_fallback_url() {
@@ -194,6 +196,48 @@ fetch_ollama_tags() {
   local base_url="$1"
 
   curl -sSf --connect-timeout 5 --max-time 10 "${base_url}/api/tags" 2>/dev/null
+}
+
+fetch_ollama_running_models() {
+  curl -sSf --connect-timeout 5 --max-time 10 "$OLLAMA_PS_URL" 2>/dev/null
+}
+
+is_ollama_model_loaded() {
+  local running_models="$1"
+
+  jq -e --arg model "$OLLAMA_MODEL" \
+    'any(.models[]?; .name == $model or .model == $model)' \
+    >/dev/null <<<"$running_models"
+}
+
+ping_ollama_model() {
+  local payload response
+
+  payload=$(jq -n --arg model "$OLLAMA_MODEL" '{model: $model, messages: [], stream: false}')
+  response=$(curl -sSf --connect-timeout 5 --max-time 300 \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "$OLLAMA_API_URL" 2>/dev/null) || return 1
+
+  jq -e '(.done == true) and (.model | type == "string")' >/dev/null <<<"$response"
+}
+
+warm_ollama_model() {
+  local running_models
+
+  if running_models=$(fetch_ollama_running_models) && is_ollama_model_loaded "$running_models"; then
+    dbg "Model ${OLLAMA_MODEL} sudah ter-load; mengirim readiness ping tanpa output."
+    ping_ollama_model || die "Model ${OLLAMA_MODEL} sudah ter-load, tetapi readiness ping ke Ollama gagal."
+    return 0
+  fi
+
+  dbg "Model ${OLLAMA_MODEL} belum ter-load; memulai warm-up."
+  blocking_status_start "Memuat model ${OLLAMA_MODEL}..."
+  if ! ping_ollama_model; then
+    blocking_status_stop
+    die "Gagal memuat dan memverifikasi model ${OLLAMA_MODEL}."
+  fi
+  blocking_status_stop
 }
 
 preselect_ollama_model_for_banner() {
@@ -583,7 +627,7 @@ check_deps() {
       die "Model '$OLLAMA_MODEL' is not on the server and the 'ollama' CLI was not found to pull it."
     fi
   fi
-  step_ok "Model ${OLLAMA_MODEL} is active in Ollama"
+  warm_ollama_model
 }
 
 has_any_changes() {
@@ -2128,7 +2172,7 @@ generate_commit_message() {
     analyze_files_individually || true
   fi
 
-  local attempts=3
+  local attempts=10
   local system_prompt base_user_prompt user_prompt schema content json commit_msg quality_issue
   local structured_available="$USE_STRUCTURED_OUTPUT"
   base_user_prompt=$(build_user_prompt "$safe_mode")
