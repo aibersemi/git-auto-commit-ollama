@@ -1,67 +1,67 @@
 # AGENTS.md
 
-Instruksi ini berlaku untuk seluruh repository `git-auto-commit-ollama`.
+These instructions apply to the entire `git-auto-commit-ollama` repository.
 
 ## Purpose
 
-Project ini adalah Bash CLI untuk membuat commit message Git dengan Ollama. Perlakukan perubahan pada staging, commit, push, secret scanning, prompt generation, dan endpoint Ollama sebagai area berisiko tinggi.
+This project is a Bash CLI that generates Git commit messages with Ollama. Treat changes to staging, commits, pushes, secret scanning, prompt generation, and Ollama endpoints as high-risk areas.
 
 ## Language
 
-- Gunakan Bahasa Indonesia sebagai bahasa utama dalam percakapan, penjelasan, ringkasan kerja, dan dokumentasi.
-- Khusus `git-ai.sh`, gunakan Bahasa Inggris untuk komentar kode, help text, prompt, output pengguna, pesan error/debug, dan commit message yang dihasilkan.
-- Bahasa Inggris boleh digunakan untuk istilah teknis, heading, nama API, nama library, command, nama file, nama branch, atau konsep yang lebih jelas jika tetap ditulis dalam bahasa aslinya.
+- Use Bahasa Indonesia for conversations with the user, explanations, and work summaries.
+- Use English for every repository artifact, including source code, code comments, help text, prompts, user-facing output, errors, debug messages, generated commit messages, configuration comments, documentation, templates, workflows, and agent instructions.
+- Keep technical terms, headings, API and library names, commands, file and branch names, and other established identifiers in their conventional English form.
 
-## Repo Map
+## Repository Map
 
-- `git-ai.sh`: CLI utama. Sebagian besar perubahan behavior ada di sini.
-- `git-ai.conf`: default runtime config yang di-source sebagai shell code. Jangan simpan secret di sini.
-- `Makefile`: install/uninstall symlink `git-ai` dan `git-ai.conf` ke `$(PREFIX)/bin` menggunakan `sudo`.
-- `.github/workflows/ci.yml`: CI validasi Bash.
-- `.github/workflows/release.yml`: membuat GitHub Release untuk tag `v*`.
-- `README.md`, `.github/CONTRIBUTING.md`, `.github/SECURITY.md`: dokumentasi publik.
+- `git-ai.sh`: Main CLI. Most behavioral changes belong here.
+- `git-ai.conf`: Default runtime configuration sourced as shell code. Never store secrets here.
+- `Makefile`: Installs or removes the `git-ai` and `git-ai.conf` symlinks in `$(PREFIX)/bin` with `sudo`.
+- `.github/workflows/ci.yml`: Bash validation CI.
+- `.github/workflows/release.yml`: Creates a GitHub Release for `v*` tags.
+- `README.md`, `.github/CONTRIBUTING.md`, `.github/SECURITY.md`: Public documentation.
 
 ## Documentation
 
-- Update README saat behavior pengguna, opsi CLI, config, dependensi, install, troubleshooting, atau command validasi dasar berubah.
-- Update `.github/CONTRIBUTING.md` saat workflow kontribusi, validasi PR, atau standar kode berubah.
-- Update `.github/SECURITY.md` saat vulnerability scope, reporting process, disclosure, keamanan pengguna, atau security design notes berubah.
-- Hindari duplikasi lintas dokumen. README menjadi sumber utama untuk penggunaan dan validasi dasar.
-- Jangan menyalin ulang detail panjang dari dokumen tersebut ke dokumen lain; cukup tautkan ke sumber utama.
+- Update the README when user behavior, CLI options, configuration, dependencies, installation, troubleshooting, or basic validation commands change.
+- Update `.github/CONTRIBUTING.md` when the contribution workflow, pull request validation, or code standards change.
+- Update `.github/SECURITY.md` when vulnerability scope, reporting, disclosure, user safety, or security design notes change.
+- Avoid duplication across documents. The README is the primary source for usage and basic validation.
+- Link to the primary source instead of copying long sections into other documents.
 
 ## Work Rules
 
-- Baca file yang relevan sebelum mengubahnya.
-- Jangan menjalankan command destruktif Git seperti `git reset --hard` atau checkout paksa kecuali user meminta eksplisit.
-- Jangan menjalankan `make install`, `make uninstall`, atau command yang mengubah sistem global kecuali user meminta eksplisit.
-- Jangan menjalankan `git-ai` untuk membuat commit nyata kecuali user meminta eksplisit. Untuk uji runtime, gunakan `--dry-run` untuk test.
-- Jangan mengubah default model, default push, host fallback, atau format commit message tanpa alasan jelas dan pembaruan dokumentasi.
-- Jangan menambahkan dependensi wajib tanpa memperbarui `check_deps`, README, dan panduan kontribusi.
+- Read the relevant files before changing them.
+- Do not run destructive Git commands such as `git reset --hard` or a forced checkout unless the user explicitly requests it.
+- Do not run `make install`, `make uninstall`, or commands that modify the global system unless the user explicitly requests it.
+- Do not run `git-ai` to create a real commit unless the user explicitly requests it. Use `--dry-run` for runtime testing.
+- Do not change the default model, default push behavior, fallback host, or commit message format without a clear reason and corresponding documentation updates.
+- Do not add a required dependency without updating `check_deps`, the README, and the contribution guide.
 
 ## Bash Style
 
-- Pertahankan `#!/usr/bin/env bash` dan `set -euo pipefail`.
-- Ikuti gaya fungsi dan output yang sudah ada di `git-ai.sh`.
-- Khusus `git-ai.sh`, semua komentar, help text, prompt, output pengguna, pesan error, dan debug message harus menggunakan Bahasa Inggris.
-- Quote variable expansion kecuali ada alasan Bash yang jelas.
-- Gunakan `jq` untuk JSON, bukan parsing string ad hoc.
-- Validasi input config dan argumen CLI sedekat mungkin dengan parsing/checking yang sudah ada.
-- Jika menambah opsi CLI, update `parse_args`, `show_help`, README, dan test/help validation yang relevan.
-- Jika mengubah config, update `git-ai.conf`, fallback default, validasi config, README, dan dokumentasi terkait.
+- Preserve `#!/usr/bin/env bash` and `set -euo pipefail`.
+- Follow the existing function and output style in `git-ai.sh`.
+- Use English for all comments, help text, prompts, user-facing output, errors, and debug messages in `git-ai.sh`.
+- Quote variable expansions unless there is a clear Bash-specific reason not to.
+- Use `jq` for JSON instead of ad hoc string parsing.
+- Validate configuration values and CLI arguments as close as practical to the existing parsing and checking logic.
+- When adding a CLI option, update `parse_args`, `show_help`, the README, and relevant help validation.
+- When changing configuration, update `git-ai.conf`, fallback defaults, configuration validation, the README, and related documentation.
 
 ## Security
 
-- Safe mode dan secret guard harus tetap konservatif secara default.
-- `--force-diff` dan `--allow-secret-commit` harus tetap override eksplisit.
-- `--dry-run` tidak boleh membuat commit, push, atau perubahan permanen pada Git state. Mode ini tetap boleh menghubungi Ollama dan, tanpa `--no-pull`, dapat menarik model yang belum tersedia.
-- `--no-push` harus selalu mencegah push.
-- `--no-stage` harus memakai staged changes yang sudah ada dan tidak melakukan staging otomatis.
-- Jangan menambahkan telemetry, analytics, atau network call baru tanpa pembahasan eksplisit.
-- Jangan menulis secret, token, host internal sensitif, atau log privat ke test fixture, dokumentasi, atau output debug.
+- Safe mode and the secret guard must remain conservative by default.
+- `--force-diff` and `--allow-secret-commit` must remain explicit overrides.
+- `--dry-run` must not create a commit, push, or permanently change Git state. It may still contact Ollama and, without `--no-pull`, pull a missing model.
+- `--no-push` must always prevent pushing.
+- `--no-stage` must use existing staged changes and must not stage automatically.
+- Do not add telemetry, analytics, or new network calls without explicit discussion.
+- Do not place secrets, tokens, sensitive internal hosts, or private logs in test fixtures, documentation, or debug output.
 
 ## Verification
 
-Jalankan validasi dasar setelah mengubah `git-ai.sh` atau behavior yang terkait:
+Run the basic validation after changing `git-ai.sh` or related behavior:
 
 ```bash
 bash -n git-ai.sh
@@ -69,7 +69,7 @@ shellcheck git-ai.sh
 ./git-ai.sh --help >/tmp/git-ai-help.txt
 ```
 
-Untuk perubahan runtime, uji di repository sementara dan gunakan dry-run:
+For runtime changes, test in a temporary repository and use dry-run:
 
 ```bash
 tmpdir=$(mktemp -d)
@@ -81,13 +81,13 @@ printf 'hello\n' > sample.txt
 /path/to/git-auto-commit-ollama/git-ai.sh --dry-run --no-push --no-banner --no-pull
 ```
 
-Smoke test tersebut tetap membutuhkan endpoint Ollama aktif dan model yang sudah tersedia. Jika Ollama tidak tersedia, jangan memalsukan hasil runtime. Laporkan bahwa validasi runtime tidak dijalankan dan sebutkan alasannya.
+This smoke test still requires an active Ollama endpoint and an available model. If Ollama is unavailable, do not fabricate a runtime result. Report that runtime validation was not run and explain why.
 
 ## Review Output
 
-Saat menyelesaikan tugas, ringkas:
+When finishing a task, summarize:
 
-- File yang berubah.
-- Validasi yang dijalankan.
-- Validasi yang tidak dijalankan beserta alasannya.
-- Risiko atau tindak lanjut yang masih relevan.
+- Files changed.
+- Validation performed.
+- Validation not performed and why.
+- Remaining risks or relevant follow-up work.

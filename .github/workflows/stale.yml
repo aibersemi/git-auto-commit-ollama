@@ -13,8 +13,8 @@ jobs:
     steps:
       - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9
         with:
-          stale-issue-message: 'Issue ini telah ditandai sebagai kedaluwarsa (stale) karena tidak ada aktivitas selama 60 hari. Jika masalah ini masih relevan, silakan tinggalkan komentar. Jika tidak, issue ini akan ditutup dalam 7 hari.'
-          stale-pr-message: 'Pull Request ini telah ditandai sebagai kedaluwarsa karena tidak ada pembaruan selama 60 hari. Harap berikan pembaruan atau PR ini akan ditutup otomatis.'
+          stale-issue-message: 'This issue has been marked stale because it has had no activity for 60 days. If the problem is still relevant, please leave a comment. Otherwise, the issue will be closed in 7 days.'
+          stale-pr-message: 'This pull request has been marked stale because it has had no updates for 60 days. Please provide an update or the pull request will be closed automatically.'
           days-before-stale: 60
           days-before-close: 7
           exempt-issue-labels: 'bug,enhancement,security'

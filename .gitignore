@@ -1,11 +1,11 @@
-# Environment dan konfigurasi lokal
+# Environment and local configuration
 .env
 .env.*
 !.env.example
 *.local.conf
 git-ai.local.conf
 
-# Log
+# Logs
 *.log
 logs/
 

@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*' # Berjalan saat Anda membuat tag berawalan 'v' (misal: git tag v1.6.0 && git push origin v1.6.0)
+      - 'v*' # Runs when a tag beginning with "v" is pushed (for example: git tag v1.6.0 && git push origin v1.6.0)
 
 jobs:
   release:

@@ -1,25 +1,25 @@
-## Deskripsi
-<!-- Jelaskan secara singkat perubahan apa yang dilakukan di Pull Request ini -->
+## Description
+<!-- Briefly describe the changes in this pull request. -->
 
-## Isu Terkait
-<!-- Sebutkan nomor issue yang diselesaikan oleh PR ini, misal: Fixes #123 -->
+## Related Issues
+<!-- Reference issues resolved by this pull request, for example: Fixes #123. -->
 
-## Jenis Perubahan
-<!-- Centang salah satu opsi di bawah ini -->
-- [ ] 🐛 Bug fix (Perbaikan masalah yang ada)
-- [ ] ✨ New feature (Penambahan fitur baru)
-- [ ] 💥 Breaking change (Perubahan yang mengubah kompatibilitas atau fungsi sebelumnya)
-- [ ] 📝 Dokumentasi (Perubahan pada README, komentar, dll)
+## Type of Change
+<!-- Select every option that applies. -->
+- [ ] 🐛 Bug fix
+- [ ] ✨ New feature
+- [ ] 💥 Breaking change
+- [ ] 📝 Documentation
 
-## Checklist Validasi
+## Validation Checklist
 <!-- 
-Pastikan Anda sudah menjalankan validasi berikut sesuai dengan aturan di AGENTS.md.
-Centang semua kotak yang sesuai. 
+Run the relevant validation required by AGENTS.md.
+Select every box that applies.
 -->
-- [ ] Saya telah membaca dan mengikuti standar yang ada di `CONTRIBUTING.md` dan `AGENTS.md`
-- [ ] Saya sudah menjalankan `bash -n git-ai.sh` tanpa error
-- [ ] Saya sudah menjalankan `shellcheck git-ai.sh` tanpa error
-- [ ] Saya sudah menguji perubahan ini menggunakan `--dry-run` di repositori sementara
+- [ ] I have read and followed `CONTRIBUTING.md` and `AGENTS.md`
+- [ ] I ran `bash -n git-ai.sh` successfully
+- [ ] I ran `shellcheck git-ai.sh` successfully
+- [ ] I tested this change with `--dry-run` in a temporary repository
 
-## Tangkapan Layar / Output (Opsional)
-<!-- Jika ada perubahan output di terminal, lampirkan screenshot atau block kode di sini -->
+## Screenshots or Output (Optional)
+<!-- If terminal output changed, attach a screenshot or code block here. -->

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 💬 Ajukan Pertanyaan / Diskusi
+  - name: 💬 Ask a Question or Start a Discussion
     url: https://github.com/aibersemi/git-auto-commit-ollama/discussions
-    about: Jika Anda hanya ingin bertanya atau berdiskusi seputar penggunaan, silakan kunjungi halaman Discussions kami.
-  - name: 🔐 Laporkan Celah Keamanan (Vulnerability)
+    about: Visit Discussions for general usage questions or community conversations.
+  - name: 🔐 Report a Security Vulnerability
     url: https://github.com/aibersemi/git-auto-commit-ollama/blob/main/.github/SECURITY.md
-    about: Jika Anda menemukan isu keamanan sensitif, harap ikuti prosedur di SECURITY.md dan jangan buat issue secara publik.
+    about: Follow SECURITY.md for sensitive security reports and do not open a public issue.

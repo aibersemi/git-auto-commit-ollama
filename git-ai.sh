@@ -61,6 +61,7 @@ NO_VERIFY=0
 INTERACTIVE=0
 DRY_RUN_INDEX_FILE=""
 STAGED_FILE_COUNT=0
+MODEL_OVERRIDE=""
 
 # Per-file analysis tuning
 DO_FILE_ANALYSIS=1
@@ -91,7 +92,7 @@ case "$DO_PUSH" in
   false|FALSE|no|NO|off|OFF|"") DO_PUSH=0 ;;
 esac
 
-# The model is always set from DEFAULT_MODEL in the config.
+# The effective model may be overridden for a single invocation with -m/--model.
 OLLAMA_MODEL="$DEFAULT_MODEL"
 OLLAMA_SERVICE_FILE="/etc/systemd/system/ollama.service"
 
@@ -193,6 +194,66 @@ err()     { echo -e "${RED}$*${NC}" 1>&2; }
 die()     { err "Error: $*"; live_status_stop 2>/dev/null || true; spinner_stop 2>/dev/null; exit 1; }
 dbg()     { if [[ "${DEBUG}" -eq 1 ]]; then echo -e "${CYAN}[debug]${NC} $*" 1>&2; fi; }
 
+dbg_block() {
+  [[ "${DEBUG}" -eq 1 ]] || return 0
+
+  local label="$1"
+  local content="${2:-}"
+  printf '%b[debug]%b --- %s (begin) ---\n' "$CYAN" "$NC" "$label" >&2
+  if [[ -n "$content" ]]; then
+    printf '%s\n' "$content" >&2
+  else
+    printf '<empty>\n' >&2
+  fi
+  printf '%b[debug]%b --- %s (end) ---\n' "$CYAN" "$NC" "$label" >&2
+}
+
+dbg_command_output() {
+  local command="$1"
+  local output="${2:-}"
+
+  dbg "Command: $command"
+  dbg_block "Command output: $command" "$output"
+}
+
+validation_fail() {
+  local code="$1"
+  shift
+
+  dbg "Validation failed [${code}]: $*"
+  return 1
+}
+
+debug_runtime_configuration() {
+  [[ "${DEBUG}" -eq 1 ]] || return 0
+
+  local config
+  config=$(cat <<EOF
+script=${BASH_SOURCE[0]}
+config=${SCRIPT_CONFIG_FILE}
+model=${OLLAMA_MODEL}
+model_source=$([[ -n "$MODEL_OVERRIDE" ]] && printf '%s' "command line" || printf '%s' "DEFAULT_MODEL")
+default_model=${DEFAULT_MODEL}
+model_override=${MODEL_OVERRIDE:-<empty>}
+ollama_base_url=${OLLAMA_BASE_URL}
+ollama_api_url=${OLLAMA_API_URL}
+fallback_ollama_host=${FALLBACK_OLLAMA_HOST:-<empty>}
+dry_run=${DRY_RUN}
+stage=${DO_STAGE}
+push=${DO_PUSH}
+structured_output=${USE_STRUCTURED_OUTPUT}
+file_analysis=${DO_FILE_ANALYSIS}
+file_analysis_limit=${FILE_ANALYSIS_LIMIT}
+file_analysis_parallelism=${FILE_ANALYSIS_PARALLELISM}
+temperature=${AI_TEMPERATURE}
+think=${AI_THINK}
+num_predict=${AI_NUM_PREDICT:-<empty>}
+max_num_predict=${AI_MAX_NUM_PREDICT}
+EOF
+)
+  dbg_block "Runtime configuration" "$config"
+}
+
 refresh_ollama_urls() {
   OLLAMA_API_URL="${OLLAMA_BASE_URL}/api/chat"
   OLLAMA_PS_URL="${OLLAMA_BASE_URL}/api/ps"
@@ -207,12 +268,44 @@ resolve_ollama_fallback_url() {
 
 fetch_ollama_tags() {
   local base_url="$1"
+  local url="${base_url}/api/tags"
+  local output tmp_err err_txt status
+  tmp_err=$(mktemp)
 
-  curl -sSf --connect-timeout 5 --max-time 10 "${base_url}/api/tags" 2>/dev/null
+  dbg "Command: curl -sSf --connect-timeout 5 --max-time 10 ${url}"
+  if output=$(curl -sSf --connect-timeout 5 --max-time 10 "$url" 2>"$tmp_err"); then
+    status=0
+  else
+    status=$?
+  fi
+  err_txt=$(cat "$tmp_err" || true)
+  rm -f "$tmp_err"
+
+  dbg "Command exit status: ${status}"
+  dbg_block "Command output: curl GET ${url}" "$output"
+  [[ -z "$err_txt" ]] || dbg_block "Command stderr: curl GET ${url}" "$err_txt"
+  [[ "$status" -eq 0 ]] || return "$status"
+  printf '%s' "$output"
 }
 
 fetch_ollama_running_models() {
-  curl -sSf --connect-timeout 5 --max-time 10 "$OLLAMA_PS_URL" 2>/dev/null
+  local output tmp_err err_txt status
+  tmp_err=$(mktemp)
+
+  dbg "Command: curl -sSf --connect-timeout 5 --max-time 10 ${OLLAMA_PS_URL}"
+  if output=$(curl -sSf --connect-timeout 5 --max-time 10 "$OLLAMA_PS_URL" 2>"$tmp_err"); then
+    status=0
+  else
+    status=$?
+  fi
+  err_txt=$(cat "$tmp_err" || true)
+  rm -f "$tmp_err"
+
+  dbg "Command exit status: ${status}"
+  dbg_block "Command output: curl GET ${OLLAMA_PS_URL}" "$output"
+  [[ -z "$err_txt" ]] || dbg_block "Command stderr: curl GET ${OLLAMA_PS_URL}" "$err_txt"
+  [[ "$status" -eq 0 ]] || return "$status"
+  printf '%s' "$output"
 }
 
 is_ollama_model_loaded() {
@@ -224,15 +317,32 @@ is_ollama_model_loaded() {
 }
 
 ping_ollama_model() {
-  local payload response
+  local payload response tmp_err err_txt status
+  tmp_err=$(mktemp)
 
   payload=$(jq -n --arg model "$OLLAMA_MODEL" '{model: $model, messages: [], stream: false}')
-  response=$(curl -sSf --connect-timeout 5 --max-time 300 \
+  dbg "Command: curl -sSf --connect-timeout 5 --max-time 300 -H 'Content-Type: application/json' -d '<payload>' ${OLLAMA_API_URL}"
+  dbg_block "Ollama readiness payload" "$payload"
+  if response=$(curl -sSf --connect-timeout 5 --max-time 300 \
     -H "Content-Type: application/json" \
     -d "$payload" \
-    "$OLLAMA_API_URL" 2>/dev/null) || return 1
+    "$OLLAMA_API_URL" 2>"$tmp_err"); then
+    status=0
+  else
+    status=$?
+  fi
+  err_txt=$(cat "$tmp_err" || true)
+  rm -f "$tmp_err"
 
-  jq -e '(.done == true) and (.model | type == "string")' >/dev/null <<<"$response"
+  dbg "Command exit status: ${status}"
+  dbg_block "Ollama readiness response" "$response"
+  [[ -z "$err_txt" ]] || dbg_block "Ollama readiness stderr" "$err_txt"
+  [[ "$status" -eq 0 ]] || return "$status"
+
+  if ! jq -e '(.done == true) and (.model | type == "string")' >/dev/null <<<"$response"; then
+    validation_fail "readiness.invalid_response" "Expected done=true and a string model field."
+    return 1
+  fi
 }
 
 warm_ollama_model() {
@@ -253,11 +363,19 @@ warm_ollama_model() {
   blocking_status_stop
 }
 
-preselect_ollama_model_for_banner() {
-  OLLAMA_MODEL="$DEFAULT_MODEL"
+select_ollama_model() {
+  if [[ -n "$MODEL_OVERRIDE" ]]; then
+    OLLAMA_MODEL="$MODEL_OVERRIDE"
+  else
+    OLLAMA_MODEL="$DEFAULT_MODEL"
+  fi
 }
 
-# ===== UI / Animasi Utilities =====
+preselect_ollama_model_for_banner() {
+  select_ollama_model
+}
+
+# ===== UI / Animation Utilities =====
 SPINNER_PID=""
 LIVE_STATUS_ACTIVE=0
 LIVE_STATUS_FRAME=0
@@ -445,11 +563,12 @@ Options:
   -v, --version               Show version
   -s, --status                Show Git status only
   -n, --no-push               Commit without pushing
+  -m, --model MODEL           Temporarily use an Ollama model for this invocation
   -p, --patch                 Interactive staging (git add -p)
   -i, --interactive           Show the commit message and ask for confirmation before committing
       --no-stage              Do not stage changes automatically
       --dry-run               Only display the commit message (do not change Git state)
-      --debug                 Show debug logs
+      --debug                 Show full commands, Git context, prompts, HTTP responses, and validation details
       --force-diff            Send the diff to AI even when sensitive patterns are detected
       --allow-secret-commit   Allow committing when the scanner finds a potential secret
       --no-file-analysis      Disable per-file analysis (faster)
@@ -465,7 +584,7 @@ Config:
   ${SCRIPT_CONFIG_FILE}
 
 Config variables:
-  DEFAULT_MODEL               Ollama model that is always used
+  DEFAULT_MODEL               Ollama model used when -m/--model is not specified
   DEFAULT_DO_PUSH             Default push after a commit (0/1, default 1)
   USE_STRUCTURED_OUTPUT       Use Ollama JSON Schema output (0/1, default 1)
   DEFAULT_OLLAMA_HOST         Primary Ollama host (empty = read service)
@@ -489,6 +608,17 @@ Ollama service:
 HELP
 }
 
+set_model_override() {
+  local model="${1:-}"
+
+  [[ -n "$model" ]] || die "-m/--model requires a non-empty model name"
+  [[ "$model" != -* ]] || die "-m/--model requires a model name, not another option"
+  [[ "$model" != *[[:space:]]* ]] || die "-m/--model does not allow whitespace in the model name"
+
+  MODEL_OVERRIDE="$model"
+  select_ollama_model
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -496,7 +626,9 @@ parse_args() {
       -v|--version)         echo "git-ai version $VERSION"; exit 0 ;;
       -s|--status)          check_git_repo; git status; exit 0 ;;
       -n|--no-push)         DO_PUSH=0; shift ;;
-      -m|--model)           die "-m/--model is not supported. Change DEFAULT_MODEL in ${SCRIPT_CONFIG_FILE}." ;;
+      -m|--model)           [[ $# -ge 2 ]] || die "$1 requires a model name"
+                            set_model_override "$2"; shift 2 ;;
+      --model=*)            set_model_override "${1#*=}"; shift ;;
       -p|--patch)           USE_PATCH=1; shift ;;
       -i|--interactive)     INTERACTIVE=1; shift ;;
       --no-stage)           DO_STAGE=0; shift ;;
@@ -628,17 +760,22 @@ check_deps() {
   local available_models
   available_models=$(jq -r '.models[].name' <<<"$tags_json" 2>/dev/null | sed '/^$/d' || true)
 
-  OLLAMA_MODEL="$DEFAULT_MODEL"
-  step_info "Model from DEFAULT_MODEL: ${OLLAMA_MODEL}"
+  select_ollama_model
+  if [[ -n "$MODEL_OVERRIDE" ]]; then
+    step_info "Model from -m/--model: ${OLLAMA_MODEL}"
+  else
+    step_info "Model from DEFAULT_MODEL: ${OLLAMA_MODEL}"
+  fi
 
   if ! printf '%s\n' "$available_models" | grep -Fxq -- "$OLLAMA_MODEL"; then
-    warn "DEFAULT_MODEL '$OLLAMA_MODEL' was not found."
+    warn "Selected model '$OLLAMA_MODEL' was not found."
 
     if [[ "$NO_PULL" -eq 1 ]]; then
       die "Model '$OLLAMA_MODEL' is not on the server and --no-pull is enabled. Pull it first: ollama pull $OLLAMA_MODEL"
     fi
     if command -v ollama >/dev/null 2>&1; then
-      warn "Pulling DEFAULT_MODEL: $OLLAMA_MODEL..."
+      warn "Pulling selected model: $OLLAMA_MODEL..."
+      dbg "Command: OLLAMA_HOST=${OLLAMA_BASE_URL} ollama pull ${OLLAMA_MODEL}"
       OLLAMA_HOST="$OLLAMA_BASE_URL" ollama pull "$OLLAMA_MODEL"
     else
       die "Model '$OLLAMA_MODEL' is not on the server and the 'ollama' CLI was not found to pull it."
@@ -668,14 +805,17 @@ stage_changes() {
       die "You selected --no-stage, but there are no staged changes. Run git add first."
     fi
     step_ok "Using existing staged changes"
+    dbg_command_output "git diff --cached --name-status -M" "$(git diff --cached --name-status -M 2>&1 || true)"
     enforce_staged_secret_policy
     return 0
   fi
 
   if [[ "$USE_PATCH" -eq 1 ]]; then
+    dbg "Command: git add -p"
     git add -p
   else
     blocking_status_start "Scanning, hashing, and staging working-tree changes..."
+    dbg "Command: git add -A"
     if ! git add -A; then
       blocking_status_stop
       die "Failed to stage changes."
@@ -693,6 +833,7 @@ stage_changes() {
   local stage_method="git add -A"
   [[ "$USE_PATCH" -eq 1 ]] && stage_method="git add -p"
   step_ok "${staged_count} file(s) staged (${stage_method})"
+  dbg_command_output "git diff --cached --name-status -M" "$(git diff --cached --name-status -M 2>&1 || true)"
 
   enforce_staged_secret_policy
 }
@@ -710,7 +851,7 @@ has_sensitive_patterns() {
 
 detect_sensitive_patterns() {
   local sample
-  sample=$(git diff --cached --no-color | head -c 100000 || true)
+  sample=$(git diff --cached --no-color --no-ext-diff || true)
 
   has_sensitive_patterns "$sample"
 }
@@ -772,10 +913,13 @@ run_gitleaks_secret_scan() {
   command -v gitleaks >/dev/null 2>&1 || return 1
 
   local out status
+  dbg "Command: gitleaks protect --staged --redact --no-banner"
   set +e
   out=$(gitleaks protect --staged --redact --no-banner 2>&1)
   status=$?
   set -e
+  dbg "Command exit status: ${status}"
+  dbg_block "Command output: gitleaks protect --staged --redact --no-banner" "$out"
 
   [[ "$status" -eq 0 ]] && return 1
   if grep -Eiq '(leak|leaks|secret|finding|RuleID|Fingerprint)' <<<"$out"; then
@@ -1172,6 +1316,35 @@ collect_context() {
   fi
 }
 
+debug_git_context() {
+  local safe_mode="$1"
+
+  [[ "${DEBUG}" -eq 1 ]] || return 0
+
+  local status_output name_status_output stat_output summary_output full_diff_output
+  status_output=$(git status --short 2>&1 || true)
+  name_status_output=$(git diff --cached --name-status -M 2>&1 || true)
+  stat_output=$(git diff --cached --stat 2>&1 || true)
+  summary_output=$(git diff --cached --summary -M 2>&1 || true)
+
+  dbg_command_output "git status --short" "$status_output"
+  dbg_command_output "git diff --cached --name-status -M" "$name_status_output"
+  dbg_command_output "git diff --cached --stat" "$stat_output"
+  dbg_command_output "git diff --cached --summary -M" "$summary_output"
+
+  if [[ "$safe_mode" -eq 1 && "$FORCE_DIFF" -eq 0 ]]; then
+    dbg "Command skipped: git diff --cached --no-color --no-ext-diff"
+    dbg_block "Full staged diff" "<omitted: safe mode detected sensitive content>"
+  else
+    full_diff_output=$(git diff --cached --no-color --no-ext-diff 2>&1 || true)
+    dbg_command_output "git diff --cached --no-color --no-ext-diff" "$full_diff_output"
+  fi
+
+  dbg_block "Collected Git priority changes" "${GIT_PRIORITY_CHANGES:-}"
+  dbg_block "Collected semantic change summary" "${SEMANTIC_CHANGE_SUMMARY:-}"
+  dbg_block "Collected change priority hint" "${CHANGE_PRIORITY_HINT:-}"
+}
+
 # ===== Per-File Analysis =====
 SYSTEM_PROMPT_FILE_ANALYSIS_BATCH='You are a Git diff analyst. Analyze each file separately in English. Output valid JSON that conforms to the schema. For each file, set "file" to the exact input filename and provide one or two clear sentences covering the behavior, domain capability, or user-facing impact added by the diff. Treat generated files as supporting artifacts, not primary features. Do not use Markdown, summarize only file names, or give generic answers.'
 
@@ -1312,15 +1485,19 @@ run_file_analysis_batch() {
   batch_num_predict=$((count * FILE_ANALYSIS_NUM_PREDICT_PER_FILE + 120))
   [[ "$batch_num_predict" -lt 360 ]] && batch_num_predict=360
 
-  if content=$(ollama_chat "$SYSTEM_PROMPT_FILE_ANALYSIS_BATCH" "$prompt" "$schema" 60 1 "$batch_num_predict") \
-    && json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
+  if ! content=$(ollama_chat "$SYSTEM_PROMPT_FILE_ANALYSIS_BATCH" "$prompt" "$schema" 60 1 "$batch_num_predict"); then
+    dbg "Analysis batch ${batch_no} failed [analysis.request_failed]; using per-file fallback."
+  elif ! json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
+    dbg "Analysis batch ${batch_no} failed [analysis.invalid_json]; using per-file fallback."
+  elif ! jq -e '(.files | type == "array") and all(.files[]?; (.file | type == "string") and (.analysis | type == "string"))' >/dev/null <<<"$json"; then
+    dbg "Analysis batch ${batch_no} failed [analysis.invalid_fields]; using per-file fallback."
+  else
     printf '%s\n' "$json" > "$output_file"
     dbg "Analysis batch ${batch_no} completed (${count} file(s))"
     return 0
   fi
 
   printf '{"files":[]}\n' > "$output_file"
-  dbg "Analysis batch ${batch_no} failed; using per-file fallback"
   return 1
 }
 
@@ -1756,23 +1933,40 @@ EOF
 ollama_request() {
   local payload="$1"
 
-  local tmp_body tmp_err http_code body err_txt
+  local tmp_body tmp_err http_code body err_txt curl_status start_ms end_ms elapsed_ms
   tmp_body=$(mktemp)
   tmp_err=$(mktemp)
 
   local max_time="${2:-120}"
-  http_code=$(curl -sS --connect-timeout 5 --max-time "$max_time" \
+  dbg "Command: curl -sS --connect-timeout 5 --max-time ${max_time} -o '<temp>' -w '%{http_code}' -H 'Content-Type: application/json' -d '<payload>' ${OLLAMA_API_URL}"
+  start_ms=$(date +%s%3N)
+  if http_code=$(curl -sS --connect-timeout 5 --max-time "$max_time" \
     -o "$tmp_body" -w '%{http_code}' \
     -H "Content-Type: application/json" \
     -d "$payload" \
-    "$OLLAMA_API_URL" 2>"$tmp_err" || true)
+    "$OLLAMA_API_URL" 2>"$tmp_err"); then
+    curl_status=0
+  else
+    curl_status=$?
+  fi
+  end_ms=$(date +%s%3N)
+  elapsed_ms=$((end_ms - start_ms))
 
   body=$(cat "$tmp_body" || true)
   err_txt=$(cat "$tmp_err" || true)
   rm -f "$tmp_body" "$tmp_err"
 
-  if [[ -z "$http_code" ]]; then
-    dbg "curl error: ${err_txt:-<none>}"
+  dbg "curl exit status: ${curl_status}; HTTP status: ${http_code:-<empty>}; duration: ${elapsed_ms}ms; response bytes: ${#body}"
+  dbg_block "Ollama HTTP response body" "$body"
+  [[ -z "$err_txt" ]] || dbg_block "Ollama HTTP stderr" "$err_txt"
+
+  if [[ "$curl_status" -ne 0 ]]; then
+    dbg "curl request failed: ${err_txt:-<none>}"
+    return 1
+  fi
+
+  if [[ ! "$http_code" =~ ^[0-9]{3}$ ]]; then
+    dbg "Invalid HTTP status returned by curl: ${http_code:-<empty>}"
     return 1
   fi
 
@@ -1862,9 +2056,18 @@ ollama_chat() {
     '. + {think: (if $think == "true" then true elif $think == "false" then false else $think end)}' \
     <<<"$payload")
 
+  local request_mode="plain-text"
+  [[ -n "$format_json_schema" ]] && request_mode="structured"
+  dbg "Ollama request mode: ${request_mode}; timeout: ${max_time}s"
   dbg "Ollama model: ${OLLAMA_MODEL}"
   dbg "Ollama options: $(jq -c '.options' <<<"$payload" 2>/dev/null || printf '{}')"
   dbg "Payload size: ${#payload} chars"
+  dbg_block "Ollama system prompt" "$system_prompt"
+  dbg_block "Ollama user prompt" "$user_prompt"
+  if [[ -n "$format_json_schema" ]]; then
+    dbg_block "Ollama JSON Schema" "$format_json_schema"
+  fi
+  dbg_block "Ollama request payload" "$payload"
 
   _ollama_chat_blocking "$payload" "$max_time"
 }
@@ -1878,19 +2081,33 @@ _ollama_chat_blocking() {
   blocking_payload=$(jq -c '.stream = false' <<<"$payload")
 
   local resp text
-  resp=$(ollama_request "$blocking_payload" "$max_time")
-  dbg "Ollama response (truncated): $(echo "$resp" | head -c 300)"
+  if ! resp=$(ollama_request "$blocking_payload" "$max_time"); then
+    validation_fail "ollama.request_failed" "The HTTP request did not return a successful response."
+    return 1
+  fi
 
-  echo "$resp" | jq -e . >/dev/null 2>&1 || return 1
-  local prompt_tokens eval_tokens
+  if ! echo "$resp" | jq -e . >/dev/null 2>&1; then
+    validation_fail "ollama.invalid_json" "The Ollama API response body is not valid JSON."
+    return 1
+  fi
+  local prompt_tokens eval_tokens response_done done_reason total_duration load_duration
   prompt_tokens=$(echo "$resp" | jq -r '.prompt_eval_count // 0' 2>/dev/null || echo 0)
   eval_tokens=$(echo "$resp" | jq -r '.eval_count // 0' 2>/dev/null || echo 0)
+  response_done=$(echo "$resp" | jq -r '.done // false' 2>/dev/null || echo false)
+  done_reason=$(echo "$resp" | jq -r '.done_reason // "<empty>"' 2>/dev/null || echo "<empty>")
+  total_duration=$(echo "$resp" | jq -r '.total_duration // 0' 2>/dev/null || echo 0)
+  load_duration=$(echo "$resp" | jq -r '.load_duration // 0' 2>/dev/null || echo 0)
   if [[ -f "${TOKEN_LOG_FILE:-}" ]]; then
     echo "$((prompt_tokens + eval_tokens))" >> "$TOKEN_LOG_FILE"
   fi
-  dbg "Ollama usage: prompt_eval_count=$prompt_tokens, eval_count=$eval_tokens"
+  dbg "Ollama result: done=${response_done}; done_reason=${done_reason}; total_duration_ns=${total_duration}; load_duration_ns=${load_duration}"
+  dbg "Ollama usage: prompt_eval_count=${prompt_tokens}, eval_count=${eval_tokens}"
   text=$(echo "$resp" | jq -r '.message.content // empty' 2>/dev/null || true)
-  [[ -z "$text" ]] && return 1
+  dbg_block "Ollama assistant content" "$text"
+  if [[ -z "$text" ]]; then
+    validation_fail "ollama.empty_content" "The assistant response contains no message.content."
+    return 1
+  fi
   printf '%s' "$text"
 }
 
@@ -1931,27 +2148,67 @@ normalize_commit_bullet() {
 validate_commit_summary() {
   local summary="$1"
 
-  [[ -n "$summary" ]] || return 1
-  [[ "${#summary}" -ge 8 ]] || return 1
-  [[ "$summary" != *$'\n'* && "$summary" != *$'\r'* ]] || return 1
-  [[ "$summary" != *'`'* && "$summary" != *'*'* && "$summary" != '#'* && "$summary" != '>'* ]] || return 1
-  [[ "$summary" != *'.' ]] || return 1
-  if grep -Eiq '^[[:space:]]*(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert)(\([^)]+\))?[!:：]' <<<"$summary"; then
+  if [[ -z "$summary" ]]; then
+    validation_fail "summary.empty" "The summary is empty."
     return 1
   fi
-  printf '%s' "$summary" | LC_ALL=C grep -qP '[\x00-\x1f\x7f]' && return 1
-  printf '%s' "$summary" | grep -Eq '^[[:space:]]*[^[:space:]].*$'
+  if [[ "${#summary}" -lt 8 ]]; then
+    validation_fail "summary.too_short" "The summary has ${#summary} characters; minimum is 8."
+    return 1
+  fi
+  if [[ "$summary" == *$'\n'* || "$summary" == *$'\r'* ]]; then
+    validation_fail "summary.multiline" "The summary contains a line break."
+    return 1
+  fi
+  if [[ "$summary" == *'`'* || "$summary" == *'*'* || "$summary" == '#'* || "$summary" == '>'* ]]; then
+    validation_fail "summary.markdown" "The summary contains Markdown syntax."
+    return 1
+  fi
+  if [[ "$summary" == *'.' ]]; then
+    validation_fail "summary.trailing_period" "The summary ends with a period."
+    return 1
+  fi
+  if grep -Eiq '^[[:space:]]*(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert)(\([^)]+\))?[!:：]' <<<"$summary"; then
+    validation_fail "summary.duplicate_type" "The summary contains another Conventional Commit prefix."
+    return 1
+  fi
+  if printf '%s' "$summary" | LC_ALL=C grep -qP '[\x00-\x1f\x7f]'; then
+    validation_fail "summary.control_character" "The summary contains a control character."
+    return 1
+  fi
+  if ! printf '%s' "$summary" | grep -Eq '^[[:space:]]*[^[:space:]].*$'; then
+    validation_fail "summary.whitespace_only" "The summary contains only whitespace."
+    return 1
+  fi
 }
 
 validate_commit_bullet() {
   local bullet="$1"
 
-  [[ -n "$bullet" ]] || return 1
-  [[ "$bullet" != *$'\n'* && "$bullet" != *$'\r'* ]] || return 1
-  [[ "$bullet" != *'`'* && "$bullet" != *'*'* && "$bullet" != '```'* && "$bullet" != '#'* && "$bullet" != '>'* ]] || return 1
-  [[ "$bullet" == *. ]] || return 1
-  printf '%s' "$bullet" | LC_ALL=C grep -qP '[\x00-\x1f\x7f]' && return 1
-  printf '%s' "$bullet" | grep -Eq '^[[:space:]]*[^[:space:]].*$'
+  if [[ -z "$bullet" ]]; then
+    validation_fail "bullet.empty" "A commit-message bullet is empty."
+    return 1
+  fi
+  if [[ "$bullet" == *$'\n'* || "$bullet" == *$'\r'* ]]; then
+    validation_fail "bullet.multiline" "A bullet contains a line break."
+    return 1
+  fi
+  if [[ "$bullet" == *'`'* || "$bullet" == *'*'* || "$bullet" == '```'* || "$bullet" == '#'* || "$bullet" == '>'* ]]; then
+    validation_fail "bullet.markdown" "A bullet contains unsupported Markdown syntax."
+    return 1
+  fi
+  if [[ "$bullet" != *. ]]; then
+    validation_fail "bullet.missing_period" "A bullet does not end with a period."
+    return 1
+  fi
+  if printf '%s' "$bullet" | LC_ALL=C grep -qP '[\x00-\x1f\x7f]'; then
+    validation_fail "bullet.control_character" "A bullet contains a control character."
+    return 1
+  fi
+  if ! printf '%s' "$bullet" | grep -Eq '^[[:space:]]*[^[:space:]].*$'; then
+    validation_fail "bullet.whitespace_only" "A bullet contains only whitespace."
+    return 1
+  fi
 }
 
 compose_commit_message() {
@@ -1977,27 +2234,49 @@ validate_commit_message_fields() {
   local i j
   local -a bullets=("$@")
 
-  is_allowed_commit_type "$type" || return 1
+  if ! is_allowed_commit_type "$type"; then
+    validation_fail "type.invalid" "Unsupported Conventional Commit type: ${type:-<empty>}."
+    return 1
+  fi
   validate_commit_summary "$summary" || return 1
 
   if [[ "${STAGED_FILE_COUNT:-0}" -le 1 ]]; then
-    [[ "$#" -eq 0 ]] || return 1
+    if [[ "$#" -ne 0 ]]; then
+      validation_fail "body.unexpected" "Exactly one file is staged, but the response contains ${#bullets[@]} bullet(s)."
+      return 1
+    fi
   else
-    [[ "$#" -ge 1 && "$#" -le "$MAX_BODY_BULLETS" ]] || return 1
+    if [[ "$#" -lt 1 ]]; then
+      validation_fail "body.missing" "Multiple files are staged, but the response has no body bullets."
+      return 1
+    fi
+    if [[ "$#" -gt "$MAX_BODY_BULLETS" ]]; then
+      validation_fail "body.too_many_bullets" "The response has ${#bullets[@]} bullets; maximum is ${MAX_BODY_BULLETS}."
+      return 1
+    fi
   fi
 
   for ((i=0; i<${#bullets[@]}; i++)); do
     bullet="${bullets[i]}"
-    validate_commit_bullet "$bullet" || return 1
+    if ! validate_commit_bullet "$bullet"; then
+      dbg "Invalid bullet index: $((i + 1))"
+      return 1
+    fi
     normalized_bullet=$(printf '%s' "$bullet" | tr '[:upper:]' '[:lower:]')
     for ((j=0; j<i; j++)); do
       normalized_existing=$(printf '%s' "${bullets[j]}" | tr '[:upper:]' '[:lower:]')
-      [[ "$normalized_bullet" != "$normalized_existing" ]] || return 1
+      if [[ "$normalized_bullet" == "$normalized_existing" ]]; then
+        validation_fail "body.duplicate_bullet" "Bullets $((j + 1)) and $((i + 1)) are duplicates."
+        return 1
+      fi
     done
   done
 
   message=$(compose_commit_message "$type" "$summary" "$@")
-  [[ "${#message}" -le "$MAX_COMMIT_MESSAGE_LENGTH" ]]
+  if [[ "${#message}" -gt "$MAX_COMMIT_MESSAGE_LENGTH" ]]; then
+    validation_fail "message.too_long" "The message has ${#message} characters; maximum is ${MAX_COMMIT_MESSAGE_LENGTH}."
+    return 1
+  fi
 }
 
 clean_plain_commit_message() {
@@ -2012,6 +2291,7 @@ clean_plain_commit_message() {
         type=$(normalize_commit_type "${BASH_REMATCH[1]}")
         summary=$(normalize_commit_summary "${BASH_REMATCH[2]}")
       else
+        validation_fail "plain.invalid_subject" "Line 1 must match <type>: <summary> without a scope."
         return 1
       fi
     elif [[ -z "${line//[[:space:]]/}" ]]; then
@@ -2025,12 +2305,16 @@ clean_plain_commit_message() {
       bullet=$(normalize_commit_bullet "${BASH_REMATCH[2]}")
       bullets+=("$bullet")
     else
+      validation_fail "plain.unexpected_line" "Line $((line_number + 1)) is neither blank nor a '- ' bullet."
       return 1
     fi
     line_number=$((line_number + 1))
   done <<< "$message"
 
-  [[ "$line_number" -gt 0 ]] || return 1
+  if [[ "$line_number" -le 0 ]]; then
+    validation_fail "plain.empty" "The plain-text response is empty."
+    return 1
+  fi
   validate_commit_message_fields "$type" "$summary" "${bullets[@]}" || return 1
   compose_commit_message "$type" "$summary" "${bullets[@]}"
 }
@@ -2164,7 +2448,10 @@ compose_commit_from_json() {
   local type summary bullet
   local -a bullets=()
 
-  echo "$json" | jq -e '(.type | type == "string") and (.summary | type == "string") and (.bullets | type == "array")' >/dev/null || return 1
+  if ! echo "$json" | jq -e '(.type | type == "string") and (.summary | type == "string") and (.bullets | type == "array")' >/dev/null; then
+    validation_fail "structured.invalid_fields" "Expected string fields type and summary plus an array field bullets."
+    return 1
+  fi
   type=$(echo "$json" | jq -r '.type // empty')
   summary=$(echo "$json" | jq -r '.summary // empty')
   type=$(normalize_commit_type "$type")
@@ -2187,6 +2474,8 @@ generate_commit_message() {
   fi
 
   collect_context "$safe_mode"
+  dbg "Generation safe mode: ${safe_mode}"
+  debug_git_context "$safe_mode"
   step_ok "Context: ${STAGED_FILE_COUNT} file(s) staged"
 
   FILE_ANALYSES=""
@@ -2201,13 +2490,15 @@ generate_commit_message() {
   user_prompt="$base_user_prompt"
 
   local retry_delay=1
+  local retry_delay_max=10
   for ((i=1; i<=attempts; i++)); do
     dbg "Attempt $i/$attempts"
     [[ "$i" -gt 1 ]] && {
       step_info "Retry $i/$attempts..."
       dbg "Retry delay: ${retry_delay}s"
       sleep "$retry_delay"
-      retry_delay=$((retry_delay * 2))
+      retry_delay=$((retry_delay + 1))
+      [[ "$retry_delay" -le "$retry_delay_max" ]] || retry_delay="$retry_delay_max"
     }
 
     if [[ "$structured_available" -eq 1 ]]; then
@@ -2317,8 +2608,10 @@ do_commit() {
   printf '%s\n' "$msg" > "$tmpfile"
 
   if [[ "$NO_VERIFY" -eq 1 ]]; then
+    dbg "Command: git commit --no-verify -F <commit-message-file>"
     git commit --no-verify -F "$tmpfile"
   else
+    dbg "Command: git commit -F <commit-message-file>"
     git commit -F "$tmpfile"
   fi
 
@@ -2340,6 +2633,7 @@ do_push() {
 
   if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
     spinner_start "Pushing to remote..."
+    dbg "Command: git push"
     git push
     spinner_stop
     remote=$(git remote | head -n 1 || echo "origin")
@@ -2359,6 +2653,7 @@ do_push() {
   fi
 
   spinner_start "Pushing to ${remote}/${branch}..."
+  dbg "Command: git push -u ${remote} ${branch}"
   git push -u "$remote" "$branch"
   spinner_stop
   step_ok "Pushed to ${remote}/${branch}"
@@ -2396,6 +2691,7 @@ main() {
   acquire_lock
   trap 'live_status_stop; spinner_stop; restore_cursor; cleanup_dry_run_index; release_lock; rm -f "${TOKEN_LOG_FILE:-}"' EXIT
   setup_dry_run_index
+  debug_runtime_configuration
 
   # Calculate total steps from the configuration.
   # Base: dependencies (1) + stage (2) + analyze/generate (3) + commit (4) + push (5)

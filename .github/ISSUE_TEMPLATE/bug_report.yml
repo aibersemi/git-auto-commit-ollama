@@ -1,5 +1,5 @@
-name: "🐛 Laporan Bug"
-description: Laporkan bug atau error pada git-auto-commit-ollama
+name: "🐛 Bug Report"
+description: Report a bug or error in git-auto-commit-ollama
 title: "[Bug]: "
 labels: ["bug"]
 assignees:
@@ -8,19 +8,19 @@ body:
   - type: markdown
     attributes:
       value: |
-        Terima kasih telah meluangkan waktu untuk melaporkan bug ini! Harap isi formulir di bawah ini dengan sebaik-baiknya.
+        Thank you for taking the time to report a bug. Please complete the form below with as much detail as possible.
   - type: textarea
-    id: deskripsi
+    id: description
     attributes:
-      label: Deskripsi Bug
-      description: Jelaskan dengan jelas dan singkat apa bug yang terjadi saat menggunakan git-ai.sh.
+      label: Bug Description
+      description: Clearly and concisely describe the bug you encountered while using git-ai.sh.
     validations:
       required: true
   - type: textarea
-    id: reproduksi
+    id: reproduction
     attributes:
-      label: Langkah-langkah Mereproduksi
-      description: Tuliskan langkah-langkah detail agar kami bisa mereproduksi bug ini di mesin kami.
+      label: Steps to Reproduce
+      description: List the detailed steps needed to reproduce the bug.
       value: |
         1. ...
         2. ...
@@ -30,29 +30,29 @@ body:
   - type: textarea
     id: expected
     attributes:
-      label: Hasil yang Diharapkan
-      description: Jelaskan apa yang seharusnya terjadi jika bug ini tidak ada.
+      label: Expected Result
+      description: Describe what you expected to happen.
     validations:
       required: true
   - type: input
     id: os
     attributes:
-      label: Sistem Operasi
-      placeholder: "Contoh: Ubuntu 22.04 LTS"
+      label: Operating System
+      placeholder: "Example: Ubuntu 22.04 LTS"
     validations:
       required: true
   - type: input
     id: ollama_version
     attributes:
-      label: Versi Ollama
-      placeholder: "Contoh: 0.1.28 (dapat dilihat dengan mengetik 'ollama --version')"
+      label: Ollama Version
+      placeholder: "Example: 0.1.28 (run 'ollama --version' to check)"
     validations:
       required: true
   - type: textarea
     id: log
     attributes:
-      label: Output / Log Error (Opsional)
-      description: Silakan salin (copy) log error dari terminal Anda ke sini.
+      label: Error Output or Logs (Optional)
+      description: Paste the relevant terminal error output here after removing sensitive data.
       render: shell
     validations:
       required: false

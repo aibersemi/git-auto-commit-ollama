@@ -9,9 +9,13 @@
 
 </div>
 
-CLI Bash untuk membuat commit message Git dengan model yang tersedia di server Ollama.
+A Bash CLI that generates Git commit messages with a model available on an
+Ollama server.
 
-Secara default, `git-ai` memeriksa endpoint dan model Ollama, menjalankan `git add -A`, memindai staged changes, meminta commit message Conventional Commit berbahasa Inggris, membuat commit, lalu melakukan push. Konteks perubahan dikirim ke endpoint Ollama yang dikonfigurasi; endpoint tersebut dapat berada di mesin lokal atau host jaringan lain.
+By default, `git-ai` checks the Ollama endpoint and model, runs `git add -A`,
+scans staged changes, requests an English Conventional Commit message, creates
+the commit, and pushes it. Change context is sent to the configured Ollama
+endpoint, which may run locally or on another network host.
 
 ## Table of Contents
 
@@ -32,288 +36,354 @@ Secara default, `git-ai` memeriksa endpoint dan model Ollama, menjalankan `git a
 
 ## Features
 
-- Staging otomatis dengan `git add -A`, staging interaktif dengan `git add -p`, atau memakai index yang sudah di-stage melalui `--no-stage`.
-- Preflight melalui Ollama `/api/tags`, `/api/ps`, dan `/api/chat`, termasuk fallback host, auto-pull model, dan warm-up model sebelum staging.
-- Commit message Conventional Commit tanpa scope melalui Ollama `/api/chat`.
-- Structured output berbasis JSON Schema dengan fallback plain text dan fallback message lokal jika respons AI tetap tidak valid.
-- Analisis diff per-file secara paralel, dengan jumlah file dan paralelisme yang dapat diatur.
-- Prioritas tema pada capability, API, integritas data, security, dan user flow; artefak generated diperlakukan sebagai konteks pendukung.
-- Secret guard bawaan untuk baris staged yang ditambahkan, ditambah scan `gitleaks` jika command tersebut tersedia.
-- Safe mode yang menahan diff sensitif dari prompt, kecuali pengguna memilih `--force-diff` secara eksplisit.
-- Push ke upstream yang sudah ada, atau `git push -u` ke `origin`/remote pertama saat branch belum memiliki upstream.
-- Dry-run dengan index sementara agar staging, commit, dan push tidak mengubah Git state secara permanen.
-- Lock per repository untuk mencegah dua proses `git-ai` berjalan bersamaan.
-- Pesan buatan script, help text, prompt, dan commit message menggunakan Bahasa Inggris. Output milik Git, Ollama, atau tool lain mengikuti tool tersebut.
+- Automatic staging with `git add -A`, interactive staging with `git add -p`,
+  or reuse of the existing index with `--no-stage`.
+- Ollama preflight through `/api/tags`, `/api/ps`, and `/api/chat`, including a
+  fallback host, automatic model pulling, and model warm-up before staging.
+- Scope-free Conventional Commit messages through Ollama `/api/chat`.
+- JSON Schema structured output with plain-text fallback and a local fallback
+  message when the AI response remains invalid.
+- Parallel per-file diff analysis with configurable file and concurrency limits.
+- Prompt prioritization for capabilities, APIs, data integrity, security, and
+  user flows; generated artifacts are treated as supporting context.
+- A built-in secret guard for added staged lines, supplemented by `gitleaks`
+  when the command is available.
+- Safe mode that withholds sensitive diff details from prompts unless the user
+  explicitly selects `--force-diff`.
+- Push to an existing upstream, or `git push -u` to `origin` or the first
+  remote when the branch has no upstream.
+- Dry-run with a temporary index so staging, commits, and pushes do not
+  permanently change Git state.
+- A per-repository lock that prevents concurrent `git-ai` processes.
+- Script messages, help text, prompts, and generated commit messages in
+  English. Output from Git, Ollama, or other tools uses each tool's own
+  language.
 
 ## How It Works
 
 ```mermaid
 flowchart TD
-  A[Jalankan di repository Git] --> B[Ambil lock repository]
+  A[Run inside a Git repository] --> B[Acquire repository lock]
   B --> C{Dry-run?}
-  C -->|ya| D[Salin index ke file sementara]
-  C -->|tidak| E[Gunakan index asli]
-  D --> F[Validasi config, dependensi, endpoint, dan model Ollama]
+  C -->|yes| D[Copy index to a temporary file]
+  C -->|no| E[Use the real index]
+  D --> F[Validate configuration, dependencies, endpoint, and Ollama model]
   E --> F
-  F --> G{Mode staging}
+  F --> G{Staging mode}
   G -->|default| H[git add -A]
   G -->|--patch| I[git add -p]
-  G -->|--no-stage| J[Pakai staged changes]
-  H --> K[Secret scan]
+  G -->|--no-stage| J[Use existing staged changes]
+  H --> K[Scan for secrets]
   I --> K
   J --> K
-  K --> L[Bangun konteks dan analisis per-file]
-  L --> M[Generate dan validasi commit message]
+  K --> L[Build context and run per-file analysis]
+  L --> M[Generate and validate the commit message]
   M --> N{Dry-run?}
-  N -->|ya| O[Tampilkan message tanpa commit/push]
-  N -->|tidak| P[git commit]
-  P --> Q{Push aktif?}
-  Q -->|ya| R[git push]
-  Q -->|tidak| S[Selesai]
+  N -->|yes| O[Display message without commit or push]
+  N -->|no| P[git commit]
+  P --> Q{Push enabled?}
+  Q -->|yes| R[git push]
+  Q -->|no| S[Done]
 ```
 
-Format message adalah Conventional Commit tanpa scope:
+The message uses the scope-free Conventional Commit format:
 
 ```text
 <type>: <summary>
 ```
 
-Untuk tepat satu staged file, message hanya berisi subject. Untuk lebih dari satu staged file, message harus memiliki satu baris kosong lalu 1-6 bullet penting. Tipe yang diterima adalah `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `build`, `ci`, `perf`, `style`, dan `revert`.
+For exactly one staged file, the message contains only the subject. For more
+than one staged file, the message must contain one blank line followed by one
+to six important bullet points. Accepted types are `feat`, `fix`, `refactor`,
+`docs`, `test`, `chore`, `build`, `ci`, `perf`, `style`, and `revert`.
 
-Batas default seluruh message adalah 65.536 karakter dan dapat diubah melalui `MAX_COMMIT_MESSAGE_LENGTH`. Script tidak menerapkan batas subject 72 atau 120 karakter.
+The default limit for the entire message is 65,536 characters and can be
+changed with `MAX_COMMIT_MESSAGE_LENGTH`. The script does not enforce a
+72-character or 120-character subject limit.
 
 ## Prerequisites
 
-Runtime ditujukan untuk Linux dengan Bash dan GNU userland. Command berikut diperiksa secara eksplisit saat startup:
+The runtime targets Linux with Bash and GNU userland. These commands are
+checked explicitly at startup:
 
 - `git`
 - `curl`
 - `jq`
-- `flock` dari paket `util-linux`
+- `flock` from the `util-linux` package
 
-Script juga menggunakan utility standar seperti `grep` dengan dukungan PCRE, `sed`, `head`, `sort`, `mktemp`, `date`, dan `wc`. Selain itu, harus ada server Ollama yang dapat diakses dari host tempat CLI berjalan.
+The script also uses standard utilities such as `grep` with PCRE support,
+`sed`, `head`, `sort`, `mktemp`, `date`, and `wc`. An Ollama server must be
+reachable from the host running the CLI.
 
-Dependensi opsional:
+Optional dependencies:
 
-- `make` dan `sudo`: diperlukan oleh target install/uninstall pada `Makefile`.
-- `ollama`: diperlukan hanya untuk auto-pull ketika `DEFAULT_MODEL` belum ada di server.
-- `gitleaks`: scanner tambahan untuk staged changes.
-- `shellcheck`: lint saat development dan di CI.
+- `make` and `sudo`: Required by the `Makefile` install and uninstall targets.
+- `ollama`: Required only for automatic pulling when `DEFAULT_MODEL` is
+  missing from the server.
+- `gitleaks`: Additional scanner for staged changes.
+- `shellcheck`: Bash linting during development and in CI.
 
-Contoh instalasi runtime dan development di Ubuntu/Debian:
+Example runtime and development installation on Ubuntu or Debian:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y bash git curl jq util-linux coreutils grep sed make shellcheck
 ```
 
-Untuk Ollama lokal, jalankan service dan sediakan model default:
+For a local Ollama instance, start the service and install the configured
+default model:
 
 ```bash
 ollama serve
-ollama pull gemma4:e4b
+ollama pull nemotron-3-nano:4b
 ```
 
-Jika server Ollama berada di host lain dan model sudah tersedia di sana, `ollama` CLI tidak wajib terpasang secara lokal.
+If Ollama runs on another host and the model is already available there, the
+`ollama` CLI does not need to be installed locally.
 
 ## Installation
 
-Clone repository:
+Clone the repository:
 
 ```bash
 git clone https://github.com/aibersemi/git-auto-commit-ollama.git
 cd git-auto-commit-ollama
 ```
 
-Script dapat dijalankan langsung tanpa instalasi:
+Run the script directly without installing it:
 
 ```bash
 ./git-ai.sh --version
 ./git-ai.sh --help
 ```
 
-Untuk membuat command `git-ai` di `/usr/local/bin`:
+To create a `git-ai` command in `/usr/local/bin`:
 
 ```bash
 make install
 ```
 
-Target `install` menggunakan `sudo` dan membuat dua symlink, yaitu `git-ai` dan `git-ai.conf`, di `$(PREFIX)/bin`. Keduanya menunjuk ke checkout repository saat ini, sehingga direktori hasil clone harus tetap berada di lokasi yang sama.
+The `install` target uses `sudo` and creates `git-ai` and `git-ai.conf`
+symlinks in `$(PREFIX)/bin`. Both symlinks point to the current repository
+checkout, so the cloned directory must remain in the same location.
 
-Gunakan `PREFIX` untuk lokasi lain:
+Use `PREFIX` to install elsewhere:
 
 ```bash
 make install PREFIX="/opt/git-ai"
 ```
 
-Uninstall harus memakai `PREFIX` yang sama dengan proses install:
+Uninstall with the same `PREFIX` used during installation:
 
 ```bash
-# Instalasi default
+# Default installation
 make uninstall
 
-# Instalasi dengan PREFIX khusus
+# Installation with a custom PREFIX
 make uninstall PREFIX="/opt/git-ai"
 ```
 
 ## Configuration
 
-Konfigurasi utama berada di [`git-ai.conf`](git-ai.conf). Script pertama-tama mencari `git-ai.conf` di direktori yang sama dengan path executable yang dijalankan. Jika executable adalah symlink dan config tersebut tidak ada, script mencari config di direktori target symlink. Dengan demikian, perubahan pada config di checkout tetap dipakai meskipun hanya symlink `git-ai` yang terpasang. `make install` tetap membuat symlink untuk script dan config pada direktori tujuan yang sama.
+The primary configuration is in [`git-ai.conf`](git-ai.conf). The script first
+looks for `git-ai.conf` next to the executable path that was invoked. If the
+executable is a symlink and no adjacent configuration exists, it looks next to
+the resolved script target. Changes to the checkout configuration therefore
+remain effective when only the `git-ai` symlink is invoked. `make install`
+still creates both symlinks in the same destination directory.
 
-File config di-`source` sebagai shell code, bukan diparsing sebagai format data. Perlakukan file ini sebagai code tepercaya dan jangan menyimpan secret di dalamnya.
+The configuration file is sourced as shell code rather than parsed as a data
+format. Treat it as trusted code and do not store secrets in it.
 
-Nilai yang ada di `git-ai.conf` saat ini:
+Current `git-ai.conf` values:
 
-| Variabel | Default | Fungsi |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `DEFAULT_MODEL` | `nemotron-3-nano:4b` | Model Ollama yang dipakai; opsi model per-command tidak didukung. |
-| `DEFAULT_OLLAMA_HOST` | `http://127.0.0.1:11434` | Host Ollama utama. |
-| `FALLBACK_OLLAMA_HOST` | `http://10.50.0.2:11434` | Host cadangan saat request `/api/tags` ke host utama gagal. Kosongkan jika tidak digunakan. |
-| `DEFAULT_DO_PUSH` | `1` | Push otomatis setelah commit. |
-| `AI_TEMPERATURE` | `0.2` | Temperatur request ke model. |
-| `AI_THINK` | `false` | Nilai `think`: `false`, `true`, `low`, `medium`, atau `high`. |
-| `AI_NUM_PREDICT` | `2048` | Batas token output request utama. |
-| `AI_MAX_NUM_PREDICT` | `2048` | Batas atas `num_predict` untuk request utama dan analisis file. |
-| `USE_STRUCTURED_OUTPUT` | `0` | Gunakan JSON Schema (`1`) atau plain text (`0`). Default dinonaktifkan karena `nemotron-3-nano:4b` tidak konsisten mengikuti structured output. |
-| `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Panjang maksimal seluruh commit message. |
-| `FILE_ANALYSIS_LIMIT` | `6` | Jumlah maksimum file yang dipilih untuk analisis per-file; `0` menonaktifkan request tersebut. |
-| `FILE_ANALYSIS_PARALLELISM` | `4` | Jumlah request analisis file yang berjalan paralel. |
-| `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `512` | Target token output untuk setiap analisis file. |
-| `MAX_FILES_LIST` | `20` | Batas entri pada konteks nama/status dan statistik Git. |
-| `TOP_FILES` | `4` | Jumlah file terbesar yang dipilih untuk ringkasan hunk. |
-| `MAX_HUNK_CHARS` | `1000` | Batas karakter hunk untuk setiap file terpilih. |
-| `MAX_TOTAL_HUNKS_CHARS` | `3500` | Batas total karakter hunk pada prompt utama. |
+| `DEFAULT_MODEL` | `nemotron-3-nano:4b` | Ollama model used unless `-m/--model` temporarily overrides it. |
+| `DEFAULT_OLLAMA_HOST` | `http://127.0.0.1:11434` | Primary Ollama host. |
+| `FALLBACK_OLLAMA_HOST` | `http://10.50.0.2:11434` | Fallback host when the primary `/api/tags` request fails. Clear it when unused. |
+| `DEFAULT_DO_PUSH` | `1` | Push automatically after committing. |
+| `AI_TEMPERATURE` | `0.2` | Model request temperature. |
+| `AI_THINK` | `false` | `think` value: `false`, `true`, `low`, `medium`, or `high`. |
+| `AI_NUM_PREDICT` | `2048` | Output token limit for the primary request. |
+| `AI_MAX_NUM_PREDICT` | `2048` | Upper `num_predict` limit for primary and per-file requests. |
+| `USE_STRUCTURED_OUTPUT` | `0` | Use JSON Schema (`1`) or plain text (`0`). Disabled by default because `nemotron-3-nano:4b` does not consistently follow structured output. |
+| `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Maximum length of the entire commit message. |
+| `FILE_ANALYSIS_LIMIT` | `6` | Maximum files selected for per-file analysis; `0` disables those requests. |
+| `FILE_ANALYSIS_PARALLELISM` | `4` | Number of concurrent per-file analysis requests. |
+| `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `512` | Target output tokens for each per-file analysis. |
+| `MAX_FILES_LIST` | `20` | Entry limit for file status and Git statistics context. |
+| `TOP_FILES` | `4` | Number of largest files selected for hunk summaries. |
+| `MAX_HUNK_CHARS` | `1000` | Per-file hunk character limit. |
+| `MAX_TOTAL_HUNKS_CHARS` | `3500` | Total hunk character limit in the primary prompt. |
 
-Resolusi host Ollama mengikuti urutan berikut:
+Ollama host resolution follows this order:
 
-1. pakai `DEFAULT_OLLAMA_HOST` jika tidak kosong;
-2. jika kosong, baca `OLLAMA_HOST` dari `/etc/systemd/system/ollama.service`;
-3. jika tidak ditemukan, pakai `http://localhost:11434`.
+1. Use `DEFAULT_OLLAMA_HOST` when it is not empty.
+2. Otherwise, read `OLLAMA_HOST` from
+   `/etc/systemd/system/ollama.service`.
+3. Fall back to `http://localhost:11434`.
 
-`FALLBACK_OLLAMA_HOST` hanya dicoba saat pengecekan `/api/tags` ke host utama gagal. Host aktif kemudian dipakai untuk pengecekan model, warm-up, analisis diff, dan pembuatan commit message.
+`FALLBACK_OLLAMA_HOST` is attempted only when the primary `/api/tags` check
+fails. The active host is then used for model checks, warm-up, diff analysis,
+and commit message generation.
 
-Environment variable tambahan yang digunakan:
+Additional environment variables:
 
-| Variabel | Fungsi |
+| Variable | Purpose |
 | --- | --- |
-| `NO_COLOR` | Menonaktifkan warna saat nilainya tidak kosong; spinner TTY tetap aktif. |
-| `EDITOR` | Editor untuk pilihan `e` pada `--interactive`; default `vi`. |
+| `NO_COLOR` | Disable color when non-empty; the TTY spinner remains active. |
+| `EDITOR` | Editor for the `e` choice in `--interactive`; defaults to `vi`. |
 
 ## Usage
 
-Jalankan dari dalam repository Git yang memiliki perubahan:
+Run the command inside a Git repository with changes:
 
 ```bash
 git-ai
 ```
 
-Alur default adalah:
+The default workflow:
 
-1. memvalidasi repository, config, dependensi, endpoint, dan model Ollama;
-2. menjalankan `git add -A`;
-3. memindai staged changes untuk potensi secret;
-4. membuat dan memvalidasi commit message;
-5. menjalankan `git commit`;
-6. menjalankan `git push` jika `DEFAULT_DO_PUSH=1`.
+1. Validate the repository, configuration, dependencies, Ollama endpoint, and
+   model.
+2. Run `git add -A`.
+3. Scan staged changes for potential secrets.
+4. Generate and validate a commit message.
+5. Run `git commit`.
+6. Run `git push` when `DEFAULT_DO_PUSH=1`.
 
-Contoh workflow:
+Example workflows:
 
 ```bash
-# Commit tanpa push
+# Commit without pushing
 git-ai --no-push
 
-# Staging interaktif
+# Stage interactively
 git-ai --patch
 
-# Konfirmasi atau edit message sebelum commit
+# Confirm or edit the message before committing
 git-ai --interactive
 
-# Pakai staged changes yang sudah ada
+# Use changes that are already staged
 git add git-ai.sh git-ai.conf
 git-ai --no-stage
 
-# Preview tanpa perubahan Git permanen
+# Preview without permanent Git changes
 git-ai --dry-run --no-push
 
-# Tampilkan status Git tanpa preflight Ollama
+# Preview with a temporary model override
+git-ai --model gemma4:e4b --dry-run
+
+# Display Git status without the Ollama preflight
 git-ai --status
 ```
 
-Semua opsi yang tersedia:
+Available options:
 
-| Opsi | Perilaku |
+| Option | Behavior |
 | --- | --- |
-| `-h`, `--help` | Tampilkan help. |
-| `-v`, `--version` | Tampilkan versi script. |
-| `-s`, `--status` | Jalankan `git status` lalu keluar. |
-| `-n`, `--no-push` | Jangan push setelah commit. |
-| `-p`, `--patch` | Gunakan `git add -p`, kecuali `--no-stage` juga dipakai. |
-| `-i`, `--interactive` | Tampilkan message dan tawarkan lanjut, batal, atau edit sebelum commit. |
-| `--no-stage` | Pakai staged changes yang sudah ada tanpa staging otomatis. |
-| `--dry-run` | Gunakan index sementara serta lewati commit dan push. |
-| `--debug` | Tampilkan log debug. |
-| `--force-diff` | Kirim diff detail ke Ollama walaupun pola sensitif terdeteksi. |
-| `--allow-secret-commit` | Izinkan commit saat secret guard menemukan potensi secret. |
-| `--no-file-analysis` | Nonaktifkan analisis AI per-file. |
-| `--file-analysis-limit N` | Batasi file yang dianalisis; menerima bilangan bulat non-negatif. |
-| `--file-analysis-parallelism N` | Atur request analisis paralel; minimal `1`. |
-| `--no-structured` | Lewati JSON Schema dan gunakan respons plain text, termasuk saat `USE_STRUCTURED_OUTPUT=1`. Tanpa opsi ini, respons structured yang ternyata berisi commit plain text akan dicoba sebagai plain text; jika tetap tidak valid, request beralih ke plain text dalam percobaan yang sama. |
-| `--no-pull` | Gagal jika model belum tersedia, tanpa menjalankan `ollama pull`. |
-| `--no-banner` | Sembunyikan banner awal. |
-| `--no-verify` | Jalankan `git commit --no-verify`; pre-push hook tetap berjalan saat push. |
+| `-h`, `--help` | Display help. |
+| `-v`, `--version` | Display the script version. |
+| `-s`, `--status` | Run `git status` and exit. |
+| `-n`, `--no-push` | Do not push after committing. |
+| `-m MODEL`, `--model MODEL` | Temporarily use the selected Ollama model for this invocation without changing `git-ai.conf`. `--model=MODEL` is also supported. |
+| `-p`, `--patch` | Use `git add -p` unless `--no-stage` is also selected. |
+| `-i`, `--interactive` | Display the message and offer to continue, cancel, or edit before committing. |
+| `--no-stage` | Use existing staged changes without automatic staging. |
+| `--dry-run` | Use a temporary index and skip the commit and push. |
+| `--debug` | Display a detailed diagnostic trace, including runtime configuration, relevant commands and outputs, the full non-sensitive staged diff, complete prompts and request payloads, complete Ollama responses, HTTP metadata, and validation reasons. Safe mode omits sensitive diff content unless `--force-diff` is explicitly selected. |
+| `--force-diff` | Send detailed diffs to Ollama even when sensitive patterns are detected. |
+| `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
+| `--no-file-analysis` | Disable per-file AI analysis. |
+| `--file-analysis-limit N` | Limit analyzed files; accepts a non-negative integer. |
+| `--file-analysis-parallelism N` | Set concurrent analysis requests; minimum `1`. |
+| `--no-structured` | Skip JSON Schema and use plain text, including when `USE_STRUCTURED_OUTPUT=1`. Without this option, a structured response containing plain commit text is retried as plain text; if still invalid, the request falls back to plain text within the same attempt. |
+| `--no-pull` | Fail when the model is unavailable without running `ollama pull`. |
+| `--no-banner` | Hide the startup banner. |
+| `--no-verify` | Run `git commit --no-verify`; pre-push hooks still run during push. |
 
-Opsi `-m`/`--model` sengaja ditolak. Ubah `DEFAULT_MODEL` di `git-ai.conf` untuk memilih model.
+Use `DEFAULT_MODEL` in `git-ai.conf` for the persistent default. A command-line
+`-m/--model` value has priority only for the current invocation and is used for
+model availability checks, optional pulling, warm-up, analysis, and commit
+message generation.
 
 ## Dry Run
 
-`--dry-run` menyalin index Git ke file sementara, lalu melakukan staging dan analisis terhadap salinan tersebut. Mode ini tidak mengubah index asli, membuat commit, atau melakukan push. File index sementara dan lock repository dibersihkan saat proses selesai.
+`--dry-run` copies the Git index to a temporary file and performs staging and
+analysis against that copy. It does not change the original index, create a
+commit, or push. The temporary index file and repository lock are removed when
+the process exits.
 
-Dry-run bukan mode offline. Preflight dan request generasi tetap menghubungi Ollama, warm-up model tetap dijalankan, dan model yang belum tersedia dapat di-pull jika `ollama` CLI ada. Tambahkan `--no-pull` jika preview tidak boleh memasang model baru:
+Dry-run is not an offline mode. Preflight and generation requests still contact
+Ollama, model warm-up still runs, and a missing model may be pulled when the
+`ollama` CLI is available. Add `--no-pull` when a preview must not install a
+new model:
 
 ```bash
 git-ai --dry-run --no-push --no-pull
 ```
 
-Jika secret guard menemukan potensi secret pada dry-run, script menampilkan peringatan lalu melanjutkan pembuatan preview tanpa commit atau push.
+If the secret guard finds a potential secret during dry-run, the script warns
+the user and continues generating a preview without committing or pushing.
 
 ## Security
 
-Konteks yang dikirim ke endpoint Ollama dapat mencakup nama file, status, statistik, ringkasan Git, potongan diff, dan request analisis per-file. Gunakan endpoint lokal atau jaringan tepercaya, dan tinjau `DEFAULT_OLLAMA_HOST` serta `FALLBACK_OLLAMA_HOST` sebelum menjalankan tool pada repository sensitif.
+Context sent to Ollama may include file names, statuses, statistics, Git
+summaries, diff excerpts, and per-file analysis requests. Use a local or trusted
+network endpoint, and review `DEFAULT_OLLAMA_HOST` and
+`FALLBACK_OLLAMA_HOST` before running the tool on a sensitive repository.
 
-Perlindungan yang tersedia:
+Available protections:
 
-- Secret guard bawaan memeriksa baris tambahan pada staged diff. Jika `gitleaks` tersedia, hasilnya ditambahkan ke pemeriksaan.
-- Pada proses normal, temuan secret membatalkan commit. `--allow-secret-commit` hanya melewati pembatalan tersebut.
-- Safe mode menghapus detail diff dari prompt utama dan melewati file sensitif pada analisis per-file; metadata Git dan diff file lain yang tidak terdeteksi sensitif masih dapat dikirim.
-- `--allow-secret-commit` tidak menonaktifkan safe mode. Gunakan `--force-diff` secara terpisah hanya jika pengiriman diff sensitif memang disengaja.
-- `--force-diff` tidak mengizinkan commit yang diblokir secret guard.
-- `--no-push`, `--no-stage`, dan `--dry-run` menjaga batas operasi Git masing-masing dan tidak boleh diperlakukan sebagai sinonim satu sama lain.
+- The built-in secret guard checks added lines in the staged diff. When
+  `gitleaks` is available, its result is added to the scan.
+- During a normal run, a secret finding cancels the commit.
+  `--allow-secret-commit` only bypasses that cancellation.
+- Safe mode removes detailed diffs from the primary prompt and skips sensitive
+  files during per-file analysis. Git metadata and diffs from other files not
+  detected as sensitive may still be sent.
+- `--allow-secret-commit` does not disable safe mode. Use `--force-diff`
+  separately only when sending a sensitive diff is intentional.
+- `--force-diff` does not allow a commit blocked by the secret guard.
+- `--no-push`, `--no-stage`, and `--dry-run` each protect a different Git
+  operation boundary and are not interchangeable.
 
-Deteksi secret bersifat best effort dan dapat menghasilkan false positive maupun false negative. Jangan stage credential, private key, token, atau file environment yang seharusnya tetap privat.
+Secret detection is best effort and may produce false positives or false
+negatives. Do not stage credentials, private keys, tokens, or environment files
+that must remain private.
 
-Kebijakan pelaporan vulnerability dan detail scope tersedia di [Security Policy](.github/SECURITY.md).
+See the [Security Policy](.github/SECURITY.md) for vulnerability reporting and
+detailed scope.
 
 ## Troubleshooting
 
-| Masalah | Penyebab umum | Solusi |
+| Problem | Common cause | Solution |
 | --- | --- | --- |
-| `Ollama is unavailable ...` | Service mati, host salah, atau kedua host tidak dapat diakses. | Jalankan/cek service Ollama dan periksa `DEFAULT_OLLAMA_HOST` serta `FALLBACK_OLLAMA_HOST`. |
-| `DEFAULT_MODEL ... was not found` | Model belum ada pada host aktif. | Pull model ke server, pasang `ollama` CLI untuk auto-pull, atau ubah `DEFAULT_MODEL`. |
-| `Failed to load and verify model ...` | Model terdaftar tetapi readiness request `/api/chat` gagal atau timeout. | Cek log Ollama, resource server, nama model, dan konektivitas ke host aktif. |
-| `--no-stage ... there are no staged changes` | Index belum berisi perubahan. | Jalankan `git add` lebih dulu atau hapus `--no-stage`. |
-| Commit dibatalkan karena potential secret | Secret guard bawaan atau `gitleaks` menemukan pola sensitif. | Hapus credential dari staged changes; gunakan override hanya setelah meninjau temuannya. |
-| Commit hook gagal | `pre-commit` atau `commit-msg` menolak commit. | Perbaiki temuan hook; `--no-verify` melewati hook commit tersebut jika memang disengaja. |
-| Pre-push hook gagal | Hook dijalankan oleh `git push`. | Perbaiki hook atau lakukan workflow push terpisah; `--no-verify` pada `git-ai` tidak diteruskan ke `git push`. |
-| Tidak ada remote | Repository tidak memiliki remote. | Script melewati push; tambahkan remote jika push diperlukan. |
-| `git-ai` hilang setelah checkout dipindah | Symlink install masih menunjuk ke lokasi clone lama. | Kembalikan checkout ke lokasi semula atau jalankan install ulang dari lokasi baru. |
-| Perubahan `git-ai.conf` tidak dipakai | Command `git-ai` dan config berasal dari instalasi atau checkout yang berbeda. | Jalankan `git-ai --help` untuk melihat path config aktif, lalu periksa symlink dengan `readlink -f "$(command -v git-ai)"`. |
-| Output menampilkan `Retry` | Respons model gagal divalidasi sebagai commit message yang konkret atau sesuai format. | Jalankan dengan `--debug` untuk melihat alasan validator. Kegagalan JSON Schema kini langsung beralih ke plain text dan tidak dihitung sebagai retry terpisah. |
+| `Ollama is unavailable ...` | The service is stopped, the host is wrong, or neither host is reachable. | Start or check Ollama and review `DEFAULT_OLLAMA_HOST` and `FALLBACK_OLLAMA_HOST`. |
+| `DEFAULT_MODEL ... was not found` | The model is missing from the active host. | Pull the model on the server, install the `ollama` CLI for automatic pulling, or change `DEFAULT_MODEL`. |
+| `Failed to load and verify model ...` | The model is listed, but the `/api/chat` readiness request failed or timed out. | Check Ollama logs, server resources, the model name, and connectivity to the active host. |
+| `--no-stage ... there are no staged changes` | The index contains no changes. | Run `git add` first or remove `--no-stage`. |
+| Commit canceled because of a potential secret | The built-in guard or `gitleaks` found a sensitive pattern. | Remove the credential from staged changes; use an override only after reviewing the finding. |
+| Commit hook failed | `pre-commit` or `commit-msg` rejected the commit. | Fix the hook finding; use `--no-verify` only when intentionally bypassing those commit hooks. |
+| Pre-push hook failed | The hook was run by `git push`. | Fix the hook or use a separate push workflow; `git-ai --no-verify` is not forwarded to `git push`. |
+| No remote exists | The repository has no remote. | The script skips the push; add a remote when pushing is required. |
+| `git-ai` disappeared after moving the checkout | Installed symlinks still point to the old clone location. | Restore the checkout to its original location or reinstall from the new location. |
+| Changes to `git-ai.conf` are ignored | The `git-ai` command and configuration come from different installations or checkouts. | Run `git-ai --help` to see the active configuration path, then inspect the symlink with `readlink -f "$(command -v git-ai)"`. |
+| Output shows `Retry` | The model response could not be validated as a concrete, correctly formatted commit message. | Run with `--debug` to inspect the validation reason. JSON Schema failures fall back directly to plain text and do not count as a separate retry. Retry delays increase linearly by one second and are capped at 10 seconds. |
 
-Gunakan `git-ai --debug` untuk melihat endpoint aktif, model, ukuran payload, retry, dan penggunaan token. Jangan membagikan log tanpa memeriksa informasi internal di dalamnya.
+Use `git-ai --debug` to inspect the active configuration and endpoint, relevant
+Git and curl commands, command output, the full staged diff, complete prompts
+and Ollama responses, HTTP timing, retries, validation reasons, and token
+usage. Debug output can contain private source code, paths, repository metadata,
+and model-generated text. Safe mode omits detected sensitive diff content, but
+secret detection is best effort. Treat debug logs as sensitive and sanitize
+them before storing or sharing. `--force-diff` explicitly permits the full diff
+to appear in both prompts and debug output.
 
 ## Development
 
-Validasi dasar:
+Basic validation:
 
 ```bash
 bash -n git-ai.sh
@@ -321,9 +391,12 @@ shellcheck git-ai.sh
 ./git-ai.sh --help >/tmp/git-ai-help.txt
 ```
 
-CI pada [`.github/workflows/ci.yml`](.github/workflows/ci.yml) menjalankan tiga pemeriksaan yang sama pada push ke `main`, pull request, dan `workflow_dispatch`.
+The [CI workflow](.github/workflows/ci.yml) runs the same three checks on pushes
+to `main`, pull requests, and manual `workflow_dispatch` runs.
 
-Untuk smoke test runtime, gunakan repository sementara dan dry-run. Command ini tetap membutuhkan endpoint Ollama yang aktif dan model yang sudah tersedia karena `--no-pull` digunakan:
+For a runtime smoke test, use a temporary repository and dry-run. This command
+still requires an active Ollama endpoint and an available model because
+`--no-pull` is enabled:
 
 ```bash
 project_dir=$(pwd -P)
@@ -336,34 +409,41 @@ printf 'hello\n' > sample.txt
 "$project_dir/git-ai.sh" --dry-run --no-push --no-banner --no-pull
 ```
 
-Jangan menjalankan smoke test commit/push pada repository kerja utama. Panduan kontribusi lengkap berada di [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md).
+Do not run commit or push smoke tests in a primary working repository. See the
+[Contributing Guide](.github/CONTRIBUTING.md) for the full workflow.
 
 ## Repository Structure
 
 ```text
 .
 |-- .github/
-|   |-- CONTRIBUTING.md       # panduan kontribusi
-|   |-- SECURITY.md           # kebijakan dan scope keamanan
+|   |-- CONTRIBUTING.md       # contribution guide
+|   |-- SECURITY.md           # security policy and scope
 |   `-- workflows/
-|       |-- ci.yml            # syntax, ShellCheck, dan help validation
-|       |-- release.yml       # GitHub Release untuk tag v*
-|       `-- stale.yml         # pengelolaan issue/PR stale
-|-- AGENTS.md                 # instruksi kerja untuk coding agent
-|-- Makefile                  # install/uninstall dua symlink
-|-- README.md                 # dokumentasi penggunaan utama
-|-- git-ai.conf               # default runtime config
-`-- git-ai.sh                 # CLI utama
+|       |-- ci.yml            # syntax, ShellCheck, and help validation
+|       |-- release.yml       # GitHub Releases for v* tags
+|       `-- stale.yml         # stale issue and pull request management
+|-- AGENTS.md                 # coding agent instructions
+|-- Makefile                  # install or remove two symlinks
+|-- README.md                 # primary usage documentation
+|-- git-ai.conf               # default runtime configuration
+`-- git-ai.sh                 # main CLI
 ```
 
 ## Contributing
 
-Baca [Contributing Guide](.github/CONTRIBUTING.md) sebelum membuka pull request. Untuk laporan vulnerability, ikuti [Security Policy](.github/SECURITY.md) dan jangan mengirim detail sensitif melalui issue publik.
+Read the [Contributing Guide](.github/CONTRIBUTING.md) before opening a pull
+request. For vulnerability reports, follow the
+[Security Policy](.github/SECURITY.md) and do not send sensitive details
+through a public issue.
 
 ## Support
 
-Jika project ini membantu workflow Anda, dukungan bisa dikirim melalui [Saweria](https://saweria.co/aibersemi). Pertanyaan penggunaan umum juga dapat mengikuti [Support Guide](.github/SUPPORT.md).
+If this project helps your workflow, you can support it through
+[Saweria](https://saweria.co/aibersemi). For general usage questions, follow
+the [Support Guide](.github/SUPPORT.md).
 
 ## License
 
-Project ini menggunakan MIT License. Lihat [`LICENSE`](LICENSE) untuk teks lisensi lengkap.
+This project uses the MIT License. See [`LICENSE`](LICENSE) for the complete
+license text.

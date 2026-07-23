@@ -1,36 +1,58 @@
-# Panduan Dukungan (Support)
+# Support Guide
 
-Terima kasih telah menggunakan `git-auto-commit-ollama`! Jika Anda membutuhkan bantuan atau menemukan kendala, silakan ikuti panduan berikut agar kami dapat membantu Anda dengan lebih cepat dan efisien.
+Thank you for using `git-auto-commit-ollama`. Follow this guide when you need
+help so the community can respond efficiently.
 
-## 1. Membaca Dokumentasi
+## 1. Read the Documentation
 
-Sebelum mengajukan pertanyaan, pastikan Anda telah membaca dokumentasi utama kami. Banyak masalah umum yang sudah dijelaskan di sana:
-- **[README](../README.md)**: Panduan instalasi, konfigurasi, dan penggunaan dasar.
-- **[CONTRIBUTING](CONTRIBUTING.md)**: Panduan jika Anda ingin ikut berkontribusi memperbaiki kode.
-- **[SECURITY](SECURITY.md)**: Kebijakan pelaporan kerentanan keamanan.
+Before asking a question, review the primary documentation. Many common
+problems are already covered:
 
-## 2. Kendala Penggunaan & Pertanyaan
+- **[README](../README.md)**: Installation, configuration, usage, and
+  troubleshooting.
+- **[CONTRIBUTING](CONTRIBUTING.md)**: Guidelines for contributing code or
+  documentation.
+- **[SECURITY](SECURITY.md)**: The private vulnerability reporting policy.
 
-Jika Anda memiliki pertanyaan tentang cara menggunakan tool ini, atau menemui *error* yang tidak Anda mengerti (seperti masalah koneksi ke Ollama atau *commit* yang gagal):
-- **Cari di Issue yang sudah ada**: Silakan cek [halaman Issues](../../issues) untuk melihat apakah masalah Anda sudah pernah ditanyakan dan diselesaikan oleh orang lain.
-- **Buka Issue untuk Pertanyaan**: Jika tidak menemukan jawaban, jangan ragu untuk membuat *Issue* baru dengan menjelaskan kendala Anda secara detail.
+## 2. Usage Questions
 
-## 3. Melaporkan Bug
+If you have a question about using the tool or encounter an unfamiliar error,
+such as an Ollama connection problem or failed commit:
 
-Jika Anda yakin telah menemukan bug pada skrip Bash CLI kami:
-1. Buka [halaman Issues](../../issues/new).
-2. Buat *Issue* baru dan deskripsikan masalahnya dengan jelas.
-3. Harap sertakan hal-hal berikut agar kami mudah mendiagnosis:
-   - Versi OS Anda (Linux/macOS/dsb)
-   - Versi Ollama (jalankan `ollama --version`)
-   - Output/log *error* dari terminal
-   - Langkah-langkah detail untuk mereproduksi masalah tersebut (termasuk apakah Anda menggunakan opsi `--dry-run` atau tidak)
+1. Search the existing
+   [Issues](https://github.com/aibersemi/git-auto-commit-ollama/issues) and
+   [Discussions](https://github.com/aibersemi/git-auto-commit-ollama/discussions).
+2. Start a discussion if you cannot find an answer.
+3. Include the command you ran, the expected result, the actual result, and
+   non-sensitive environment details.
 
-## 4. Meminta Fitur Baru
+Never post secrets, private repository diffs, internal endpoint addresses, or
+unsanitized debug logs.
 
-Jika Anda memiliki ide untuk meningkatkan performa *prompt*, deteksi *secret*, atau fungsionalitas CLI lainnya:
-1. Cek [halaman Issues](../../issues) untuk melihat apakah ide Anda sudah pernah diajukan.
-2. Jika belum, buat *Issue* baru.
-3. Jelaskan dengan detail fitur apa yang Anda inginkan dan mengapa fitur tersebut akan berguna.
+## 3. Report a Bug
 
-Sekali lagi, terima kasih atas ketertarikan Anda pada proyek ini!
+If you believe you found a bug in the Bash CLI:
+
+1. Open the
+   [bug report form](https://github.com/aibersemi/git-auto-commit-ollama/issues/new?template=bug_report.yml).
+2. Describe the problem clearly.
+3. Include:
+   - Your operating system.
+   - Your `git-ai`, Git, and Ollama versions.
+   - Sanitized terminal output or logs.
+   - Detailed reproduction steps, including whether you used `--dry-run`.
+
+For security-sensitive bugs, do not open a public issue. Follow the
+[Security Policy](SECURITY.md).
+
+## 4. Request a Feature
+
+If you have an idea for improving prompts, secret detection, or other CLI
+behavior:
+
+1. Search existing issues and discussions for similar proposals.
+2. Open a feature request if the idea has not already been proposed.
+3. Explain the problem, the desired behavior, possible alternatives, and any
+   security or compatibility implications.
+
+Thank you for helping improve the project.

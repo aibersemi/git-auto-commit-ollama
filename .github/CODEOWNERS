@@ -1,10 +1,10 @@
-# Penanggung jawab utama (Global Owner)
-# Menetapkan default reviewer untuk semua perubahan di dalam repositori
+# Primary maintainer (global owner)
+# Sets the default reviewer for every change in the repository
 *       @aibersemi
 
-# Anda juga bisa menambahkan aturan spesifik ke depannya jika tim sudah membesar.
-# Contoh: Jika ada anggota yang khusus menjaga bash script
-# *.sh    @nama-reviewer-lain
+# Add more specific rules here as the team grows.
+# Example: assign a maintainer for Bash scripts
+# *.sh    @another-reviewer
 
-# Contoh: Jika ada anggota yang khusus mengawasi workflow CI/CD
-# .github/workflows/ @nama-reviewer-lain
+# Example: assign a maintainer for CI/CD workflows
+# .github/workflows/ @another-reviewer

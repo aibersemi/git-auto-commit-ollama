@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # Memantau pembaruan untuk GitHub Actions di .github/workflows/
+  # Monitor GitHub Actions updates in .github/workflows/
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

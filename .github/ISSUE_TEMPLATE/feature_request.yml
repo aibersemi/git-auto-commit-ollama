@@ -1,6 +1,6 @@
-name: "✨ Permintaan Fitur"
-description: Ajukan ide untuk fitur baru atau penyempurnaan fitur yang ada
-title: "[Fitur]: "
+name: "✨ Feature Request"
+description: Suggest a new feature or an improvement to an existing feature
+title: "[Feature]: "
 labels: ["enhancement"]
 assignees:
   - aibersemi
@@ -8,26 +8,26 @@ body:
   - type: markdown
     attributes:
       value: |
-        Kami selalu mencari cara untuk membuat tool ini lebih baik! Silakan ajukan ide fitur Anda di bawah ini.
+        We are always looking for ways to improve this tool. Share your feature idea below.
   - type: textarea
-    id: masalah
+    id: problem
     attributes:
-      label: Apakah fitur ini berkaitan dengan suatu masalah?
-      description: Jelaskan masalah apa yang membuat Anda menginginkan fitur ini.
-      placeholder: "Contoh: Saya sering merasa frustrasi ketika..."
+      label: Is this feature related to a problem?
+      description: Describe the problem that motivated this request.
+      placeholder: "Example: I am often frustrated when..."
     validations:
       required: true
   - type: textarea
-    id: solusi
+    id: solution
     attributes:
-      label: Jelaskan solusi/fitur yang Anda inginkan
-      description: Tuliskan secara detail fitur seperti apa yang Anda bayangkan.
+      label: Describe the solution or feature you want
+      description: Describe the feature you have in mind in detail.
     validations:
       required: true
   - type: textarea
-    id: alternatif
+    id: alternatives
     attributes:
-      label: Alternatif yang sudah Anda coba (Opsional)
-      description: Apakah ada cara lain yang selama ini Anda gunakan untuk mengatasi masalah tersebut?
+      label: Alternatives You Have Tried (Optional)
+      description: Describe any other approaches you have used to work around the problem.
     validations:
       required: false

@@ -1,6 +1,8 @@
 # Contributing
 
-Terima kasih sudah ingin berkontribusi ke `git-auto-commit-ollama`. Panduan ini dibuat supaya perubahan tetap kecil, mudah ditinjau, dan aman untuk tool yang bekerja langsung pada Git state pengguna.
+Thank you for contributing to `git-auto-commit-ollama`. These guidelines help
+keep changes focused, reviewable, and safe for a tool that directly operates on
+users' Git state.
 
 ## Table of Contents
 
@@ -10,53 +12,71 @@ Terima kasih sudah ingin berkontribusi ke `git-auto-commit-ollama`. Panduan ini 
 - [Testing](#testing)
 - [Issue Guidelines](#issue-guidelines)
 - [Pull Request Guidelines](#pull-request-guidelines)
-- [Security Policy](SECURITY.md)
 - [Sensitive Changes](#sensitive-changes)
 - [Documentation](#documentation)
 - [Checklist](#checklist)
+- [Security Policy](SECURITY.md)
 
 ## Contribution Types
 
-Kontribusi yang paling membantu untuk project ini:
+Useful contributions include:
 
-- Bug fix pada workflow staging, commit, push, lock, atau integrasi Ollama.
-- Perbaikan secret detection, safe mode, dan perilaku saat menangani data sensitif.
-- Peningkatan kualitas prompt, structured output, fallback commit subject, atau validasi subject.
-- Perbaikan performa untuk analisis per-file dan pengumpulan konteks diff.
-- Dokumentasi penggunaan, troubleshooting, konfigurasi, dan contoh deployment.
-- Validasi lint, CI, atau test scenario untuk Bash CLI.
+- Bug fixes for staging, commits, pushes, repository locking, or Ollama
+  integration.
+- Improvements to secret detection, safe mode, and sensitive-data handling.
+- Improvements to prompts, structured output, fallback commit subjects, or
+  subject validation.
+- Performance improvements for per-file analysis and diff context collection.
+- Usage, troubleshooting, configuration, and deployment documentation.
+- Bash linting, CI validation, and test scenarios.
 
-Untuk perubahan besar, diskusikan dulu lewat issue sebelum membuat pull request. Contohnya: mengubah default model, menambah dependensi wajib, mengganti format commit message, atau mengubah perilaku default push.
+Discuss major changes in an issue before opening a pull request. Examples
+include changing the default model, adding a required dependency, changing the
+commit message format, or changing default push behavior.
 
 ## Before You Start
 
-- Baca [`README.md`](README.md) untuk memahami cara kerja dan opsi CLI.
-- Ikuti prasyarat dan instalasi dari [`README.md`](README.md), bukan dari salinan instruksi di dokumen ini.
-- Cek issue atau pull request yang sudah ada agar pekerjaan tidak duplikat.
-- Buat perubahan yang fokus pada satu masalah.
-- Ikuti kebijakan data sensitif di [`SECURITY.md`](SECURITY.md).
-- Pastikan perubahan tetap cocok untuk penggunaan lokal dan jaringan internal.
+- Read the [`README.md`](../README.md) to understand the workflow and CLI
+  options.
+- Follow the prerequisites and installation instructions in the README instead
+  of duplicating them here.
+- Check existing issues and pull requests to avoid duplicate work.
+- Keep each change focused on one problem.
+- Follow the sensitive-data policy in [`SECURITY.md`](SECURITY.md).
+- Preserve compatibility with both local and trusted-network Ollama usage.
 
 ## Code Standards
 
-Project ini adalah Bash CLI. Ikuti gaya yang sudah ada di `git-ai.sh`.
+This project is a Bash CLI. Follow the existing style in `git-ai.sh`.
 
-- Pertahankan `#!/usr/bin/env bash` dan `set -euo pipefail`.
-- Pastikan lint Bash tetap bersih; command validasi utama ada di README.
-- Quote variable expansion kecuali ada alasan Bash yang jelas.
-- Gunakan fungsi kecil dengan nama yang menjelaskan perilaku.
-- Jaga output pengguna tetap berbahasa Indonesia.
-- Jangan menambah dependensi wajib tanpa memperbarui `check_deps`, README, dan panduan ini.
-- Jika menambah opsi CLI, update `parse_args`, `show_help`, README, dan contoh penggunaan yang relevan.
-- Jika mengubah konfigurasi, update `git-ai.conf`, validasi config, README, dan default fallback.
-- Hindari perubahan destruktif terhadap Git state pengguna. Untuk perilaku berisiko, sediakan dry-run, konfirmasi, atau guard yang jelas.
-- Jaga secret handling tetap konservatif. Jangan melemahkan safe mode atau secret guard tanpa alasan teknis yang kuat.
+- Preserve `#!/usr/bin/env bash` and `set -euo pipefail`.
+- Keep Bash linting clean; the primary validation commands are in the README.
+- Quote variable expansions unless there is a clear Bash-specific reason not
+  to.
+- Prefer small functions with names that describe their behavior.
+- Write all repository content in English, including comments, user-facing
+  output, prompts, errors, documentation, templates, and configuration
+  comments.
+- Do not add a required dependency without updating `check_deps`, the README,
+  and this guide.
+- When adding a CLI option, update `parse_args`, `show_help`, the README, and
+  relevant examples.
+- When changing configuration, update `git-ai.conf`, configuration validation,
+  the README, and fallback defaults.
+- Avoid destructive changes to users' Git state. Add a dry-run, confirmation,
+  or clear guard for risky behavior.
+- Keep secret handling conservative. Do not weaken safe mode or the secret
+  guard without a strong technical reason.
 
 ## Testing
 
-Jalankan validasi dasar dari [`README.md#development`](README.md#development) sebelum membuat pull request.
+Run the basic validation from
+[`README.md#development`](../README.md#development) before opening a pull
+request.
 
-Untuk perubahan runtime yang menyentuh staging, prompt, commit, atau push, lakukan smoke test di repository sementara. Jangan memakai repository kerja utama untuk eksperimen yang bisa membuat commit.
+For runtime changes involving staging, prompts, commits, or pushes, test in a
+temporary repository. Do not use a primary working repository for experiments
+that could create a commit.
 
 ```bash
 tmpdir=$(mktemp -d)
@@ -68,93 +88,101 @@ printf 'hello\n' > sample.txt
 /path/to/git-auto-commit-ollama/git-ai.sh --dry-run --no-push --no-banner
 ```
 
-Jika perubahan menyentuh secret detection, uji minimal:
+The smoke test requires an active Ollama endpoint and an available model.
+Report it as not run when that environment is unavailable.
 
-- Placeholder secret yang seharusnya boleh lewat.
-- Token nyata palsu yang seharusnya diblokir.
-- Mode preview saat secret terdeteksi.
-- Override secret commit hanya jika perilaku override memang diubah.
+If a change affects secret detection, test at least:
 
-Jika perubahan menyentuh Ollama:
+- A placeholder secret that should be allowed.
+- A realistic fake token that should be blocked.
+- Preview mode when a secret is detected.
+- The secret-commit override if its behavior changed.
 
-- Uji host utama dari `DEFAULT_OLLAMA_HOST`.
-- Uji fallback host jika konfigurasi mendukung.
-- Uji model yang belum tersedia dengan dan tanpa `--no-pull`.
-- Uji `--no-structured` jika logic structured output diubah.
+If a change affects Ollama integration, test:
+
+- The primary `DEFAULT_OLLAMA_HOST`.
+- The fallback host when configured.
+- A missing model with and without `--no-pull`.
+- `--no-structured` when structured-output logic changed.
 
 ## Issue Guidelines
 
-Saat melaporkan bug, sertakan:
+When reporting a bug, include:
 
-- Versi script dari `git-ai --version`.
-- OS dan shell yang digunakan.
-- Versi `git`, `jq`, `curl`, dan `shellcheck` jika relevan.
-- Konfigurasi non-sensitif dari `git-ai.conf`.
-- Command yang dijalankan.
-- Perilaku yang terjadi dan perilaku yang diharapkan.
-- Potongan log yang sudah disensor.
+- The script version from `git-ai --version`.
+- The operating system and shell.
+- Relevant `git`, `jq`, `curl`, and `shellcheck` versions.
+- Non-sensitive configuration from `git-ai.conf`.
+- The command that was run.
+- Actual and expected behavior.
+- Sanitized logs.
 
-Untuk feature request, jelaskan:
+For a feature request, explain:
 
-- Masalah yang ingin diselesaikan.
-- Workflow saat ini.
-- Perubahan perilaku yang diusulkan.
-- Dampak terhadap keamanan, default push, dan kompatibilitas CLI.
+- The problem to solve.
+- The current workflow.
+- The proposed behavior.
+- Security, default-push, and CLI compatibility implications.
 
-Untuk laporan keamanan, jangan gunakan issue publik; ikuti [`SECURITY.md`](SECURITY.md). Untuk bug biasa, sensor log dan konfigurasi sebelum dipublikasikan.
+Do not use a public issue for security reports. Follow
+[`SECURITY.md`](SECURITY.md). Sanitize logs and configuration before publishing
+ordinary bug reports.
 
 ## Pull Request Guidelines
 
-Alur kerja yang disarankan:
+A typical contribution workflow is:
 
 ```bash
-git checkout -b fix/deskripsi-singkat
-# edit file
-# jalankan validasi dari README bagian Development
+git checkout -b fix/short-description
+# edit files
+# run validation from the README Development section
 git status
 git commit
-git push -u origin fix/deskripsi-singkat
+git push -u origin fix/short-description
 ```
 
-Pull request sebaiknya berisi:
+A pull request should contain:
 
-- Ringkasan masalah dan solusi.
-- Daftar file utama yang berubah.
-- Hasil command validasi yang dijalankan.
-- Catatan kompatibilitas jika ada opsi, config, atau default behavior yang berubah.
-- Screenshot/log singkat hanya jika membantu dan sudah disensor.
+- A summary of the problem and solution.
+- A list of the main files changed.
+- Results from the validation commands that were run.
+- Compatibility notes when options, configuration, or default behavior changed.
+- Short screenshots or logs only when useful and sanitized.
 
-Jaga PR tetap kecil. Jika satu perubahan membutuhkan refactor besar dan behavior change, pisahkan menjadi beberapa PR yang bisa ditinjau satu per satu.
+Keep pull requests small. If a change requires both a large refactor and a
+behavior change, split it into independently reviewable pull requests.
 
 ## Sensitive Changes
 
-Untuk vulnerability, threat surface, atau perubahan yang menyentuh secret handling, ikuti [`SECURITY.md`](SECURITY.md). Di pull request, jelaskan dampak keamanan dan pengujian tambahan yang dilakukan.
+For vulnerabilities, threat-surface changes, or secret-handling changes, follow
+[`SECURITY.md`](SECURITY.md). Explain the security impact and additional
+testing in the pull request without exposing sensitive exploit details.
 
 ## Documentation
 
-Update dokumentasi saat perubahan memengaruhi:
+Update documentation when a change affects:
 
-- Opsi CLI.
-- Variabel konfigurasi.
-- Dependensi.
-- Perilaku default commit atau push.
+- CLI options.
+- Configuration variables.
+- Dependencies.
+- Default commit or push behavior.
 - Secret handling.
-- Cara install, uninstall, atau troubleshooting.
+- Installation, removal, or troubleshooting.
 
-Dokumen yang biasanya perlu ikut diperbarui:
+Files that commonly require updates include:
 
-- [`README.md`](README.md)
-- [`git-ai.conf`](git-ai.conf)
-- Help output di `show_help`
-- Contoh command di panduan ini
+- [`README.md`](../README.md)
+- [`git-ai.conf`](../git-ai.conf)
+- Help output in `show_help`
+- Relevant examples in this guide
 
 ## Checklist
 
-Sebelum submit issue atau pull request, pastikan:
+Before submitting an issue or pull request, confirm:
 
-- Perubahan fokus pada satu masalah.
-- Validasi dasar dari README sudah dijalankan.
-- Smoke test tambahan dijelaskan jika perubahan menyentuh runtime.
-- Dokumentasi sudah diperbarui jika perilaku berubah.
-- Catatan keamanan mengikuti SECURITY jika perubahan menyentuh area sensitif.
-- Perubahan default sudah dijelaskan dengan alasan yang jelas.
+- The change focuses on one problem.
+- The basic README validation has been run.
+- Additional smoke testing is documented when runtime behavior changed.
+- Documentation is updated when behavior changed.
+- Security-sensitive changes follow the Security Policy.
+- Default changes include a clear rationale.
