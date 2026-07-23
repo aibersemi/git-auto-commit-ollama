@@ -158,7 +158,7 @@ make uninstall PREFIX="/opt/git-ai"
 
 ## Configuration
 
-Konfigurasi utama berada di [`git-ai.conf`](git-ai.conf). Script mencari `git-ai.conf` di direktori yang sama dengan path executable yang dijalankan. `make install` memenuhi aturan ini dengan membuat symlink untuk script dan config pada direktori tujuan yang sama.
+Konfigurasi utama berada di [`git-ai.conf`](git-ai.conf). Script pertama-tama mencari `git-ai.conf` di direktori yang sama dengan path executable yang dijalankan. Jika executable adalah symlink dan config tersebut tidak ada, script mencari config di direktori target symlink. Dengan demikian, perubahan pada config di checkout tetap dipakai meskipun hanya symlink `git-ai` yang terpasang. `make install` tetap membuat symlink untuk script dan config pada direktori tujuan yang sama.
 
 File config di-`source` sebagai shell code, bukan diparsing sebagai format data. Perlakukan file ini sebagai code tepercaya dan jangan menyimpan secret di dalamnya.
 
@@ -166,7 +166,7 @@ Nilai yang ada di `git-ai.conf` saat ini:
 
 | Variabel | Default | Fungsi |
 | --- | --- | --- |
-| `DEFAULT_MODEL` | `gemma4:e4b` | Model Ollama yang dipakai; opsi model per-command tidak didukung. |
+| `DEFAULT_MODEL` | `nemotron-3-nano:4b` | Model Ollama yang dipakai; opsi model per-command tidak didukung. |
 | `DEFAULT_OLLAMA_HOST` | `http://127.0.0.1:11434` | Host Ollama utama. |
 | `FALLBACK_OLLAMA_HOST` | `http://10.50.0.2:11434` | Host cadangan saat request `/api/tags` ke host utama gagal. Kosongkan jika tidak digunakan. |
 | `DEFAULT_DO_PUSH` | `1` | Push otomatis setelah commit. |
@@ -174,6 +174,7 @@ Nilai yang ada di `git-ai.conf` saat ini:
 | `AI_THINK` | `false` | Nilai `think`: `false`, `true`, `low`, `medium`, atau `high`. |
 | `AI_NUM_PREDICT` | `2048` | Batas token output request utama. |
 | `AI_MAX_NUM_PREDICT` | `2048` | Batas atas `num_predict` untuk request utama dan analisis file. |
+| `USE_STRUCTURED_OUTPUT` | `0` | Gunakan JSON Schema (`1`) atau plain text (`0`). Default dinonaktifkan karena `nemotron-3-nano:4b` tidak konsisten mengikuti structured output. |
 | `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Panjang maksimal seluruh commit message. |
 | `FILE_ANALYSIS_LIMIT` | `6` | Jumlah maksimum file yang dipilih untuk analisis per-file; `0` menonaktifkan request tersebut. |
 | `FILE_ANALYSIS_PARALLELISM` | `4` | Jumlah request analisis file yang berjalan paralel. |
@@ -256,7 +257,7 @@ Semua opsi yang tersedia:
 | `--no-file-analysis` | Nonaktifkan analisis AI per-file. |
 | `--file-analysis-limit N` | Batasi file yang dianalisis; menerima bilangan bulat non-negatif. |
 | `--file-analysis-parallelism N` | Atur request analisis paralel; minimal `1`. |
-| `--no-structured` | Lewati JSON Schema dan gunakan respons plain text. |
+| `--no-structured` | Lewati JSON Schema dan gunakan respons plain text, termasuk saat `USE_STRUCTURED_OUTPUT=1`. Tanpa opsi ini, respons structured yang ternyata berisi commit plain text akan dicoba sebagai plain text; jika tetap tidak valid, request beralih ke plain text dalam percobaan yang sama. |
 | `--no-pull` | Gagal jika model belum tersedia, tanpa menjalankan `ollama pull`. |
 | `--no-banner` | Sembunyikan banner awal. |
 | `--no-verify` | Jalankan `git commit --no-verify`; pre-push hook tetap berjalan saat push. |
@@ -305,6 +306,8 @@ Kebijakan pelaporan vulnerability dan detail scope tersedia di [Security Policy]
 | Pre-push hook gagal | Hook dijalankan oleh `git push`. | Perbaiki hook atau lakukan workflow push terpisah; `--no-verify` pada `git-ai` tidak diteruskan ke `git push`. |
 | Tidak ada remote | Repository tidak memiliki remote. | Script melewati push; tambahkan remote jika push diperlukan. |
 | `git-ai` hilang setelah checkout dipindah | Symlink install masih menunjuk ke lokasi clone lama. | Kembalikan checkout ke lokasi semula atau jalankan install ulang dari lokasi baru. |
+| Perubahan `git-ai.conf` tidak dipakai | Command `git-ai` dan config berasal dari instalasi atau checkout yang berbeda. | Jalankan `git-ai --help` untuk melihat path config aktif, lalu periksa symlink dengan `readlink -f "$(command -v git-ai)"`. |
+| Output menampilkan `Retry` | Respons model gagal divalidasi sebagai commit message yang konkret atau sesuai format. | Jalankan dengan `--debug` untuk melihat alasan validator. Kegagalan JSON Schema kini langsung beralih ke plain text dan tidak dihitung sebagai retry terpisah. |
 
 Gunakan `git-ai --debug` untuk melihat endpoint aktif, model, ukuran payload, retry, dan penggunaan token. Jangan membagikan log tanpa memeriksa informasi internal di dalamnya.
 

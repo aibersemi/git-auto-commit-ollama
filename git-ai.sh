@@ -18,7 +18,7 @@
 #   /opt/services/utils/bin/git-ai.sh --dry-run       # only display the commit message
 #
 # Config:
-#   bin/git-ai.conf                 # default configuration next to this script
+#   git-ai.conf                     # configuration next to the executable or symlink target
 #
 
 set -euo pipefail
@@ -30,7 +30,20 @@ VERSION="1.5.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_CONFIG_FILE="${SCRIPT_DIR}/git-ai.conf"
 
-# Load the config file from the script directory when present.
+# Keep an adjacent config as the first choice. If the executable is a symlink
+# without its own config, use the config next to the resolved script target.
+if [[ ! -f "$SCRIPT_CONFIG_FILE" ]] && command -v readlink >/dev/null 2>&1; then
+  RESOLVED_SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+  if [[ -n "$RESOLVED_SCRIPT_PATH" ]]; then
+    RESOLVED_SCRIPT_DIR="$(cd -- "$(dirname -- "$RESOLVED_SCRIPT_PATH")" && pwd -P)"
+    RESOLVED_CONFIG_FILE="${RESOLVED_SCRIPT_DIR}/git-ai.conf"
+    if [[ -f "$RESOLVED_CONFIG_FILE" ]]; then
+      SCRIPT_CONFIG_FILE="$RESOLVED_CONFIG_FILE"
+    fi
+  fi
+fi
+
+# Load the selected config file when present.
 # shellcheck source=/dev/null
 [[ -f "$SCRIPT_CONFIG_FILE" ]] && source "$SCRIPT_CONFIG_FILE"
 
@@ -53,7 +66,7 @@ STAGED_FILE_COUNT=0
 DO_FILE_ANALYSIS=1
 
 # Structured output (Ollama `format`)
-USE_STRUCTURED_OUTPUT=1
+USE_STRUCTURED_OUTPUT="${USE_STRUCTURED_OUTPUT:-1}"
 
 # Minimal fallback when the config file is unavailable or its value is empty.
 DEFAULT_MODEL="${DEFAULT_MODEL:-gemma4:e4b}"
@@ -454,6 +467,7 @@ Config:
 Config variables:
   DEFAULT_MODEL               Ollama model that is always used
   DEFAULT_DO_PUSH             Default push after a commit (0/1, default 1)
+  USE_STRUCTURED_OUTPUT       Use Ollama JSON Schema output (0/1, default 1)
   DEFAULT_OLLAMA_HOST         Primary Ollama host (empty = read service)
   FALLBACK_OLLAMA_HOST        Backup host when the primary host is unavailable
   AI_TEMPERATURE              Default ${AI_TEMPERATURE}
@@ -548,6 +562,9 @@ check_deps() {
 
   if [[ ! "$DO_PUSH" =~ ^[01]$ ]]; then
     die "DEFAULT_DO_PUSH must be 0 or 1."
+  fi
+  if [[ ! "$USE_STRUCTURED_OUTPUT" =~ ^[01]$ ]]; then
+    die "USE_STRUCTURED_OUTPUT must be 0 or 1."
   fi
   if [[ ! "$FILE_ANALYSIS_LIMIT" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_LIMIT" -lt 0 ]]; then
     die "FILE_ANALYSIS_LIMIT must be a non-negative number."
@@ -1670,7 +1687,7 @@ commit_message_quality_issue() {
     return 0
   fi
 
-  if [[ "${HAS_FUNCTIONAL_CHANGE:-0}" -eq 1 ]] && grep -Eiq '^(add|create|implement|update) (features|components|configuration|settings)$|^(add|create|implement|update) [a-z0-9 -]+ (features|components|configuration)$' <<<"$summary"; then
+  if [[ "${HAS_FUNCTIONAL_CHANGE:-0}" -eq 1 ]] && grep -Eiq '^(add|create|implement|update) (features|components|configuration|settings)$|^(add|create|implement|update) (project|application|app|system|service) (features|components|configuration|settings)$' <<<"$summary"; then
     printf 'Subject is too generic for a functional change; name the concrete domain capability, API behavior, security control, or frontend flow.'
     return 0
   fi
@@ -2002,6 +2019,11 @@ clean_plain_commit_message() {
     elif [[ "$line" =~ ^-[[:space:]]+(.+)$ ]]; then
       bullet=$(normalize_commit_bullet "${BASH_REMATCH[1]}")
       bullets+=("$bullet")
+    elif [[ "${STAGED_FILE_COUNT:-0}" -gt 1 && "$line" =~ ^(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert):[[:space:]]+(.+)$ ]]; then
+      # Some small models return multiple Conventional Commit candidates.
+      # Keep the first subject and convert later candidates into body bullets.
+      bullet=$(normalize_commit_bullet "${BASH_REMATCH[2]}")
+      bullets+=("$bullet")
     else
       return 1
     fi
@@ -2196,31 +2218,38 @@ generate_commit_message() {
       if ! content=$(ollama_chat "$system_prompt" "$user_prompt" "$schema"); then
         blocking_status_stop
         dbg "Structured output failed (request/parse). Falling back to plain text."
-        structured_available=0
-        continue
-      fi
-      blocking_status_stop
+      else
+        blocking_status_stop
 
-      # Ollama returns JSON as a string in message.content.
-      if ! json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
-        dbg "Structured output is not valid JSON."
-        structured_available=0
-        continue
-      fi
-
-      if commit_msg=$(compose_commit_from_json "$json"); then
-        if quality_issue=$(commit_message_quality_issue "$commit_msg"); then
-          dbg "Commit message needs retry: $quality_issue"
-          user_prompt=$(build_quality_retry_prompt "$base_user_prompt" "$commit_msg" "$quality_issue")
-          commit_msg=""
-          continue
+        # Ollama returns JSON as a string in message.content.
+        if json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
+          if commit_msg=$(compose_commit_from_json "$json"); then
+            if quality_issue=$(commit_message_quality_issue "$commit_msg"); then
+              dbg "Commit message needs retry: $quality_issue"
+              user_prompt=$(build_quality_retry_prompt "$base_user_prompt" "$commit_msg" "$quality_issue")
+              commit_msg=""
+              continue
+            fi
+            break
+          fi
+          dbg "JSON is valid but commit-message composition/validation failed."
+        else
+          dbg "Structured output is not valid JSON."
+          if commit_msg=$(clean_plain_commit_message "$content"); then
+            if quality_issue=$(commit_message_quality_issue "$commit_msg"); then
+              dbg "Commit message needs retry: $quality_issue"
+              user_prompt=$(build_quality_retry_prompt "$base_user_prompt" "$commit_msg" "$quality_issue")
+              commit_msg=""
+              continue
+            fi
+            dbg "Structured response contained a valid plain-text commit message."
+            break
+          fi
         fi
-        break
       fi
 
-      dbg "JSON is valid but commit-message composition/validation failed."
       structured_available=0
-      continue
+      dbg "Falling back to plain text within the current attempt."
     fi
 
     system_prompt=$(build_system_prompt_text)
