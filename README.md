@@ -135,7 +135,7 @@ default model:
 
 ```bash
 ollama serve
-ollama pull nemotron-3-nano:4b
+ollama pull gemma4:e4b
 ```
 
 If Ollama runs on another host and the model is already available there, the
@@ -199,7 +199,7 @@ Current `git-ai.conf` values:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DEFAULT_MODEL` | `nemotron-3-nano:4b` | Ollama model used unless `-m/--model` temporarily overrides it. |
+| `DEFAULT_MODEL` | `gemma4:e4b` | Ollama model used unless `-m/--model` temporarily overrides it. |
 | `DEFAULT_OLLAMA_HOST` | `http://127.0.0.1:11434` | Primary Ollama host. |
 | `FALLBACK_OLLAMA_HOST` | `http://10.50.0.2:11434` | Fallback host when the primary `/api/tags` request fails. Clear it when unused. |
 | `DEFAULT_DO_PUSH` | `1` | Push automatically after committing. |
@@ -207,7 +207,7 @@ Current `git-ai.conf` values:
 | `AI_THINK` | `false` | `think` value: `false`, `true`, `low`, `medium`, or `high`. |
 | `AI_NUM_PREDICT` | `2048` | Output token limit for the primary request. |
 | `AI_MAX_NUM_PREDICT` | `2048` | Upper `num_predict` limit for primary and per-file requests. |
-| `USE_STRUCTURED_OUTPUT` | `0` | Use JSON Schema (`1`) or plain text (`0`). Disabled by default because `nemotron-3-nano:4b` does not consistently follow structured output. |
+| `USE_STRUCTURED_OUTPUT` | `0` | Use JSON Schema (`1`) or plain text (`0`). Disabled by default because `gemma4:e4b` does not consistently follow structured output. |
 | `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Maximum length of the entire commit message. |
 | `FILE_ANALYSIS_LIMIT` | `6` | Maximum files selected for per-file analysis; `0` disables those requests. |
 | `FILE_ANALYSIS_PARALLELISM` | `4` | Number of concurrent per-file analysis requests. |
