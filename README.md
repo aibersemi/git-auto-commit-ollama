@@ -313,10 +313,10 @@ Available options:
 | `-p`, `--patch` | Use `git add -p` unless `--no-stage` is also selected. |
 | `-i`, `--interactive` | Display the message and offer to continue, cancel, or edit before committing. |
 | `--no-stage` | Use existing staged changes without automatic staging. |
-| `--dry-run` | Use a temporary index and skip the commit and push. |
+| `-d`, `--dry-run` | Use a temporary index and skip the commit and push. |
 | `--debug` | Display a detailed diagnostic trace, including runtime configuration, relevant commands and outputs, the full non-sensitive staged diff, complete prompts and request payloads, complete Ollama responses, HTTP metadata, and validation reasons. Safe mode omits sensitive diff content unless `--force-diff` is explicitly selected. |
 | `--force-diff` | Send detailed diffs to Ollama even when sensitive patterns are detected. |
-| `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
+| `-a`, `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
 | `--no-file-analysis` | Disable per-file AI analysis. |
 | `--file-analysis-limit N` | Limit analyzed files; accepts a non-negative integer. |
 | `--file-analysis-parallelism N` | Set concurrent analysis requests; minimum `1`. |

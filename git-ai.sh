@@ -567,10 +567,10 @@ Options:
   -p, --patch                 Interactive staging (git add -p)
   -i, --interactive           Show the commit message and ask for confirmation before committing
       --no-stage              Do not stage changes automatically
-      --dry-run               Only display the commit message (do not change Git state)
+  -d, --dry-run               Only display the commit message (do not change Git state)
       --debug                 Show full commands, Git context, prompts, HTTP responses, and validation details
       --force-diff            Send the diff to AI even when sensitive patterns are detected
-      --allow-secret-commit   Allow committing when the scanner finds a potential secret
+  -a, --allow-secret-commit   Allow committing when the scanner finds a potential secret
       --no-file-analysis      Disable per-file analysis (faster)
       --file-analysis-limit N Limit the number of files for per-file analysis (default: ${FILE_ANALYSIS_LIMIT})
       --file-analysis-parallelism N
@@ -632,10 +632,10 @@ parse_args() {
       -p|--patch)           USE_PATCH=1; shift ;;
       -i|--interactive)     INTERACTIVE=1; shift ;;
       --no-stage)           DO_STAGE=0; shift ;;
-      --dry-run)            DRY_RUN=1; shift ;;
+      -d|--dry-run)         DRY_RUN=1; shift ;;
       --debug)              DEBUG=1; shift ;;
       --force-diff)         FORCE_DIFF=1; shift ;;
-      --allow-secret-commit) ALLOW_SECRET_COMMIT=1; shift ;;
+      -a|--allow-secret-commit) ALLOW_SECRET_COMMIT=1; shift ;;
       --no-file-analysis)   DO_FILE_ANALYSIS=0; shift ;;
       --file-analysis-limit)
                             [[ $# -ge 2 ]] || die "--file-analysis-limit requires a number"
