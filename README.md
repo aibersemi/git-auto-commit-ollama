@@ -94,8 +94,30 @@ The message uses the scope-free Conventional Commit format:
 
 For exactly one staged file, the message contains only the subject. For more
 than one staged file, the message must contain one blank line followed by one
-to six important bullet points. Accepted types are `feat`, `fix`, `refactor`,
-`docs`, `test`, `chore`, `build`, `ci`, `perf`, `style`, and `revert`.
+to six important bullet points. Accepted types are `build`, `chore`, `ci`,
+`deps`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and
+`test`.
+
+Choose the type that describes the primary change:
+
+| Type | Use when the primary change... |
+| --- | --- |
+| `build` | Changes the build system, build scripts, compilers, bundlers, packaging, or other build tooling. |
+| `chore` | Performs routine maintenance that does not fit another type and does not change product behavior. |
+| `ci` | Changes CI/CD workflows, pipeline configuration, or automation scripts used by CI/CD. |
+| `deps` | Adds, removes, or updates dependencies or their lockfiles. |
+| `docs` | Changes documentation only. |
+| `feat` | Adds a new user-facing, API, or domain capability. |
+| `fix` | Corrects a bug or unintended behavior. |
+| `perf` | Improves performance without changing the intended behavior. |
+| `refactor` | Restructures production code without adding a feature or fixing a bug. |
+| `revert` | Undoes a previous commit or change. |
+| `style` | Changes code formatting, whitespace, or other non-behavioral style details only. |
+| `test` | Adds, corrects, or improves tests without changing production behavior. |
+
+If dependency, test, documentation, generated artifact, or configuration
+changes only support a more important feature or fix, use `feat` or `fix` for
+the primary change instead of the supporting type.
 
 The default limit for the entire message is 65,536 characters and can be
 changed with `MAX_COMMIT_MESSAGE_LENGTH`. The script does not enforce a

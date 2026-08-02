@@ -1693,13 +1693,31 @@ analyze_files_individually() {
 }
 
 # ===== Prompt Builder =====
+build_commit_type_guidance() {
+  cat <<'EOF'
+- build: Change the build system, build scripts, compilers, bundlers, packaging, or other build tooling.
+- chore: Perform routine maintenance that does not fit another type and does not change product behavior.
+- ci: Change CI/CD workflows, pipeline configuration, or automation scripts used by CI/CD.
+- deps: Add, remove, or update dependencies or their lockfiles when dependency maintenance is the primary change.
+- docs: Change documentation only.
+- feat: Add a new user-facing, API, or domain capability.
+- fix: Correct a bug or unintended behavior.
+- perf: Improve performance without changing the intended behavior.
+- refactor: Restructure production code without adding a feature or fixing a bug.
+- revert: Undo a previous commit or change.
+- style: Change code formatting, whitespace, or other non-behavioral style details only.
+- test: Add, correct, or improve tests without changing production behavior.
+EOF
+}
+
 build_system_prompt_text() {
-  local body_rule
+  local body_rule type_guidance
   if [[ "${STAGED_FILE_COUNT:-0}" -le 1 ]]; then
     body_rule='The staged change has one file: output only the subject line and no body.'
   else
     body_rule="The staged change has multiple files: add a blank line followed by 1-${MAX_BODY_BULLETS} bullet lines. Each bullet must start with \"- \", describe an important diff-backed change, use imperative English, and end with a period."
   fi
+  type_guidance=$(build_commit_type_guidance)
 
   cat <<EOF
 You are a senior software engineer.
@@ -1708,7 +1726,10 @@ Your task: write an English Conventional Commit message without a scope.
 
 Rules:
 1) The first line must be exactly: <type>: <summary>.
-2) Use exactly one type from: feat, fix, refactor, docs, test, chore, build, ci, perf, style, revert.
+2) Use exactly one type from: build, chore, ci, deps, docs, feat, fix, perf, refactor, revert, style, test.
+Choose the type using these definitions:
+${type_guidance}
+When a dependency, test, documentation, generated artifact, or configuration change only supports a more important feature or fix, use feat or fix for the primary change instead.
 3) Do not add a scope such as feat(auth):, Markdown, JSON, a code block, footer, or extra prose.
 4) The summary must be concise, specific, and must not end with a period.
 5) ${body_rule}
@@ -1721,22 +1742,25 @@ EOF
 }
 
 build_system_prompt_json() {
-  local body_rule
+  local body_rule type_guidance
   if [[ "${STAGED_FILE_COUNT:-0}" -le 1 ]]; then
     body_rule='bullets (required): an empty array because exactly one file is staged.'
   else
     body_rule="bullets (required): an array containing 1-${MAX_BODY_BULLETS} important diff-backed changes. Each item uses imperative English and ends with a period; do not include the \"- \" marker."
   fi
+  type_guidance=$(build_commit_type_guidance)
 
   cat <<EOF
 You are a senior software engineer.
 
 Fill the following field based on the supplied changes:
-- type (required): one of feat, fix, refactor, docs, test, chore, build, ci, perf, style, revert.
+- type (required): one of build, chore, ci, deps, docs, feat, fix, perf, refactor, revert, style, test. Choose it using these definitions:
+${type_guidance}
 - summary (required): one concise, specific English sentence fragment without a type prefix, scope, or trailing period.
 - ${body_rule}
 
 Do not add a scope, Markdown, a footer, or information absent from the supplied changes.
+When a dependency, test, documentation, generated artifact, or configuration change only supports a more important feature or fix, use feat or fix for the primary change instead.
 Prioritize the primary functional capability, user flow, domain model, API behavior, data integrity, or security change. Treat tests, documentation, and generated artifacts as supporting evidence. Do not lead the subject with generated clients, schemas, types, snapshots, or codegen output when source changes exist. Avoid generic terms; use concrete terminology from paths, modules, services, environment variables, schemas, APIs, or files when relevant.
 Always use English.
 EOF
@@ -1844,7 +1868,7 @@ commit_message_quality_issue() {
   lower=$(printf '%s' "$message" | tr '[:upper:]' '[:lower:]')
   evidence_blob="${GIT_PRIORITY_CHANGES}${DIFF_TERMS}${TOP_HUNKS}${FILE_ANALYSES}${CHANGE_PRIORITY_HINT}"
 
-  if ! grep -Eiq '^(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert): [^[:space:]].*$' <<<"$subject"; then
+  if ! grep -Eiq '^(build|chore|ci|deps|docs|feat|fix|perf|refactor|revert|style|test): [^[:space:]].*$' <<<"$subject"; then
     printf 'Subject must use an allowed Conventional Commit type followed by a colon and summary, without a scope.'
     return 0
   fi
@@ -2113,7 +2137,7 @@ _ollama_chat_blocking() {
 
 is_allowed_commit_type() {
   case "$1" in
-    feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert) return 0 ;;
+    build|chore|ci|deps|docs|feat|fix|perf|refactor|revert|style|test) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -2168,7 +2192,7 @@ validate_commit_summary() {
     validation_fail "summary.trailing_period" "The summary ends with a period."
     return 1
   fi
-  if grep -Eiq '^[[:space:]]*(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert)(\([^)]+\))?[!:：]' <<<"$summary"; then
+  if grep -Eiq '^[[:space:]]*(build|chore|ci|deps|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?[!:：]' <<<"$summary"; then
     validation_fail "summary.duplicate_type" "The summary contains another Conventional Commit prefix."
     return 1
   fi
@@ -2287,7 +2311,7 @@ clean_plain_commit_message() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
     if [[ "$line_number" -eq 0 ]]; then
-      if [[ "$line" =~ ^(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert):[[:space:]]+(.+)$ ]]; then
+      if [[ "$line" =~ ^(build|chore|ci|deps|docs|feat|fix|perf|refactor|revert|style|test):[[:space:]]+(.+)$ ]]; then
         type=$(normalize_commit_type "${BASH_REMATCH[1]}")
         summary=$(normalize_commit_summary "${BASH_REMATCH[2]}")
       else
@@ -2299,7 +2323,7 @@ clean_plain_commit_message() {
     elif [[ "$line" =~ ^-[[:space:]]+(.+)$ ]]; then
       bullet=$(normalize_commit_bullet "${BASH_REMATCH[1]}")
       bullets+=("$bullet")
-    elif [[ "${STAGED_FILE_COUNT:-0}" -gt 1 && "$line" =~ ^(feat|fix|refactor|docs|test|chore|build|ci|perf|style|revert):[[:space:]]+(.+)$ ]]; then
+    elif [[ "${STAGED_FILE_COUNT:-0}" -gt 1 && "$line" =~ ^(build|chore|ci|deps|docs|feat|fix|perf|refactor|revert|style|test):[[:space:]]+(.+)$ ]]; then
       # Some small models return multiple Conventional Commit candidates.
       # Keep the first subject and convert later candidates into body bullets.
       bullet=$(normalize_commit_bullet "${BASH_REMATCH[2]}")
@@ -2429,7 +2453,7 @@ build_commit_schema() {
       type: "object",
       additionalProperties: false,
       properties: {
-        type: {type:"string", enum:["feat", "fix", "refactor", "docs", "test", "chore", "build", "ci", "perf", "style", "revert"]},
+        type: {type:"string", enum:["build", "chore", "ci", "deps", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test"]},
         summary: {type:"string"},
         bullets: {
           type:"array",
