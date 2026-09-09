@@ -2792,6 +2792,13 @@ main() {
   # Keep the commit result at the bottom.
   echo -e "Commit message \"${commit_msg}\""
   echo -e "${DIM}Token usage ${formatted_tokens}${NC}"
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    local full_hash
+    full_hash=$(git rev-parse HEAD 2>/dev/null || true)
+    if [[ -n "$full_hash" ]]; then
+      echo -e "${DIM}Commit hash ${full_hash}${NC}"
+    fi
+  fi
 }
 
 main "$@"
