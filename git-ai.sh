@@ -54,6 +54,7 @@ USE_PATCH=0
 DRY_RUN=0
 DEBUG=0
 FORCE_DIFF=0
+FORCE=0
 ALLOW_SECRET_COMMIT=0
 NO_BANNER=0
 NO_PULL=0
@@ -570,6 +571,7 @@ Options:
   -d, --dry-run               Only display the commit message (do not change Git state)
       --debug                 Show full commands, Git context, prompts, HTTP responses, and validation details
       --force-diff            Send the diff to AI even when sensitive patterns are detected
+  -f, --force                 Skip secret scanning and allow sensitive diff context to reach AI (high risk)
   -a, --allow-secret-commit   Allow committing when the scanner finds a potential secret
       --no-file-analysis      Disable per-file analysis (faster)
       --file-analysis-limit N Limit the number of files for per-file analysis (default: ${FILE_ANALYSIS_LIMIT})
@@ -635,6 +637,7 @@ parse_args() {
       -d|--dry-run)         DRY_RUN=1; shift ;;
       --debug)              DEBUG=1; shift ;;
       --force-diff)         FORCE_DIFF=1; shift ;;
+      -f|--force)           FORCE=1; FORCE_DIFF=1; shift ;;
       -a|--allow-secret-commit) ALLOW_SECRET_COMMIT=1; shift ;;
       --no-file-analysis)   DO_FILE_ANALYSIS=0; shift ;;
       --file-analysis-limit)
@@ -933,6 +936,11 @@ run_gitleaks_secret_scan() {
 
 enforce_staged_secret_policy() {
   local report external_report
+
+  if [[ "$FORCE" -eq 1 ]]; then
+    warn "Secret scanning and safe mode bypassed by --force. Review staged changes carefully."
+    return 0
+  fi
 
   blocking_status_start "Scanning staged changes for potential secrets..."
   report=$(detect_staged_secret_lines || true)

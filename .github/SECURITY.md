@@ -43,7 +43,8 @@ running the CLI.
 `git-ai` has two independent protections for potential secrets:
 
 - The secret guard scans staged additions and blocks a commit when content
-  resembles a token, password, private key, or other credential.
+  resembles a token, password, private key, or other credential, unless
+  `--force` is explicitly selected.
 - Safe mode removes detailed diffs from the main prompt and skips sensitive
   files during per-file analysis when built-in patterns match. Git metadata
   and diffs from other files not detected as sensitive may still be sent.
@@ -62,16 +63,20 @@ git-ai --allow-secret-commit
 
 # Send detailed diffs to the AI even when sensitive patterns are detected
 git-ai --force-diff
+
+# Skip secret scanning and safe mode, then allow sensitive diff context to reach AI
+git-ai --force
 ```
 
-The overrides do not imply one another:
+The overrides have distinct boundaries:
 
 - `--allow-secret-commit` only bypasses commit blocking; safe mode remains
   active when a sensitive pattern is detected.
 - `--force-diff` permits detailed diff transmission but does not bypass the
   secret guard.
-- To permit both the commit and transmission of a detected sensitive diff, the
-  user must explicitly select both options.
+- `--force` skips both the secret guard and `gitleaks`, disables safe mode, and
+  permits sensitive diff context to be sent. It is not equivalent to combining
+  `--allow-secret-commit` and `--force-diff`, which still performs the scan.
 
 Important precautions:
 
@@ -95,7 +100,7 @@ Important precautions:
 - `--debug` prints a detailed local trace that can include the full staged
   diff, prompts, request payloads, complete Ollama responses, repository paths,
   and command output. Safe mode omits detected sensitive diff content unless
-  `--force-diff` is explicitly selected. Treat debug logs as sensitive,
+  `--force-diff` or `--force` is explicitly selected. Treat debug logs as sensitive,
   sanitize them before sharing, and do not enable debug logging in an
   untrusted terminal or log collector.
 - `--no-verify` is passed to `git commit --no-verify`, which bypasses
@@ -158,7 +163,7 @@ The following reports are in scope:
   active.
 - The secret guard fails to block a clear token, private key, password, or
   credential in staged additions.
-- Options such as `--force-diff` or `--allow-secret-commit` become active
+- Options such as `--force`, `--force-diff`, or `--allow-secret-commit` become active
   without an explicit user action.
 - Command injection, argument injection, or unexpected shell evaluation is
   triggered by a file name, diff, branch, remote, configuration value at use
@@ -179,9 +184,10 @@ The following reports are in scope:
 The following are generally not treated as project vulnerabilities:
 
 - Commit message quality, model hallucinations, or inaccurate commit subjects.
-- Sensitive diff transmission explicitly authorized with `--force-diff`,
-  commits explicitly authorized with `--allow-secret-commit`, or commit-hook
-  bypass explicitly requested with `--no-verify`. Behavior beyond each
+- Sensitive diff transmission and secret-scanner bypass explicitly authorized
+  with `--force`, sensitive diff transmission explicitly authorized with
+  `--force-diff`, commits explicitly authorized with `--allow-secret-commit`,
+  or commit-hook bypass explicitly requested with `--no-verify`. Behavior beyond each
   override's documented boundary remains in scope.
 - Vulnerabilities in Git, Ollama, curl, jq, flock, gitleaks, the shell, the
   operating system, or third-party AI models.

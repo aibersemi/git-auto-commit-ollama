@@ -47,9 +47,9 @@ endpoint, which may run locally or on another network host.
 - Prompt prioritization for capabilities, APIs, data integrity, security, and
   user flows; generated artifacts are treated as supporting context.
 - A built-in secret guard for added staged lines, supplemented by `gitleaks`
-  when the command is available.
+  when the command is available, unless `--force` is explicitly selected.
 - Safe mode that withholds sensitive diff details from prompts unless the user
-  explicitly selects `--force-diff`.
+  explicitly selects `--force-diff` or `--force`.
 - Push to an existing upstream, or `git push -u` to `origin` or the first
   remote when the branch has no upstream.
 - Dry-run with a temporary index so staging, commits, and pushes do not
@@ -73,17 +73,19 @@ flowchart TD
   G -->|default| H[git add -A]
   G -->|--patch| I[git add -p]
   G -->|--no-stage| J[Use existing staged changes]
-  H --> K[Scan for secrets]
+  H --> K{--force?}
   I --> K
   J --> K
-  K --> L[Build context and run per-file analysis]
-  L --> M[Generate and validate the commit message]
-  M --> N{Dry-run?}
-  N -->|yes| O[Display message without commit or push]
-  N -->|no| P[git commit]
-  P --> Q{Push enabled?}
-  Q -->|yes| R[git push]
-  Q -->|no| S[Done]
+  K -->|yes| L[Build context and run per-file analysis]
+  K -->|no| M[Scan for secrets]
+  M --> L
+  L --> N[Generate and validate the commit message]
+  N --> O{Dry-run?}
+  O -->|yes| P[Display message without commit or push]
+  O -->|no| Q[git commit]
+  Q --> R{Push enabled?}
+  R -->|yes| S[git push]
+  R -->|no| T[Done]
 ```
 
 The message uses the scope-free Conventional Commit format:
@@ -314,8 +316,9 @@ Available options:
 | `-i`, `--interactive` | Display the message and offer to continue, cancel, or edit before committing. |
 | `--no-stage` | Use existing staged changes without automatic staging. |
 | `-d`, `--dry-run` | Use a temporary index and skip the commit and push. |
-| `--debug` | Display a detailed diagnostic trace, including runtime configuration, relevant commands and outputs, the full non-sensitive staged diff, complete prompts and request payloads, complete Ollama responses, HTTP metadata, and validation reasons. Safe mode omits sensitive diff content unless `--force-diff` is explicitly selected. |
+| `--debug` | Display a detailed diagnostic trace, including runtime configuration, relevant commands and outputs, the full non-sensitive staged diff, complete prompts and request payloads, complete Ollama responses, HTTP metadata, and validation reasons. Safe mode omits sensitive diff content unless `--force-diff` or `--force` is explicitly selected. |
 | `--force-diff` | Send detailed diffs to Ollama even when sensitive patterns are detected. |
+| `-f`, `--force` | High-risk override: skip the built-in secret guard and `gitleaks`, disable safe mode, and allow sensitive diff context to reach Ollama. |
 | `-a`, `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
 | `--no-file-analysis` | Disable per-file AI analysis. |
 | `--file-analysis-limit N` | Limit analyzed files; accepts a non-negative integer. |
@@ -359,7 +362,8 @@ network endpoint, and review `DEFAULT_OLLAMA_HOST` and
 Available protections:
 
 - The built-in secret guard checks added lines in the staged diff. When
-  `gitleaks` is available, its result is added to the scan.
+  `gitleaks` is available, its result is added to the scan unless `--force`
+  is explicitly selected.
 - During a normal run, a secret finding cancels the commit.
   `--allow-secret-commit` only bypasses that cancellation.
 - Safe mode removes detailed diffs from the primary prompt and skips sensitive
@@ -368,6 +372,9 @@ Available protections:
 - `--allow-secret-commit` does not disable safe mode. Use `--force-diff`
   separately only when sending a sensitive diff is intentional.
 - `--force-diff` does not allow a commit blocked by the secret guard.
+- `--force` skips secret scanning, disables safe mode, and permits sensitive
+  diff context to be sent to Ollama. It is not equivalent to combining
+  `--allow-secret-commit` and `--force-diff`, which still performs the scan.
 - `--no-push`, `--no-stage`, and `--dry-run` each protect a different Git
   operation boundary and are not interchangeable.
 
@@ -386,7 +393,7 @@ detailed scope.
 | `DEFAULT_MODEL ... was not found` | The model is missing from the active host. | Pull the model on the server, install the `ollama` CLI for automatic pulling, or change `DEFAULT_MODEL`. |
 | `Failed to load and verify model ...` | The model is listed, but the `/api/chat` readiness request failed or timed out. | Check Ollama logs, server resources, the model name, and connectivity to the active host. |
 | `--no-stage ... there are no staged changes` | The index contains no changes. | Run `git add` first or remove `--no-stage`. |
-| Commit canceled because of a potential secret | The built-in guard or `gitleaks` found a sensitive pattern. | Remove the credential from staged changes; use an override only after reviewing the finding. |
+| Commit canceled because of a potential secret | The built-in guard or `gitleaks` found a sensitive pattern. | Remove the credential; use `--allow-secret-commit` only to bypass a reviewed finding. `--force-diff` only affects AI context, while `--force` skips scanning entirely. |
 | Commit hook failed | `pre-commit` or `commit-msg` rejected the commit. | Fix the hook finding; use `--no-verify` only when intentionally bypassing those commit hooks. |
 | Pre-push hook failed | The hook was run by `git push`. | Fix the hook or use a separate push workflow; `git-ai --no-verify` is not forwarded to `git push`. |
 | No remote exists | The repository has no remote. | The script skips the push; add a remote when pushing is required. |
@@ -401,7 +408,8 @@ usage. Debug output can contain private source code, paths, repository metadata,
 and model-generated text. Safe mode omits detected sensitive diff content, but
 secret detection is best effort. Treat debug logs as sensitive and sanitize
 them before storing or sharing. `--force-diff` explicitly permits the full diff
-to appear in both prompts and debug output.
+to appear in both prompts and debug output; `--force` does the same while also
+skipping secret scanning.
 
 ## Development
 
