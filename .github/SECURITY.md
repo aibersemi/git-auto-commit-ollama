@@ -46,14 +46,20 @@ running the CLI.
   resembles a token, password, private key, or other credential, unless
   `--force` is explicitly selected.
 - Safe mode removes detailed diffs from the main prompt and skips sensitive
-  files during per-file analysis when built-in patterns match. Git metadata
-  and diffs from other files not detected as sensitive may still be sent.
+  files during per-file analysis when built-in patterns match. Per-file
+  analysis also excludes generated or ephemeral paths, binary diffs, and
+  oversized staged blobs. Git metadata and bounded diff excerpts from other
+  files not detected as sensitive may still be sent.
 
 When `gitleaks` is available, the script also runs:
 
 ```bash
 gitleaks protect --staged --redact --no-banner
 ```
+
+The built-in scanner and `gitleaks` may run concurrently, but the tool waits
+for both results before applying the secret policy. Adaptive context and AI
+parallelism begins only after staging and secret-policy evaluation complete.
 
 Overrides are available only for intentional use:
 

@@ -105,6 +105,18 @@ If a change affects Ollama integration, test:
 - A missing model with and without `--no-pull`.
 - `--no-structured` when structured-output logic changed.
 
+If a change affects per-file analysis performance, test one file, a full
+default batch of six files, more than one batch, and local-summary fallback for
+an invalid or partial batch response. Confirm that generated or ephemeral
+paths, binary files, and oversized staged blobs are excluded from per-file AI
+requests without changing dry-run Git state.
+
+If a change affects adaptive parallelism, test `auto` and numeric overrides for
+both local and AI jobs. Cover local systemd detection, a remote Ollama capacity
+hint, conservative fallback, deterministic result ordering, and worker caps
+smaller and larger than the number of ready jobs. Both secret scanners must
+finish before the secret-policy decision.
+
 ## Issue Guidelines
 
 When reporting a bug, include:

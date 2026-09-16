@@ -43,7 +43,10 @@ endpoint, which may run locally or on another network host.
 - Scope-free Conventional Commit messages through Ollama `/api/chat`.
 - JSON Schema structured output with plain-text fallback and a local fallback
   message when the AI response remains invalid.
-- Parallel per-file diff analysis with configurable file and concurrency limits.
+- Batched per-file diff analysis with configurable file-count, batch-size,
+  blob-size, and adaptive Ollama concurrency limits.
+- Adaptive non-AI concurrency for independent read-only context jobs and the
+  built-in plus optional `gitleaks` secret scans.
 - Prompt prioritization for capabilities, APIs, data integrity, security, and
   user flows; generated artifacts are treated as supporting context.
 - A built-in secret guard for added staged lines, supplemented by `gitleaks`
@@ -229,13 +232,17 @@ Current `git-ai.conf` values:
 | `DEFAULT_DO_PUSH` | `1` | Push automatically after committing. |
 | `AI_TEMPERATURE` | `0.2` | Model request temperature. |
 | `AI_THINK` | `false` | `think` value: `false`, `true`, `low`, `medium`, or `high`. |
-| `AI_NUM_PREDICT` | `2048` | Output token limit for the primary request. |
+| `AI_NUM_PREDICT` | `512` | Output token limit for the primary request. |
 | `AI_MAX_NUM_PREDICT` | `2048` | Upper `num_predict` limit for primary and per-file requests. |
 | `USE_STRUCTURED_OUTPUT` | `0` | Use JSON Schema (`1`) or plain text (`0`). Disabled by default because `gemma4:e4b` does not consistently follow structured output. |
 | `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Maximum length of the entire commit message. |
 | `FILE_ANALYSIS_LIMIT` | `6` | Maximum files selected for per-file analysis; `0` disables those requests. |
-| `FILE_ANALYSIS_PARALLELISM` | `4` | Number of concurrent per-file analysis requests. |
-| `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `512` | Target output tokens for each per-file analysis. |
+| `FILE_ANALYSIS_BATCH_SIZE` | `6` | Maximum files included in one per-file analysis request. |
+| `FILE_ANALYSIS_PARALLELISM` | `auto` | Maximum concurrent per-file analysis batches. `auto` detects `OLLAMA_NUM_PARALLEL` for a local systemd service and otherwise uses a conservative capacity of `1`. |
+| `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `192` | Output-token budget allocated to each file in an analysis batch. |
+| `FILE_ANALYSIS_MAX_BLOB_BYTES` | `1048576` | Maximum staged blob size eligible for per-file AI analysis. |
+| `NON_AI_PARALLELISM` | `auto` | Maximum workers for independent local read-only jobs. `auto` uses the logical CPU capacity available to the process. |
+| `OLLAMA_PARALLELISM_HINT` | empty | Optional positive-integer capacity hint when a remote, containerized, or custom Ollama service cannot be inspected. |
 | `MAX_FILES_LIST` | `20` | Entry limit for file status and Git statistics context. |
 | `TOP_FILES` | `4` | Number of largest files selected for hunk summaries. |
 | `MAX_HUNK_CHARS` | `1000` | Per-file hunk character limit. |
@@ -244,13 +251,22 @@ Current `git-ai.conf` values:
 Ollama host resolution follows this order:
 
 1. Use `DEFAULT_OLLAMA_HOST` when it is not empty.
-2. Otherwise, read `OLLAMA_HOST` from
-   `/etc/systemd/system/ollama.service`.
+2. Otherwise, read `OLLAMA_HOST` from the active `ollama.service` environment,
+   with `/etc/systemd/system/ollama.service` as a fallback.
 3. Fall back to `http://localhost:11434`.
 
 `FALLBACK_OLLAMA_HOST` is attempted only when the primary `/api/tags` check
 fails. The active host is then used for model checks, warm-up, diff analysis,
 and commit message generation.
+
+Parallelism is a capacity, not a request target. Local non-AI jobs use at most
+`NON_AI_PARALLELISM` workers and never overlap staging, the secret-policy
+decision, commit creation, or pushing. Per-file AI analysis uses at most the
+resolved Ollama capacity and the number of batches that actually exist. The
+default six-file batch therefore remains one request even when
+`OLLAMA_NUM_PARALLEL` is greater than one. Ollama does not expose that setting
+through its public API, so remote endpoints should set
+`OLLAMA_PARALLELISM_HINT` or use a numeric `FILE_ANALYSIS_PARALLELISM`.
 
 Additional environment variables:
 
@@ -322,7 +338,9 @@ Available options:
 | `-a`, `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
 | `--no-file-analysis` | Disable per-file AI analysis. |
 | `--file-analysis-limit N` | Limit analyzed files; accepts a non-negative integer. |
-| `--file-analysis-parallelism N` | Set concurrent analysis requests; minimum `1`. |
+| `--file-analysis-batch-size N` | Set the maximum files per analysis request; minimum `1`. |
+| `--file-analysis-parallelism N\|auto` | Set concurrent analysis-batch capacity or detect it from a local Ollama service. |
+| `--non-ai-parallelism N\|auto` | Set local worker capacity or use the available logical CPU count. |
 | `--no-structured` | Skip JSON Schema and use plain text, including when `USE_STRUCTURED_OUTPUT=1`. Without this option, a structured response containing plain commit text is retried as plain text; if still invalid, the request falls back to plain text within the same attempt. |
 | `--no-pull` | Fail when the model is unavailable without running `ollama pull`. |
 | `--no-banner` | Hide the startup banner. |
@@ -369,6 +387,10 @@ Available protections:
 - Safe mode removes detailed diffs from the primary prompt and skips sensitive
   files during per-file analysis. Git metadata and diffs from other files not
   detected as sensitive may still be sent.
+- Per-file AI analysis excludes generated and ephemeral paths, binary diffs,
+  and staged blobs larger than `FILE_ANALYSIS_MAX_BLOB_BYTES`. The primary
+  prompt may still contain bounded Git metadata and hunk excerpts for the
+  overall change.
 - `--allow-secret-commit` does not disable safe mode. Use `--force-diff`
   separately only when sending a sensitive diff is intentional.
 - `--force-diff` does not allow a commit blocked by the secret guard.
@@ -438,6 +460,18 @@ git config user.email "git-ai-test@example.invalid"
 printf 'hello\n' > sample.txt
 "$project_dir/git-ai.sh" --dry-run --no-push --no-banner --no-pull
 ```
+
+For per-file analysis performance changes, repeat the smoke test with six
+small text files. Confirm that the status reports one batch with the default
+configuration and measure the `Analyzed ...` and `Commit message received ...`
+durations with a warm model. Also test generated paths, binary files, and a
+text blob larger than `FILE_ANALYSIS_MAX_BLOB_BYTES` to confirm they are
+excluded from per-file requests.
+
+For adaptive parallelism changes, also test numeric and `auto` values, a local
+systemd Ollama service, a remote endpoint with `OLLAMA_PARALLELISM_HINT`, and
+the conservative fallback. Confirm that result order is deterministic and
+that effective concurrency never exceeds the number of ready jobs or batches.
 
 Do not run commit or push smoke tests in a primary working repository. See the
 [Contributing Guide](.github/CONTRIBUTING.md) for the full workflow.

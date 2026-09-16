@@ -76,11 +76,15 @@ DEFAULT_OLLAMA_HOST="${DEFAULT_OLLAMA_HOST:-}"
 FALLBACK_OLLAMA_HOST="${FALLBACK_OLLAMA_HOST:-}"
 AI_TEMPERATURE="${AI_TEMPERATURE:-${OLLAMA_TEMPERATURE:-0.2}}"
 AI_THINK="${AI_THINK:-${OLLAMA_THINK:-false}}"
-AI_NUM_PREDICT="${AI_NUM_PREDICT:-${OLLAMA_NUM_PREDICT:-2048}}"
+AI_NUM_PREDICT="${AI_NUM_PREDICT:-${OLLAMA_NUM_PREDICT:-512}}"
 AI_MAX_NUM_PREDICT="${AI_MAX_NUM_PREDICT:-${OLLAMA_MAX_NUM_PREDICT:-2048}}"
 FILE_ANALYSIS_LIMIT="${FILE_ANALYSIS_LIMIT:-6}"
-FILE_ANALYSIS_NUM_PREDICT_PER_FILE="${FILE_ANALYSIS_NUM_PREDICT_PER_FILE:-512}"
-FILE_ANALYSIS_PARALLELISM="${FILE_ANALYSIS_PARALLELISM:-4}"
+FILE_ANALYSIS_BATCH_SIZE="${FILE_ANALYSIS_BATCH_SIZE:-6}"
+FILE_ANALYSIS_NUM_PREDICT_PER_FILE="${FILE_ANALYSIS_NUM_PREDICT_PER_FILE:-192}"
+FILE_ANALYSIS_MAX_BLOB_BYTES="${FILE_ANALYSIS_MAX_BLOB_BYTES:-1048576}"
+FILE_ANALYSIS_PARALLELISM="${FILE_ANALYSIS_PARALLELISM:-auto}"
+NON_AI_PARALLELISM="${NON_AI_PARALLELISM:-auto}"
+OLLAMA_PARALLELISM_HINT="${OLLAMA_PARALLELISM_HINT:-}"
 MAX_FILES_LIST="${MAX_FILES_LIST:-20}"
 TOP_FILES="${TOP_FILES:-4}"
 MAX_HUNK_CHARS="${MAX_HUNK_CHARS:-1000}"
@@ -96,10 +100,25 @@ esac
 # The effective model may be overridden for a single invocation with -m/--model.
 OLLAMA_MODEL="$DEFAULT_MODEL"
 OLLAMA_SERVICE_FILE="/etc/systemd/system/ollama.service"
+RESOLVED_NON_AI_PARALLELISM=""
+RESOLVED_NON_AI_PARALLELISM_SOURCE="pending"
+RESOLVED_FILE_ANALYSIS_PARALLELISM=""
+RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE="pending"
 
 read_ollama_service_env() {
   local key="$1"
-  local line value
+  local line value service_environment
+
+  if command -v systemctl >/dev/null 2>&1; then
+    service_environment=$(systemctl show ollama.service --property=Environment --value 2>/dev/null || true)
+    if [[ " $service_environment " =~ [[:space:]]${key}=([^[:space:]]+) ]]; then
+      value="${BASH_REMATCH[1]}"
+      value="${value#\"}"
+      value="${value%\"}"
+      printf '%s' "$value"
+      return 0
+    fi
+  fi
 
   [[ -r "$OLLAMA_SERVICE_FILE" ]] || return 1
   while IFS= read -r line; do
@@ -115,6 +134,64 @@ read_ollama_service_env() {
   done < "$OLLAMA_SERVICE_FILE"
 
   return 1
+}
+
+is_local_ollama_host() {
+  local authority
+  authority="${OLLAMA_BASE_URL#*://}"
+  authority="${authority%%/*}"
+
+  case "$authority" in
+    localhost|localhost:*|127.*|\[::1\]|\[::1\]:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+detect_available_cpu_count() {
+  local count=""
+
+  if command -v nproc >/dev/null 2>&1; then
+    count=$(nproc 2>/dev/null || true)
+  elif command -v getconf >/dev/null 2>&1; then
+    count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  fi
+
+  [[ "$count" =~ ^[0-9]+$ && "$count" -ge 1 ]] || count=1
+  printf '%s' "$count"
+}
+
+resolve_runtime_parallelism() {
+  local detected service_parallelism
+
+  if [[ "$NON_AI_PARALLELISM" == "auto" ]]; then
+    RESOLVED_NON_AI_PARALLELISM=$(detect_available_cpu_count)
+    RESOLVED_NON_AI_PARALLELISM_SOURCE="available logical CPUs"
+  else
+    RESOLVED_NON_AI_PARALLELISM="$NON_AI_PARALLELISM"
+    RESOLVED_NON_AI_PARALLELISM_SOURCE="configuration"
+  fi
+
+  if [[ "$FILE_ANALYSIS_PARALLELISM" != "auto" ]]; then
+    RESOLVED_FILE_ANALYSIS_PARALLELISM="$FILE_ANALYSIS_PARALLELISM"
+    RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE="configuration"
+  elif [[ "$OLLAMA_PARALLELISM_HINT" =~ ^[0-9]+$ && "$OLLAMA_PARALLELISM_HINT" -ge 1 ]]; then
+    RESOLVED_FILE_ANALYSIS_PARALLELISM="$OLLAMA_PARALLELISM_HINT"
+    RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE="OLLAMA_PARALLELISM_HINT"
+  elif is_local_ollama_host && service_parallelism=$(read_ollama_service_env "OLLAMA_NUM_PARALLEL") \
+      && [[ "$service_parallelism" =~ ^[0-9]+$ && "$service_parallelism" -ge 1 ]]; then
+    RESOLVED_FILE_ANALYSIS_PARALLELISM="$service_parallelism"
+    RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE="local Ollama service"
+  elif is_local_ollama_host && detected="${OLLAMA_NUM_PARALLEL:-}" \
+      && [[ "$detected" =~ ^[0-9]+$ && "$detected" -ge 1 ]]; then
+    RESOLVED_FILE_ANALYSIS_PARALLELISM="$detected"
+    RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE="process environment"
+  else
+    RESOLVED_FILE_ANALYSIS_PARALLELISM=1
+    RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE="conservative fallback"
+  fi
+
+  dbg "Non-AI parallelism: ${RESOLVED_NON_AI_PARALLELISM} (${RESOLVED_NON_AI_PARALLELISM_SOURCE})"
+  dbg "File-analysis parallelism capacity: ${RESOLVED_FILE_ANALYSIS_PARALLELISM} (${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE})"
 }
 
 normalize_ollama_host_url() {
@@ -245,7 +322,15 @@ push=${DO_PUSH}
 structured_output=${USE_STRUCTURED_OUTPUT}
 file_analysis=${DO_FILE_ANALYSIS}
 file_analysis_limit=${FILE_ANALYSIS_LIMIT}
+file_analysis_batch_size=${FILE_ANALYSIS_BATCH_SIZE}
 file_analysis_parallelism=${FILE_ANALYSIS_PARALLELISM}
+file_analysis_parallelism_resolved=${RESOLVED_FILE_ANALYSIS_PARALLELISM:-<pending>}
+file_analysis_parallelism_source=${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}
+file_analysis_max_blob_bytes=${FILE_ANALYSIS_MAX_BLOB_BYTES}
+non_ai_parallelism=${NON_AI_PARALLELISM}
+non_ai_parallelism_resolved=${RESOLVED_NON_AI_PARALLELISM:-<pending>}
+non_ai_parallelism_source=${RESOLVED_NON_AI_PARALLELISM_SOURCE}
+ollama_parallelism_hint=${OLLAMA_PARALLELISM_HINT:-<empty>}
 temperature=${AI_TEMPERATURE}
 think=${AI_THINK}
 num_predict=${AI_NUM_PREDICT:-<empty>}
@@ -575,8 +660,12 @@ Options:
   -a, --allow-secret-commit   Allow committing when the scanner finds a potential secret
       --no-file-analysis      Disable per-file analysis (faster)
       --file-analysis-limit N Limit the number of files for per-file analysis (default: ${FILE_ANALYSIS_LIMIT})
-      --file-analysis-parallelism N
-                              Number of parallel file-analysis requests (default: ${FILE_ANALYSIS_PARALLELISM})
+      --file-analysis-batch-size N
+                              Number of files per analysis request (default: ${FILE_ANALYSIS_BATCH_SIZE})
+      --file-analysis-parallelism N|auto
+                              Parallel file-analysis batch capacity (default: ${FILE_ANALYSIS_PARALLELISM})
+      --non-ai-parallelism N|auto
+                              Parallel capacity for independent local work (default: ${NON_AI_PARALLELISM})
       --no-structured         Disable structured output (fall back to plain text)
       --no-pull               Do not auto-pull a missing model
       --no-banner             Do not show the initial banner
@@ -596,9 +685,14 @@ Config variables:
   AI_NUM_PREDICT              Output tokens per request (max: ${AI_MAX_NUM_PREDICT})
   AI_MAX_NUM_PREDICT          Maximum num_predict value
   FILE_ANALYSIS_LIMIT         Maximum number of files for per-file analysis
+  FILE_ANALYSIS_BATCH_SIZE    Maximum files sent in one analysis request (default: ${FILE_ANALYSIS_BATCH_SIZE})
   FILE_ANALYSIS_NUM_PREDICT_PER_FILE
                               Output tokens per file analysis (default: ${FILE_ANALYSIS_NUM_PREDICT_PER_FILE})
-  FILE_ANALYSIS_PARALLELISM   Number of parallel file-analysis requests (default: ${FILE_ANALYSIS_PARALLELISM})
+  FILE_ANALYSIS_MAX_BLOB_BYTES
+                              Maximum staged blob size for file analysis (default: ${FILE_ANALYSIS_MAX_BLOB_BYTES})
+  FILE_ANALYSIS_PARALLELISM   Parallel file-analysis capacity; auto detects local Ollama (default: ${FILE_ANALYSIS_PARALLELISM})
+  NON_AI_PARALLELISM          Parallel capacity for independent local work (default: ${NON_AI_PARALLELISM})
+  OLLAMA_PARALLELISM_HINT     Optional positive-integer capacity hint for remote Ollama
   MAX_FILES_LIST              Maximum number of files in the Git name/status context
   TOP_FILES                   Number of largest files summarized by hunks
   MAX_HUNK_CHARS              Maximum hunk characters per file
@@ -644,11 +738,21 @@ parse_args() {
                             [[ $# -ge 2 ]] || die "--file-analysis-limit requires a number"
                             [[ "$2" =~ ^[0-9]+$ ]] || die "--file-analysis-limit must be a non-negative number"
                             FILE_ANALYSIS_LIMIT="$2"; shift 2 ;;
+      --file-analysis-batch-size)
+                            [[ $# -ge 2 ]] || die "--file-analysis-batch-size requires a number"
+                            [[ "$2" =~ ^[0-9]+$ ]] || die "--file-analysis-batch-size must be a number >= 1"
+                            [[ "$2" -ge 1 ]] || die "--file-analysis-batch-size must be a number >= 1"
+                            FILE_ANALYSIS_BATCH_SIZE="$2"; shift 2 ;;
       --file-analysis-parallelism)
                             [[ $# -ge 2 ]] || die "--file-analysis-parallelism requires a number"
-                            [[ "$2" =~ ^[0-9]+$ ]] || die "--file-analysis-parallelism must be a number >= 1"
-                            [[ "$2" -ge 1 ]] || die "--file-analysis-parallelism must be a number >= 1"
+                            [[ "$2" == "auto" || "$2" =~ ^[0-9]+$ ]] || die "--file-analysis-parallelism must be auto or a number >= 1"
+                            [[ "$2" == "auto" || "$2" -ge 1 ]] || die "--file-analysis-parallelism must be auto or a number >= 1"
                             FILE_ANALYSIS_PARALLELISM="$2"; shift 2 ;;
+      --non-ai-parallelism)
+                            [[ $# -ge 2 ]] || die "--non-ai-parallelism requires a value"
+                            [[ "$2" == "auto" || "$2" =~ ^[0-9]+$ ]] || die "--non-ai-parallelism must be auto or a number >= 1"
+                            [[ "$2" == "auto" || "$2" -ge 1 ]] || die "--non-ai-parallelism must be auto or a number >= 1"
+                            NON_AI_PARALLELISM="$2"; shift 2 ;;
       --no-structured)      USE_STRUCTURED_OUTPUT=0; shift ;;
       --no-pull)            NO_PULL=1; shift ;;
       --no-banner)          NO_BANNER=1; shift ;;
@@ -707,8 +811,23 @@ check_deps() {
   if [[ ! "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE" -lt 1 ]]; then
     die "FILE_ANALYSIS_NUM_PREDICT_PER_FILE must be a number >= 1."
   fi
-  if [[ ! "$FILE_ANALYSIS_PARALLELISM" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_PARALLELISM" -lt 1 ]]; then
-    die "FILE_ANALYSIS_PARALLELISM must be a number >= 1."
+  if [[ ! "$FILE_ANALYSIS_BATCH_SIZE" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_BATCH_SIZE" -lt 1 ]]; then
+    die "FILE_ANALYSIS_BATCH_SIZE must be a number >= 1."
+  fi
+  if [[ ! "$FILE_ANALYSIS_MAX_BLOB_BYTES" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_MAX_BLOB_BYTES" -lt 1 ]]; then
+    die "FILE_ANALYSIS_MAX_BLOB_BYTES must be a number >= 1."
+  fi
+  if [[ "$FILE_ANALYSIS_PARALLELISM" != "auto" ]] \
+      && { [[ ! "$FILE_ANALYSIS_PARALLELISM" =~ ^[0-9]+$ ]] || [[ "$FILE_ANALYSIS_PARALLELISM" -lt 1 ]]; }; then
+    die "FILE_ANALYSIS_PARALLELISM must be auto or a number >= 1."
+  fi
+  if [[ "$NON_AI_PARALLELISM" != "auto" ]] \
+      && { [[ ! "$NON_AI_PARALLELISM" =~ ^[0-9]+$ ]] || [[ "$NON_AI_PARALLELISM" -lt 1 ]]; }; then
+    die "NON_AI_PARALLELISM must be auto or a number >= 1."
+  fi
+  if [[ -n "$OLLAMA_PARALLELISM_HINT" ]] \
+      && { [[ ! "$OLLAMA_PARALLELISM_HINT" =~ ^[0-9]+$ ]] || [[ "$OLLAMA_PARALLELISM_HINT" -lt 1 ]]; }; then
+    die "OLLAMA_PARALLELISM_HINT must be empty or a number >= 1."
   fi
   if [[ -n "$AI_NUM_PREDICT" ]] && [[ ! "$AI_NUM_PREDICT" =~ ^[0-9]+$ ]]; then
     die "AI_NUM_PREDICT must be a number."
@@ -759,6 +878,7 @@ check_deps() {
     fi
   fi
   step_info "Active Ollama host: ${OLLAMA_BASE_URL}"
+  resolve_runtime_parallelism
 
   local available_models
   available_models=$(jq -r '.models[].name' <<<"$tags_json" 2>/dev/null | sed '/^$/d' || true)
@@ -859,57 +979,57 @@ detect_sensitive_patterns() {
   has_sensitive_patterns "$sample"
 }
 
-is_secret_placeholder_line() {
-  local content="$1"
-  local lower
-  lower=$(printf '%s' "$content" | tr '[:upper:]' '[:lower:]')
-
-  grep -Eiq '(placeholder|changeme|change_me|change-me|dummy|sample|example|your[-_ ]?[a-z0-9_-]*|<[^>]+>|\$\{|\{\{[[:space:]]*secrets\.)' <<<"$lower"
-}
-
 detect_staged_secret_lines() {
-  local current_file="?"
-  local new_line=0
-  local line content line_no
+  local sensitive_regex placeholder_regex
+  sensitive_regex="(([a-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[a-z0-9_.-]*)[[:space:]]*[:=][[:space:]]*['\"]?[a-z0-9_./+=:@-]{12,}['\"]?|begin [a-z]+ private key|akia[0-9a-z]{16}|gh[pous]_[a-z0-9_]{30,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{10,}|aiza[0-9a-z_-]{35}|sk-[a-z0-9]{20,}|eyj[a-z0-9_-]{10,}[.][a-z0-9_-]{10,}[.][a-z0-9_-]{10,})"
+  placeholder_regex='(placeholder|changeme|change_me|change-me|dummy|sample|example|your[-_ ]?[a-z0-9_-]*|<[^>]+>|[$][{]|[{][{][[:space:]]*secrets[.])'
 
-  while IFS= read -r line; do
-    case "$line" in
-      "+++ b/"*)
-        current_file="${line#+++ b/}"
-        ;;
-      "+++ /dev/null")
-        current_file="?"
-        ;;
-      @@*)
-        if [[ "$line" =~ \+([0-9]+)(,[0-9]+)?[[:space:]]@@ ]]; then
-          new_line="${BASH_REMATCH[1]}"
-        else
-          new_line=0
-        fi
-        ;;
-      +*)
-        [[ "$line" == "+++"* ]] && continue
-        content="${line#+}"
-        if has_sensitive_patterns "$content" && ! is_secret_placeholder_line "$content"; then
-          line_no="$new_line"
-          if ! [[ "$line_no" =~ ^[0-9]+$ ]] || ! [[ "$line_no" -gt 0 ]]; then
-            line_no="?"
-          fi
-          printf '%s:%s potential secret on added line\n' "$current_file" "$line_no"
-        fi
-        if [[ "$new_line" =~ ^[0-9]+$ ]] && [[ "$new_line" -gt 0 ]]; then
-          new_line=$((new_line + 1))
-        fi
-        ;;
-      -*)
-        ;;
-      *)
-        if [[ "$new_line" =~ ^[0-9]+$ ]] && [[ "$new_line" -gt 0 ]]; then
-          new_line=$((new_line + 1))
-        fi
-        ;;
-    esac
-  done < <(git diff --cached --no-color --unified=0 --no-ext-diff || true)
+  git diff --cached --no-color --unified=0 --no-ext-diff 2>/dev/null |
+    awk -v sensitive_regex="$sensitive_regex" -v placeholder_regex="$placeholder_regex" '
+      BEGIN {
+        current_file = "?"
+        new_line = 0
+      }
+      /^\+\+\+ b\// {
+        current_file = substr($0, 7)
+        next
+      }
+      /^\+\+\+ \/dev\/null$/ {
+        current_file = "?"
+        next
+      }
+      /^@@/ {
+        header = $0
+        sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", header)
+        split(header, parts, /[, ]/)
+        if (parts[1] ~ /^[0-9]+$/) {
+          new_line = parts[1] + 0
+        } else {
+          new_line = 0
+        }
+        next
+      }
+      substr($0, 1, 1) == "+" {
+        content = substr($0, 2)
+        lower = tolower(content)
+        if (lower ~ sensitive_regex && lower !~ placeholder_regex) {
+          line_no = new_line > 0 ? new_line : "?"
+          printf "%s:%s potential secret on added line\n", current_file, line_no
+        }
+        if (new_line > 0) {
+          new_line++
+        }
+        next
+      }
+      substr($0, 1, 1) == "-" {
+        next
+      }
+      {
+        if (new_line > 0) {
+          new_line++
+        }
+      }
+    ' || true
 }
 
 run_gitleaks_secret_scan() {
@@ -935,17 +1055,40 @@ run_gitleaks_secret_scan() {
 }
 
 enforce_staged_secret_policy() {
-  local report external_report
+  local report external_report builtin_report_file external_report_file
+  local builtin_pid="" external_pid="" scan_jobs=1 scan_parallelism
 
   if [[ "$FORCE" -eq 1 ]]; then
     warn "Secret scanning and safe mode bypassed by --force. Review staged changes carefully."
     return 0
   fi
 
-  blocking_status_start "Scanning staged changes for potential secrets..."
-  report=$(detect_staged_secret_lines || true)
-  external_report=$(run_gitleaks_secret_scan || true)
+  command -v gitleaks >/dev/null 2>&1 && scan_jobs=2
+  scan_parallelism="${RESOLVED_NON_AI_PARALLELISM:-1}"
+  [[ "$scan_parallelism" -gt "$scan_jobs" ]] && scan_parallelism="$scan_jobs"
+
+  builtin_report_file=$(mktemp)
+  external_report_file=$(mktemp)
+  trap 'rm -f "$builtin_report_file" "$external_report_file"' RETURN
+
+  blocking_status_start "Scanning staged changes for potential secrets with ${scan_parallelism} worker(s)..."
+  if [[ "$scan_parallelism" -ge 2 ]]; then
+    { detect_staged_secret_lines || true; } > "$builtin_report_file" &
+    builtin_pid=$!
+    { run_gitleaks_secret_scan || true; } > "$external_report_file" &
+    external_pid=$!
+    wait "$builtin_pid" || true
+    wait "$external_pid" || true
+  else
+    detect_staged_secret_lines > "$builtin_report_file" || true
+    run_gitleaks_secret_scan > "$external_report_file" || true
+  fi
   blocking_status_stop
+  report=$(<"$builtin_report_file")
+  external_report=$(<"$external_report_file")
+  rm -f "$builtin_report_file" "$external_report_file"
+  trap - RETURN
+  dbg "Secret scan jobs: ${scan_jobs}; effective non-AI parallelism: ${scan_parallelism}"
 
   if [[ -n "$external_report" ]]; then
     [[ -n "$report" ]] && report+=$'\n'
@@ -1009,10 +1152,8 @@ collect_top_hunks() {
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     local piece
-    piece=$(git diff --cached --no-color --unified=2 -- "$f" 2>/dev/null || true)
+    piece=$(git diff --cached --no-color --unified=2 -- "$f" 2>/dev/null | head -c "$MAX_HUNK_CHARS" || true)
     [[ -z "$piece" ]] && continue
-
-    piece=$(echo "$piece" | head -c "$MAX_HUNK_CHARS")
 
     local next_total=$((total_chars + ${#piece}))
     [[ "$next_total" -gt "$MAX_TOTAL_HUNKS_CHARS" ]] && break
@@ -1143,7 +1284,7 @@ is_code_path() {
 
 is_generated_path() {
   local path="${1,,}"
-  [[ "$path" =~ (^|/)(generated|__generated__|codegen|vendor)(/|$) || "$path" =~ \.(generated|gen)\.[^.]+$ ]]
+  [[ "$path" =~ ^(tmp|temp|\.cache)/ || "$path" =~ (^|/)(generated|__generated__|codegen|vendor)(/|$) || "$path" =~ \.(generated|gen)\.[^.]+$ ]]
 }
 
 is_test_path() {
@@ -1299,29 +1440,98 @@ build_change_priority_hint() {
   fi
 }
 
+run_context_collection_job() {
+  local job="$1"
+
+  case "$job" in
+    staged_count)
+      git diff --cached --name-only | wc -l | tr -d '[:space:]'
+      ;;
+    name_status)
+      git diff --cached --name-status -M | head -n "$MAX_FILES_LIST" || true
+      ;;
+    stat)
+      git diff --cached --stat | head -n "$MAX_FILES_LIST" || true
+      ;;
+    priority_changes)
+      collect_priority_changes
+      ;;
+    summary)
+      git diff --cached --summary -M | head -n "$MAX_FILES_LIST" || true
+      ;;
+    files_changed)
+      git diff --cached --name-only | head -n "$MAX_FILES_LIST" | tr '\n' ', ' | sed 's/, $//' || true
+      ;;
+    diff_terms)
+      collect_diff_terms
+      ;;
+    top_hunks)
+      collect_top_hunks
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 collect_context() {
   local safe_mode="${1:-0}"
+  local context_tmpdir worker_limit effective_workers job index output_file pid
+  local -a context_jobs context_outputs wave_pids
 
-  STAGED_FILE_COUNT=$(git diff --cached --name-only | wc -l | tr -d '[:space:]')
-
-  NAME_STATUS=$(git diff --cached --name-status -M | head -n "$MAX_FILES_LIST" || true)
-  STAT=$(git diff --cached --stat | head -n "$MAX_FILES_LIST" || true)
-  GIT_PRIORITY_CHANGES=$(collect_priority_changes)
-  GIT_SUMMARY=$(git diff --cached --summary -M | head -n "$MAX_FILES_LIST" || true)
-  if [[ "$safe_mode" -eq 1 ]]; then
-    DIFF_TERMS=""
-  else
-    DIFF_TERMS=$(collect_diff_terms)
+  context_jobs=(staged_count name_status stat priority_changes summary files_changed)
+  DIFF_TERMS=""
+  TOP_HUNKS=""
+  if [[ "$safe_mode" -eq 0 ]]; then
+    context_jobs+=(diff_terms top_hunks)
   fi
+
+  worker_limit="${RESOLVED_NON_AI_PARALLELISM:-1}"
+  effective_workers="$worker_limit"
+  [[ "$effective_workers" -gt "${#context_jobs[@]}" ]] && effective_workers="${#context_jobs[@]}"
+  context_tmpdir=$(mktemp -d)
+  trap 'rm -rf -- "$context_tmpdir"' RETURN
+
+  wave_pids=()
+  for index in "${!context_jobs[@]}"; do
+    job="${context_jobs[$index]}"
+    output_file="${context_tmpdir}/${index}"
+    context_outputs[index]="$output_file"
+    { run_context_collection_job "$job" || true; } > "$output_file" &
+    wave_pids+=("$!")
+
+    if [[ "${#wave_pids[@]}" -ge "$effective_workers" ]]; then
+      for pid in "${wave_pids[@]}"; do
+        wait "$pid" || true
+      done
+      wave_pids=()
+    fi
+  done
+  for pid in "${wave_pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  for index in "${!context_jobs[@]}"; do
+    job="${context_jobs[$index]}"
+    output_file="${context_outputs[$index]}"
+    case "$job" in
+      staged_count) STAGED_FILE_COUNT=$(<"$output_file") ;;
+      name_status) NAME_STATUS=$(<"$output_file") ;;
+      stat) STAT=$(<"$output_file") ;;
+      priority_changes) GIT_PRIORITY_CHANGES=$(<"$output_file") ;;
+      summary) GIT_SUMMARY=$(<"$output_file") ;;
+      files_changed) FILES_CHANGED=$(<"$output_file") ;;
+      diff_terms) DIFF_TERMS=$(<"$output_file") ;;
+      top_hunks) TOP_HUNKS=$(<"$output_file") ;;
+    esac
+  done
+  rm -rf -- "$context_tmpdir"
+  trap - RETURN
+  dbg "Context collection jobs: ${#context_jobs[@]}; effective non-AI parallelism: ${effective_workers}"
+
   classify_change_context
   SEMANTIC_CHANGE_SUMMARY=$(build_semantic_change_summary)
   CHANGE_PRIORITY_HINT=$(build_change_priority_hint)
-  FILES_CHANGED=$(git diff --cached --name-only | head -n "$MAX_FILES_LIST" | tr '\n' ', ' | sed 's/, $//' || true)
-  if [[ "$safe_mode" -eq 1 ]]; then
-    TOP_HUNKS=""
-  else
-    TOP_HUNKS=$(collect_top_hunks)
-  fi
 }
 
 debug_git_context() {
@@ -1354,29 +1564,7 @@ debug_git_context() {
 }
 
 # ===== Per-File Analysis =====
-SYSTEM_PROMPT_FILE_ANALYSIS_BATCH='You are a Git diff analyst. Analyze each file separately in English. Output valid JSON that conforms to the schema. For each file, set "file" to the exact input filename and provide one or two clear sentences covering the behavior, domain capability, or user-facing impact added by the diff. Treat generated files as supporting artifacts, not primary features. Do not use Markdown, summarize only file names, or give generic answers.'
-
-split_diff_to_chunks() {
-  local diff_content="$1"
-  DIFF_CHUNKS=()
-  local chunk=""
-  while IFS= read -r line; do
-    if [[ "$line" =~ ^diff\ --git\  ]]; then
-      if [[ -n "$chunk" ]]; then
-        DIFF_CHUNKS+=("$chunk")
-      fi
-      chunk="$line"$'\n'
-    else
-      chunk+="$line"$'\n'
-    fi
-  done <<< "$diff_content"
-  [[ -n "$chunk" ]] && DIFF_CHUNKS+=("$chunk")
-}
-
-diff_chunk_file_name() {
-  local chunk="$1"
-  printf '%s\n' "$chunk" | head -n 1 | sed -e 's#.* b/##'
-}
+SYSTEM_PROMPT_FILE_ANALYSIS_BATCH='You are a Git diff analyst. Analyze each file separately in English. Output valid JSON that conforms to the schema. For each file, set "file" to the exact input filename and provide exactly one concise sentence of at most 30 words covering the behavior, domain capability, or user-facing impact added by the diff. Do not use Markdown, summarize only file names, or give generic answers.'
 
 add_analysis_index() {
   local idx="$1"
@@ -1471,7 +1659,7 @@ build_file_analysis_batch_prompt() {
   local end=$((start + count))
   local i prompt
 
-  prompt='Analyze the following diff one file at a time. Return JSON with a "files" array in the input order. Include exactly one item for every [FILE]. Make each analysis specific to the diff, not a generic response.'
+  prompt='Analyze the following diffs. Return JSON with a "files" array in the input order. Include exactly one item for every [FILE]. Each analysis must be one specific sentence of at most 30 words.'
 
   for ((i=start; i<end; i++)); do
     prompt+=$'\n\n[FILE]\n'"${BATCH_ANALYSIS_FILE_NAMES[$i]}"
@@ -1494,11 +1682,11 @@ run_file_analysis_batch() {
   [[ "$batch_num_predict" -lt 360 ]] && batch_num_predict=360
 
   if ! content=$(ollama_chat "$SYSTEM_PROMPT_FILE_ANALYSIS_BATCH" "$prompt" "$schema" 60 1 "$batch_num_predict"); then
-    dbg "Analysis batch ${batch_no} failed [analysis.request_failed]; using per-file fallback."
+    dbg "Analysis batch ${batch_no} failed [analysis.request_failed]; using local summaries."
   elif ! json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
-    dbg "Analysis batch ${batch_no} failed [analysis.invalid_json]; using per-file fallback."
+    dbg "Analysis batch ${batch_no} failed [analysis.invalid_json]; using local summaries."
   elif ! jq -e '(.files | type == "array") and all(.files[]?; (.file | type == "string") and (.analysis | type == "string"))' >/dev/null <<<"$json"; then
-    dbg "Analysis batch ${batch_no} failed [analysis.invalid_fields]; using per-file fallback."
+    dbg "Analysis batch ${batch_no} failed [analysis.invalid_fields]; using local summaries."
   else
     printf '%s\n' "$json" > "$output_file"
     dbg "Analysis batch ${batch_no} completed (${count} file(s))"
@@ -1519,45 +1707,39 @@ extract_file_analysis_from_batch() {
 }
 
 analyze_files_individually() {
-  local full_diff
-  full_diff=$(git diff --cached --no-color -U3 || true)
-  [[ -z "$full_diff" ]] && return 1
-
-  split_diff_to_chunks "$full_diff"
-
-  local total_files=${#DIFF_CHUNKS[@]}
-  [[ "$total_files" -eq 0 ]] && return 1
-
-  local safe_chunks=()
-  local generated_chunks=()
+  local candidate_paths=()
+  local total_files=0
+  local generated_files_skipped=0
+  local binary_files_skipped=0
+  local oversized_files_skipped=0
   local sensitive_files_skipped=0
-  local chunk file_name
-  for chunk in "${DIFF_CHUNKS[@]}"; do
-    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$chunk"; then
-      sensitive_files_skipped=$((sensitive_files_skipped + 1))
+  local additions deletions file_name blob_size
+
+  while IFS=$'\t' read -r -d '' additions deletions file_name; do
+    total_files=$((total_files + 1))
+
+    if is_generated_path "$file_name"; then
+      generated_files_skipped=$((generated_files_skipped + 1))
       continue
     fi
 
-    file_name=$(diff_chunk_file_name "$chunk")
-    if is_generated_path "$file_name"; then
-      generated_chunks+=("$chunk")
-    else
-      safe_chunks+=("$chunk")
+    if [[ "$additions" == "-" || "$deletions" == "-" ]]; then
+      binary_files_skipped=$((binary_files_skipped + 1))
+      continue
     fi
-  done
 
-  local safe_total=$(( ${#safe_chunks[@]} + ${#generated_chunks[@]} ))
-  local generated_files_deprioritized=${#generated_chunks[@]}
-  if [[ "${#safe_chunks[@]}" -eq 0 && "${#generated_chunks[@]}" -gt 0 ]]; then
-    safe_chunks=("${generated_chunks[@]}")
-    generated_files_deprioritized=0
-  fi
+    blob_size=$(git cat-file -s ":${file_name}" 2>/dev/null || printf '0')
+    if [[ "$blob_size" =~ ^[0-9]+$ ]] && [[ "$blob_size" -gt "$FILE_ANALYSIS_MAX_BLOB_BYTES" ]]; then
+      oversized_files_skipped=$((oversized_files_skipped + 1))
+      continue
+    fi
 
-  local analysis_candidate_total=${#safe_chunks[@]}
+    candidate_paths+=("$file_name")
+  done < <(git diff --cached --numstat --no-renames -z || true)
+
+  local analysis_candidate_total=${#candidate_paths[@]}
   if [[ "$analysis_candidate_total" -eq 0 ]]; then
-    if [[ "$sensitive_files_skipped" -gt 0 ]]; then
-      step_info "  ⟩ Skipping ${sensitive_files_skipped} sensitive file(s); no safe files remain for per-file analysis."
-    fi
+    step_info "  ⟩ Skipping per-file analysis: ${generated_files_skipped} generated/ephemeral, ${binary_files_skipped} binary, ${oversized_files_skipped} oversized file(s)."
     return 1
   fi
 
@@ -1568,54 +1750,74 @@ analyze_files_individually() {
   local analysis_indices=()
   mapfile -t analysis_indices < <(build_analysis_indices "$analysis_candidate_total" "$limit")
 
-  dbg "Per-file analysis: total $total_files, safe $safe_total, generated-deprioritized $generated_files_deprioritized, sensitive $sensitive_files_skipped, limit $limit, samples: ${analysis_indices[*]}"
-
   FILE_ANALYSES=""
-  local analysis_total=${#analysis_indices[@]}
-  local analysis_start
-  analysis_start=$(date +%s)
-
   BATCH_ANALYSIS_FILE_NAMES=()
   BATCH_ANALYSIS_DIFF_CHUNKS=()
 
   local selected_index truncated_chunk
   for selected_index in "${analysis_indices[@]}"; do
-    chunk="${safe_chunks[$((selected_index - 1))]}"
+    file_name="${candidate_paths[$((selected_index - 1))]}"
+    truncated_chunk=$(git diff --cached --no-color -U3 -- "$file_name" 2>/dev/null | head -c "$MAX_HUNK_CHARS" || true)
+    [[ -n "$truncated_chunk" ]] || continue
 
-    file_name=$(diff_chunk_file_name "$chunk")
-    truncated_chunk=$(echo "$chunk" | head -c "$MAX_HUNK_CHARS")
+    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$truncated_chunk"; then
+      sensitive_files_skipped=$((sensitive_files_skipped + 1))
+      continue
+    fi
 
     BATCH_ANALYSIS_FILE_NAMES+=("$file_name")
     BATCH_ANALYSIS_DIFF_CHUNKS+=("$truncated_chunk")
   done
 
+  local analysis_total=${#BATCH_ANALYSIS_FILE_NAMES[@]}
+  if [[ "$analysis_total" -eq 0 ]]; then
+    step_info "  ⟩ Skipping per-file analysis: no eligible safe diff excerpts remain."
+    return 1
+  fi
+
+  local analysis_start
+  analysis_start=$(date +%s)
+
+  local batch_size="$FILE_ANALYSIS_BATCH_SIZE"
+  [[ "$batch_size" -gt "$analysis_total" ]] && batch_size="$analysis_total"
+  local batch_total=$(((analysis_total + batch_size - 1) / batch_size))
+
   local batch_output_files=()
   local batch_status_files=()
   local batch_pids=()
   local batch_done=()
+  local batch_starts=()
+  local batch_counts=()
   local analysis_results=()
-  local parallelism="$FILE_ANALYSIS_PARALLELISM"
-  [[ "$parallelism" -gt "$analysis_total" ]] && parallelism="$analysis_total"
+  local parallelism="${RESOLVED_FILE_ANALYSIS_PARALLELISM:-1}"
+  local parallelism_capacity="$parallelism"
+  [[ "$parallelism" -gt "$batch_total" ]] && parallelism="$batch_total"
 
-  if [[ "$sensitive_files_skipped" -gt 0 ]]; then
-    step_info "  ⟩ Skipping ${sensitive_files_skipped} sensitive file(s); analyzing ${analysis_total} safe file(s)."
+  if [[ "$generated_files_skipped" -gt 0 || "$binary_files_skipped" -gt 0 || "$oversized_files_skipped" -gt 0 || "$sensitive_files_skipped" -gt 0 ]]; then
+    step_info "  ⟩ Skipped from per-file analysis: ${generated_files_skipped} generated/ephemeral, ${binary_files_skipped} binary, ${oversized_files_skipped} oversized, ${sensitive_files_skipped} sensitive file(s)."
   fi
-  if [[ "$generated_files_deprioritized" -gt 0 ]]; then
-    step_info "  ⟩ Deprioritizing ${generated_files_deprioritized} generated file(s) for semantic analysis."
-  fi
+  dbg "Per-file analysis: total ${total_files}, eligible ${analysis_candidate_total}, selected ${analysis_total}, batches ${batch_total}, batch size ${batch_size}, parallelism capacity ${parallelism_capacity} (${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}), effective parallelism ${parallelism}"
+
   local status_msg
   status_msg=$(progress_status_text 0 "$analysis_total" "Analyzing files with AI")
-  live_status_start "$status_msg" "Sending ${analysis_total} file(s) to AI (blocking, parallelism ${parallelism})..."
+  live_status_start "$status_msg" "Sending ${analysis_total} file(s) to AI in ${batch_total} batch(es) (batch size ${batch_size}, capacity ${parallelism_capacity}, effective parallelism ${parallelism})..."
 
   local running=0
   local next_job=0
-  local completed=0
+  local completed_batches=0
+  local completed_files=0
   local failed_batches=0
-  local i batch_output batch_status analysis status made_progress job_index
+  local fallback_items=0
+  local i offset result_index batch_start batch_count batch_output batch_status analysis status made_progress job_index
 
-  while [[ "$completed" -lt "$analysis_total" ]]; do
-    while [[ "$next_job" -lt "$analysis_total" && "$running" -lt "$parallelism" ]]; do
+  while [[ "$completed_batches" -lt "$batch_total" ]]; do
+    while [[ "$next_job" -lt "$batch_total" && "$running" -lt "$parallelism" ]]; do
       job_index="$next_job"
+      batch_start=$((job_index * batch_size))
+      batch_count="$batch_size"
+      if [[ $((batch_start + batch_count)) -gt "$analysis_total" ]]; then
+        batch_count=$((analysis_total - batch_start))
+      fi
       batch_output=$(mktemp)
       batch_status=$(mktemp)
       rm -f "$batch_status"
@@ -1623,9 +1825,11 @@ analyze_files_individually() {
       batch_output_files[job_index]="$batch_output"
       batch_status_files[job_index]="$batch_status"
       batch_done[job_index]=0
+      batch_starts[job_index]="$batch_start"
+      batch_counts[job_index]="$batch_count"
 
       (
-        if run_file_analysis_batch "$((job_index + 1))" "$job_index" 1 "$batch_output"; then
+        if run_file_analysis_batch "$((job_index + 1))" "$batch_start" "$batch_count" "$batch_output"; then
           printf '0\n' > "$batch_status"
         else
           printf '1\n' > "$batch_status"
@@ -1647,27 +1851,34 @@ analyze_files_individually() {
 
       batch_done[i]=1
       running=$((running - 1))
-      completed=$((completed + 1))
+      completed_batches=$((completed_batches + 1))
       made_progress=1
+      batch_start="${batch_starts[$i]}"
+      batch_count="${batch_counts[$i]}"
+      completed_files=$((completed_files + batch_count))
 
-      file_name="${BATCH_ANALYSIS_FILE_NAMES[$i]}"
-      analysis=$(extract_file_analysis_from_batch "${batch_output_files[$i]}" "$file_name")
-      analysis=$(echo "$analysis" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      for ((offset=0; offset<batch_count; offset++)); do
+        result_index=$((batch_start + offset))
+        file_name="${BATCH_ANALYSIS_FILE_NAMES[$result_index]}"
+        analysis=$(extract_file_analysis_from_batch "${batch_output_files[$i]}" "$file_name")
+        analysis=$(echo "$analysis" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 
-      if [[ -z "$analysis" ]]; then
-        analysis="Changes in $file_name"
-      fi
+        if [[ -z "$analysis" ]]; then
+          analysis="Changes in $file_name"
+          fallback_items=$((fallback_items + 1))
+        fi
 
-      analysis_results[i]="$analysis"
+        analysis_results[result_index]="$analysis"
+        live_status_print_above "  ${GREEN}→${NC} ${BOLD}${file_name}${NC}: ${DIM}${analysis}${NC}"
+      done
       [[ "$status" -ne 0 ]] && failed_batches=$((failed_batches + 1))
 
-      status_msg=$(progress_status_text "$completed" "$analysis_total" "Analyzing files with AI" "$(elapsed_since "$analysis_start")")
+      status_msg=$(progress_status_text "$completed_files" "$analysis_total" "Analyzing files with AI" "$(elapsed_since "$analysis_start")")
       live_status_update "$status_msg"
-      live_status_print_above "  ${GREEN}→${NC} ${BOLD}${file_name}${NC}: ${DIM}${analysis}${NC}"
     done
 
-    [[ "$completed" -ge "$analysis_total" ]] && break
-    status_msg=$(progress_status_text "$completed" "$analysis_total" "Analyzing files with AI" "$(elapsed_since "$analysis_start")")
+    [[ "$completed_batches" -ge "$batch_total" ]] && break
+    status_msg=$(progress_status_text "$completed_files" "$analysis_total" "Analyzing files with AI" "$(elapsed_since "$analysis_start")")
     live_status_update "$status_msg"
     [[ "$made_progress" -eq 1 ]] || sleep 0.2
   done
@@ -1685,18 +1896,10 @@ analyze_files_individually() {
 
   local analysis_elapsed
   analysis_elapsed=$(elapsed_since "$analysis_start")
-  if [[ "$failed_batches" -gt 0 ]]; then
-    if [[ "$sensitive_files_skipped" -gt 0 ]]; then
-      step_ok "Analyzed ${analysis_total} of ${safe_total} safe file(s) with ${failed_batches} fallback(s); skipped ${sensitive_files_skipped} sensitive file(s) (${analysis_elapsed})"
-    else
-      step_ok "Analyzed ${analysis_total} of ${total_files} file(s) with ${failed_batches} fallback(s) (${analysis_elapsed})"
-    fi
+  if [[ "$fallback_items" -gt 0 ]]; then
+    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${batch_total} batch(es) with ${fallback_items} local fallback(s) across ${failed_batches} failed batch(es) (${analysis_elapsed})"
   else
-    if [[ "$sensitive_files_skipped" -gt 0 ]]; then
-      step_ok "Analyzed ${analysis_total} of ${safe_total} safe file(s); skipped ${sensitive_files_skipped} sensitive file(s) (${analysis_elapsed})"
-    else
-      step_ok "Analyzed ${analysis_total} of ${total_files} file(s) (${analysis_elapsed})"
-    fi
+    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${batch_total} batch(es) (${analysis_elapsed})"
   fi
 }
 
@@ -2723,6 +2926,7 @@ main() {
   acquire_lock
   trap 'live_status_stop; spinner_stop; restore_cursor; cleanup_dry_run_index; release_lock; rm -f "${TOKEN_LOG_FILE:-}"' EXIT
   setup_dry_run_index
+  resolve_runtime_parallelism
   debug_runtime_configuration
 
   # Calculate total steps from the configuration.
