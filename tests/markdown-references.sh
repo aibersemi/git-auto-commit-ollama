@@ -362,7 +362,8 @@ for detection in override hint service environment fallback invalid_service; do
     OLLAMA_BASE_URL='http://127.0.0.1:11434'
     TEST_SERVICE_PARALLELISM=''
     # Called indirectly by resolve_runtime_parallelism in the loaded library.
-    # shellcheck disable=SC2329
+    # ShellCheck versions report this indirect call as unreachable or unused.
+    # shellcheck disable=SC2317,SC2329
     read_ollama_service_env() {
       [[ -n "$TEST_SERVICE_PARALLELISM" ]] || return 1
       printf '%s' "$TEST_SERVICE_PARALLELISM"
