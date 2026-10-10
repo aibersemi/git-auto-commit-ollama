@@ -21,6 +21,7 @@ endpoint, which may run locally or on another network host.
 
 - [Features](#features)
 - [How It Works](#how-it-works)
+- [Commit References](#commit-references)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -49,6 +50,8 @@ endpoint, which may run locally or on another network host.
   built-in plus optional `gitleaks` secret scans.
 - Prompt prioritization for capabilities, APIs, data integrity, security, and
   user flows; generated artifacts are treated as supporting context.
+- Markdown-first commit references using local staged-diff heuristics, with
+  non-Markdown fallback when documentation lacks enough new text.
 - A built-in secret guard for added staged lines, supplemented by `gitleaks`
   when the command is available, unless `--force` is explicitly selected.
 - Safe mode that withholds sensitive diff details from prompts unless the user
@@ -79,7 +82,7 @@ flowchart TD
   H --> K{--force?}
   I --> K
   J --> K
-  K -->|yes| L[Build context and run per-file analysis]
+  K -->|yes| L[Select commit references, build context, and run per-file analysis]
   K -->|no| M[Scan for secrets]
   M --> L
   L --> N[Generate and validate the commit message]
@@ -124,6 +127,54 @@ If dependency, test, documentation, generated artifact, or configuration
 changes only support a more important feature or fix, use `feat` or `fix` for
 the primary change instead of the supporting type.
 
+### Commit References
+
+Informative staged `.md` changes are the primary reference for explaining
+completed work. Extension matching is case-insensitive. The tool reads the
+index, including its temporary dry-run index; with `--no-stage`, unstaged
+documentation does not affect the reference.
+
+The local heuristic evaluates the bounded diff excerpt that can be sent to
+Ollama. It ignores Git headers, empty lines, Markdown headings and formatting
+markers, and lines containing only a URL or link. After normalizing case,
+punctuation, and whitespace, an excerpt qualifies when it has at least 12
+added words and 8 net-new word occurrences. Net-new occurrences are counted
+per word after subtracting occurrences on removed lines. Qualified Markdown
+is ordered by net-new count, then by path. This order measures changed text,
+not semantic importance: generation reads all selected references together
+and uses the completed functional behavior they describe as the theme when
+source changes are staged. Contribution guidelines, security policy edits,
+and test instructions supply supporting context.
+
+If no eligible Markdown qualifies, non-Markdown changes supply the reference.
+When only eligible Markdown remains, its diffs are still used, including
+short edits, deletions, or renames. Fallback excerpts are ordered by changed
+line count, then by path. With no eligible excerpts, generation uses Git
+metadata. Generated or ephemeral paths, binary changes, oversized staged
+blobs, and detected sensitive files are excluded from reference excerpts.
+
+The selected references supply diff terms, bounded primary excerpts, and
+per-file analysis candidates. `--no-file-analysis` skips the analysis requests
+but preserves Markdown priority through direct excerpts. Safe primary
+excerpts also remain available when analysis fails or provides a generic
+summary. Safe mode still withholds primary diffs and permits only eligible
+safe per-file summaries.
+
+All staged changes remain included in metadata and classification, subject to
+the existing display limits. Markdown describing a source fix can therefore
+lead to `fix`, while documentation-only work uses `docs`. Secret scanning
+still covers all staged changes, independent of reference selection.
+When functional source changes are present, quality validation requests a
+retry if the subject or first bullet leads with documentation updates instead
+of the implemented behavior described by Markdown.
+
+This heuristic measures text changes, not semantic relevance or implementation
+correctness. A long plan can qualify, and a concise useful summary can fail.
+Prompts treat repository contents, including `AGENTS.md`, as change data rather
+than instructions and ask the model to describe completed work only. Review
+the generated message, particularly when documentation covers only part of
+the staged work. No additional AI request is needed to choose references.
+
 The default limit for the entire message is 65,536 characters and can be
 changed with `MAX_COMMIT_MESSAGE_LENGTH`. The script does not enforce a
 72-character or 120-character subject limit.
@@ -149,6 +200,8 @@ Optional dependencies:
   missing from the server.
 - `gitleaks`: Additional scanner for staged changes.
 - `shellcheck`: Bash linting during development and in CI.
+- `tput`: Terminal dimensions for animated loading rows; when unavailable,
+  dimensions use `COLUMNS`/`LINES` or fall back to 80 columns and 24 rows.
 
 Example runtime and development installation on Ubuntu or Debian:
 
@@ -237,14 +290,14 @@ Current `git-ai.conf` values:
 | `USE_STRUCTURED_OUTPUT` | `0` | Use JSON Schema (`1`) or plain text (`0`). Disabled by default because `gemma4:e4b` does not consistently follow structured output. |
 | `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Maximum length of the entire commit message. |
 | `FILE_ANALYSIS_LIMIT` | `6` | Maximum files selected for per-file analysis; `0` disables those requests. |
-| `FILE_ANALYSIS_BATCH_SIZE` | `6` | Maximum files included in one per-file analysis request. |
-| `FILE_ANALYSIS_PARALLELISM` | `auto` | Maximum concurrent per-file analysis batches. `auto` detects `OLLAMA_NUM_PARALLEL` for a local systemd service and otherwise uses a conservative capacity of `1`. |
+| `FILE_ANALYSIS_BATCH_SIZE` | `6` | Maximum files per analysis request; files are balanced across available Ollama workers. |
+| `FILE_ANALYSIS_PARALLELISM` | `auto` | Maximum concurrent per-file analysis batches. `auto` reads `OLLAMA_NUM_PARALLEL` from a local systemd service, then the local process environment, and uses capacity `1` when neither provides a valid value. |
 | `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `192` | Output-token budget allocated to each file in an analysis batch. |
-| `FILE_ANALYSIS_MAX_BLOB_BYTES` | `1048576` | Maximum staged blob size eligible for per-file AI analysis. |
+| `FILE_ANALYSIS_MAX_BLOB_BYTES` | `1048576` | Maximum staged blob size eligible for commit reference excerpts and per-file AI analysis. |
 | `NON_AI_PARALLELISM` | `auto` | Maximum workers for independent local read-only jobs. `auto` uses the logical CPU capacity available to the process. |
 | `OLLAMA_PARALLELISM_HINT` | empty | Optional positive-integer capacity hint when a remote, containerized, or custom Ollama service cannot be inspected. |
 | `MAX_FILES_LIST` | `20` | Entry limit for file status and Git statistics context. |
-| `TOP_FILES` | `4` | Number of largest files selected for hunk summaries. |
+| `TOP_FILES` | `4` | Maximum primary reference files included in hunk summaries. |
 | `MAX_HUNK_CHARS` | `1000` | Per-file hunk character limit. |
 | `MAX_TOTAL_HUNKS_CHARS` | `3500` | Total hunk character limit in the primary prompt. |
 
@@ -262,9 +315,15 @@ and commit message generation.
 Parallelism is a capacity, not a request target. Local non-AI jobs use at most
 `NON_AI_PARALLELISM` workers and never overlap staging, the secret-policy
 decision, commit creation, or pushing. Per-file AI analysis uses at most the
-resolved Ollama capacity and the number of batches that actually exist. The
-default six-file batch therefore remains one request even when
-`OLLAMA_NUM_PARALLEL` is greater than one. Ollama does not expose that setting
+resolved Ollama capacity and the number of selected files. Selected files are
+split into balanced batches, creating enough requests to use available workers
+while keeping each request within `FILE_ANALYSIS_BATCH_SIZE`. With capacity
+`4`, three files use three one-file requests in parallel; six files use four
+requests containing two, two, one, and one files. With capacity `1`, up to six
+files still use one request by default. Terminal output shows the detected
+capacity and its source, active workers, and a separate animated row for each
+running batch. Completed results retain reference order in the final prompt.
+Ollama does not expose that setting
 through its public API, so remote endpoints should set
 `OLLAMA_PARALLELISM_HINT` or use a numeric `FILE_ANALYSIS_PARALLELISM`.
 
@@ -387,10 +446,10 @@ Available protections:
 - Safe mode removes detailed diffs from the primary prompt and skips sensitive
   files during per-file analysis. Git metadata and diffs from other files not
   detected as sensitive may still be sent.
-- Per-file AI analysis excludes generated and ephemeral paths, binary diffs,
-  and staged blobs larger than `FILE_ANALYSIS_MAX_BLOB_BYTES`. The primary
-  prompt may still contain bounded Git metadata and hunk excerpts for the
-  overall change.
+- Commit reference excerpts and per-file AI analysis exclude generated and
+  ephemeral paths, binary diffs, and staged blobs larger than
+  `FILE_ANALYSIS_MAX_BLOB_BYTES`. The primary prompt still contains bounded
+  Git metadata for the overall change.
 - `--allow-secret-commit` does not disable safe mode. Use `--force-diff`
   separately only when sending a sensitive diff is intentional.
 - `--force-diff` does not allow a commit blocked by the secret guard.
@@ -421,7 +480,7 @@ detailed scope.
 | No remote exists | The repository has no remote. | The script skips the push; add a remote when pushing is required. |
 | `git-ai` disappeared after moving the checkout | Installed symlinks still point to the old clone location. | Restore the checkout to its original location or reinstall from the new location. |
 | Changes to `git-ai.conf` are ignored | The `git-ai` command and configuration come from different installations or checkouts. | Run `git-ai --help` to see the active configuration path, then inspect the symlink with `readlink -f "$(command -v git-ai)"`. |
-| Output shows `Retry` | The model response could not be validated as a concrete, correctly formatted commit message. | Run with `--debug` to inspect the validation reason. JSON Schema failures fall back directly to plain text and do not count as a separate retry. Retry delays increase linearly by one second and are capped at 10 seconds. |
+| Output shows `Retry` | The Ollama request failed, the message format was invalid, or the message failed quality validation, such as leading with documentation while source changes are staged. | Read the preceding `AI response rejected` or `AI response unavailable` message; use `--debug` for detailed format and HTTP diagnostics. Quality retries send the rejected message and correction reason back to the model. JSON Schema failures fall back directly to plain text and do not count as a separate retry. Retry delays increase linearly by one second and are capped at 10 seconds. |
 
 Use `git-ai --debug` to inspect the active configuration and endpoint, relevant
 Git and curl commands, command output, the full staged diff, complete prompts
@@ -441,10 +500,16 @@ Basic validation:
 bash -n git-ai.sh
 shellcheck git-ai.sh
 ./git-ai.sh --help >/tmp/git-ai-help.txt
+bash -n tests/markdown-references.sh
+shellcheck tests/markdown-references.sh
+bash tests/markdown-references.sh
 ```
 
-The [CI workflow](.github/workflows/ci.yml) runs the same three checks on pushes
-to `main`, pull requests, and manual `workflow_dispatch` runs.
+The [CI workflow](.github/workflows/ci.yml) runs these checks on pushes to
+`main`, pull requests, and manual `workflow_dispatch` runs. The Markdown
+reference regression suite uses a temporary local clone, isolated indexes,
+and mocked Ollama responses. It creates no new commits, performs no pushes,
+and requires no active Ollama endpoint.
 
 For a runtime smoke test, use a temporary repository and dry-run. This command
 still requires an active Ollama endpoint and an available model because
@@ -461,9 +526,20 @@ printf 'hello\n' > sample.txt
 "$project_dir/git-ai.sh" --dry-run --no-push --no-banner --no-pull
 ```
 
+For a Markdown-first runtime check, add a temporary `.md` file describing a
+completed change in at least 12 words alongside a changed source file. Run
+the same dry-run command and confirm that it reports informative staged
+Markdown as the reference and produces a message about the described work.
+Use `--debug` to inspect the prompt if necessary, keeping logs private and
+sanitized. Remove the temporary document afterward. Also verify non-Markdown
+fallback with absent or cosmetic Markdown and compare the original index and
+refs before and after each dry-run. Never create real commits or pushes for
+these checks.
+
 For per-file analysis performance changes, repeat the smoke test with six
-small text files. Confirm that the status reports one batch with the default
-configuration and measure the `Analyzed ...` and `Commit message received ...`
+small text files. Confirm that balanced batches use the detected worker
+capacity without exceeding the configured batch size, and measure the
+`Analyzed ...` and `Commit message received ...`
 durations with a warm model. Also test generated paths, binary files, and a
 text blob larger than `FILE_ANALYSIS_MAX_BLOB_BYTES` to confirm they are
 excluded from per-file requests.
@@ -472,6 +548,9 @@ For adaptive parallelism changes, also test numeric and `auto` values, a local
 systemd Ollama service, a remote endpoint with `OLLAMA_PARALLELISM_HINT`, and
 the conservative fallback. Confirm that result order is deterministic and
 that effective concurrency never exceeds the number of ready jobs or batches.
+The regression suite measures overlapping requests and checks loading-row
+refresh, completed-worker removal, and cursor restoration. Also run a dry-run
+in a terminal to inspect the animations and result output.
 
 Do not run commit or push smoke tests in a primary working repository. See the
 [Contributing Guide](.github/CONTRIBUTING.md) for the full workflow.

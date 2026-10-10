@@ -91,6 +91,17 @@ printf 'hello\n' > sample.txt
 The smoke test requires an active Ollama endpoint and an available model.
 Report it as not run when that environment is unavailable.
 
+For changes to commit reference selection or prompts, run the Markdown
+reference regression suite described in
+[`README.md#development`](../README.md#development). Keep fixtures isolated,
+use mock responses for deterministic assertions, and verify both selected
+reference content and preservation of the original index and refs. Include
+fallback, bounded excerpts, safe mode, analysis failures, and both CLI output
+modes. Cover visible quality-rejection reasons and corrective retries for
+plain text, structured JSON, and plain text returned to a structured request.
+Follow the README runtime check when Ollama is available; do not use
+real commits or pushes for validation.
+
 If a change affects secret detection, test at least:
 
 - A placeholder secret that should be allowed.
@@ -114,7 +125,9 @@ requests without changing dry-run Git state.
 If a change affects adaptive parallelism, test `auto` and numeric overrides for
 both local and AI jobs. Cover local systemd detection, a remote Ollama capacity
 hint, conservative fallback, deterministic result ordering, and worker caps
-smaller and larger than the number of ready jobs. Both secret scanners must
+smaller and larger than the number of ready jobs. Measure overlapping analysis
+requests and verify balanced batch limits and loading rows using the checks in
+[`README.md#development`](../README.md#development). Both secret scanners must
 finish before the secret-policy decision.
 
 ## Issue Guidelines

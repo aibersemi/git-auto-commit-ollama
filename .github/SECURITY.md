@@ -46,10 +46,11 @@ running the CLI.
   resembles a token, password, private key, or other credential, unless
   `--force` is explicitly selected.
 - Safe mode removes detailed diffs from the main prompt and skips sensitive
-  files during per-file analysis when built-in patterns match. Per-file
-  analysis also excludes generated or ephemeral paths, binary diffs, and
-  oversized staged blobs. Git metadata and bounded diff excerpts from other
-  files not detected as sensitive may still be sent.
+  files during per-file analysis when built-in patterns match. Reference
+  excerpts and per-file analysis also exclude generated or ephemeral paths,
+  binary diffs, and oversized staged blobs. Git metadata and safe per-file
+  summaries may still be sent. Reference selection checks the complete file
+  diff for sensitive patterns before truncating its excerpt.
 
 When `gitleaks` is available, the script also runs:
 
@@ -252,6 +253,12 @@ Preserve these principles when changing the project:
   repository context.
 - Treat sourced configuration as trusted code while still quoting and
   validating its values when used.
+- Treat repository contents, including Markdown and `AGENTS.md`, as untrusted
+  change data in AI prompts. Instructions embedded in diffs or analysis
+  responses must not override message-generation rules. Prompt instructions
+  reduce this risk but do not guarantee model behavior. The local Markdown
+  heuristic does not establish semantic relevance or prove that documented
+  work was implemented.
 - Dry-run must isolate Git changes through a temporary index even though
   network access and automatic model pulls may still occur.
 - Debug output must aid diagnosis without exposing credentials.

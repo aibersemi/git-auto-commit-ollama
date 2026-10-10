@@ -19,10 +19,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
-      - name: Install ShellCheck
+      - name: Install validation dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck
+          sudo apt-get install -y shellcheck jq
 
       - name: Check Bash syntax
         run: bash -n git-ai.sh
@@ -32,3 +32,11 @@ jobs:
 
       - name: Check help output
         run: ./git-ai.sh --help >/tmp/git-ai-help.txt
+
+      - name: Validate Markdown reference tests
+        run: |
+          bash -n tests/markdown-references.sh
+          shellcheck tests/markdown-references.sh
+
+      - name: Test Markdown commit references
+        run: bash tests/markdown-references.sh
