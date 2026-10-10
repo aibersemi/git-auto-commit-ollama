@@ -97,7 +97,12 @@ reference regression suite described in
 use mock responses for deterministic assertions, and verify both selected
 reference content and preservation of the original index and refs. Include
 fallback, bounded excerpts, safe mode, analysis failures, and both CLI output
-modes. Cover visible quality-rejection reasons and corrective retries for
+modes. Include documentation-only security/API paths, tests-only, CI-only,
+templates/stylesheets, and combined runtime/Markdown scenarios representing
+recovery flows and commit generation. Verify full-diff scoring, ranked late
+hunks, Unicode bounds, reserved runtime context, and rejection of supporting
+themes in the subject or first bullet. Cover visible quality-rejection reasons
+and corrective retries for
 plain text, structured JSON, and plain text returned to a structured request.
 Follow the README runtime check when Ollama is available; do not use
 real commits or pushes for validation.

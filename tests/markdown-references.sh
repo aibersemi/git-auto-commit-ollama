@@ -61,6 +61,15 @@ stage_text() {
 }
 stage_source() { stage_text src/timeout.sh 'printf "%s\n" SOURCE_ONLY_MARKER'; }
 context() { collect_context "${1:-0}" 2> "$test_root/context.log"; }
+accept_message() {
+  local issue
+  if issue=$(commit_message_quality_issue "$1"); then fail "Unexpected quality rejection: $issue"; fi
+}
+reject_message() {
+  local issue
+  if ! issue=$(commit_message_quality_issue "$1"); then fail 'Supporting theme or incorrect type was accepted'; fi
+  assert_contains "$issue" "$2" 'Quality correction reason'
+}
 
 # Match the real batch response interface, including incomplete and failed results.
 ollama_chat() {
@@ -108,13 +117,13 @@ start_case
 stage_source
 stage_text notes.MD "$description STAGED_DESCRIPTION"
 context
-assert_equal "$REFERENCE_MODE" markdown 'Markdown takes priority'
-assert_equal "${REFERENCE_PATHS[*]}" notes.MD 'Uppercase extension'
+assert_equal "$REFERENCE_MODE" mixed 'Runtime and Markdown share priority'
+assert_equal "${REFERENCE_PATHS[*]}" 'src/timeout.sh notes.MD' 'Runtime first and uppercase Markdown extension'
 assert_equal "$STAGED_FILE_COUNT" 2 'Full staged file count'
 assert_contains "$NAME_STATUS" src/timeout.sh 'Source metadata'
 assert_contains "$TOP_HUNKS" STAGED_DESCRIPTION 'Markdown excerpt'
-assert_absent "$TOP_HUNKS" SOURCE_ONLY_MARKER 'Source excluded from primary diff'
-assert_absent "$DIFF_TERMS" SOURCE_ONLY_MARKER 'Source terms excluded'
+assert_contains "$TOP_HUNKS" SOURCE_ONLY_MARKER 'Runtime source retained in primary diff'
+assert_contains "$DIFF_TERMS" SOURCE_ONLY_MARKER 'Runtime source terms retained'
 quality_issue=$(commit_message_quality_issue 'fix: improve timeout handling') && fail "Unexpected quality rejection: $quality_issue"
 if ! quality_issue=$(commit_message_quality_issue 'feat: update documentation about timeout handling'); then
   fail 'Documentation-led functional subject was accepted'
@@ -132,8 +141,113 @@ stage_text notes.md "$description"
 context
 assert_equal "$HAS_API_CHANGE" 1 'API metadata retained'
 quality_issue=$(commit_message_quality_issue 'fix: preserve pending changes') && fail "Markdown vocabulary rejected for an API change: $quality_issue"
-assert_absent "$TOP_HUNKS" API_ONLY_MARKER 'API source excerpt excluded'
+assert_contains "$TOP_HUNKS" API_ONLY_MARKER 'API runtime evidence retained'
 pass 'Concrete Markdown vocabulary satisfies API theme validation'
+
+start_case
+stage_text docs/security.md 'Audit legacy JNE fields without exposing values and rotate provider credentials after validating the runtime secret store.'
+stage_text docs/api.md 'Clarify which unavailable routes return HTTP 404 without redirects and how the routing suite verifies POST requests.'
+stage_text docs/runtime.md 'Remove obsolete virtual environment and proxy cache references from the current operational guidance.'
+context
+assert_equal "$HAS_FUNCTIONAL_CHANGE" 0 'Saqqina documentation has no runtime change'
+assert_equal "$HAS_SECURITY_CHANGE" 0 'Security documentation is supporting work'
+assert_equal "$HAS_API_CHANGE" 0 'API documentation is supporting work'
+assert_equal "$PRIMARY_CHANGE_KIND" documentation 'Saqqina primary category'
+accept_message $'docs: clarify JNE credential cleanup guidance\n\n- Update documentation for credential audits and rotation.'
+reject_message 'feat: implement JNE credential cleanup' 'docs commit type'
+reject_message 'docs: Update documentation across multiple guides' 'too generic'
+reject_message 'docs: Update various technical documentation guides' 'too generic'
+pass 'Saqqina documentation is accepted without a false functional classification'
+
+for specification in 'test:tests/security/test_recovery.py' 'test:test_auth.py' 'ci:.github/workflows/test.yml' 'runtime:app/templates/recovery.html' 'runtime:app/static/css/recovery.css' 'runtime:git-ai.conf'; do
+  start_case
+  expected_kind=${specification%%:*}
+  fixture_path=${specification#*:}
+  stage_text "$fixture_path" 'RECOVERY_STATUS = "ready"'
+  context
+  assert_equal "$PRIMARY_CHANGE_KIND" "$expected_kind" "$fixture_path primary category"
+  if [[ "$expected_kind" == runtime ]]; then
+    assert_equal "$HAS_FUNCTIONAL_CHANGE" 1 "$fixture_path runtime classification"
+  else
+    assert_equal "$HAS_FUNCTIONAL_CHANGE" 0 "$fixture_path supporting classification"
+    accept_message "$expected_kind: improve recovery checks"
+    assert_equal "$(build_fallback_type)" "$expected_kind" 'Supporting fallback type'
+    reject_message 'feat: improve recovery checks' "$expected_kind commit type"
+  fi
+  pass "Category precedence: $fixture_path"
+done
+
+start_case
+stage_text app/anggota/recovery_views.py $'def recovery_feedback(request):\n    return redirect_to_get(request, status=303)'
+stage_text app/static/js/member-recovery.js 'window.addEventListener("beforeunload", confirm_recovery_navigation);'
+stage_text app/templates/recovery.html '<form data-recovery-guard="true"></form>'
+stage_text app/anggota/tests/test_recovery.py "$(printf 'assert recovery_feedback_is_safe\n%.0s' {1..80})"
+stage_text docs/security.md "$(printf 'Context describing unrelated deployment details. %.0s' {1..100})"$'\n\n''Native recovery feedback redirects POST requests to GET without retaining submitted OTP or passwords, while active forms confirm navigation away.'
+context
+assert_equal "$REFERENCE_MODE" mixed 'LDTQN source and long Markdown'
+assert_equal "${REFERENCE_PATHS[0]}" app/anggota/recovery_views.py 'Runtime before the larger test file'
+assert_equal "${REFERENCE_PATHS[1]}" docs/security.md 'Markdown receives the second reference slot'
+assert_contains "$TOP_HUNKS" redirect_to_get 'Native recovery behavior in primary context'
+assert_contains "$TOP_HUNKS" 'Native recovery feedback' 'Long Markdown changed line remains visible'
+reject_message $'fix: preserve account recovery across refreshes\n\n- Update test case to follow POST request responses.' 'first bullet'
+accept_message $'fix: preserve account recovery across refreshes\n\n- Redirect native recovery feedback to GET without retaining submitted values.'
+TOP_FILES=1
+assert_contains "$(collect_top_hunks)" redirect_to_get 'One reference slot selects runtime'
+assert_absent "$(collect_top_hunks)" '### File: docs/security.md' 'One slot does not displace source'
+FILE_ANALYSIS_LIMIT=1
+analyze_files_individually 2> "$test_root/analysis.log"
+assert_equal "${BATCH_ANALYSIS_FILE_NAMES[*]}" app/anggota/recovery_views.py 'One analysis request selects runtime'
+pass 'LDTQN runtime evidence survives long Markdown and supporting tests'
+
+start_case
+stage_text git-ai.sh $'select_commit_references() { rank_complete_diff; }\nanalyze_files_individually() { balance_worker_batches; }'
+stage_text README.md "$(git show HEAD:README.md)"$'\n\n''Commit generation combines runtime source and informative Markdown, ranks complete safe diffs, and balances analysis requests across available workers.'
+stage_text .github/CONTRIBUTING.md "$(git show HEAD:.github/CONTRIBUTING.md)"$'\n\n''Require isolated regression tests before changing commit selection and preserve the original index and refs during all mocked CLI checks.'
+stage_text .github/SECURITY.md "$(git show HEAD:.github/SECURITY.md)"$'\n\n''Reference selection checks complete diffs for sensitive patterns before sending bounded safe hunks or summaries to the configured model.'
+stage_text .github/workflows/ci.yml 'run: bash tests/markdown-references.sh'
+context
+assert_equal "$REFERENCE_MODE" mixed 'Utility source and documentation'
+assert_equal "${REFERENCE_PATHS[0]}" git-ai.sh 'Utility implementation takes priority'
+assert_contains "$TOP_HUNKS" balance_worker_batches 'Batch behavior in primary context'
+reject_message $'feat: Update contribution and security guidelines for reference handling\n\n- Require running a Markdown reference regression suite.' 'implemented capability'
+reject_message $'fix: combine runtime and Markdown references\n\n- Require running a Markdown reference regression suite.' 'first bullet'
+reject_message $'fix: combine runtime and Markdown references\n\n- Update CI checks for regression tests.' 'first bullet'
+accept_message $'fix: combine runtime and Markdown references\n\n- Rank complete safe diffs and balance worker batches.'
+pass 'Utility guidelines cannot replace runtime behavior in the head or first bullet'
+
+start_case
+stage_text notes.md "$(printf 'Filler context line.\n%.0s' {1..100})"
+stage_text src/timeout.sh 'printf "old behavior"'
+# Compare two staged versions without creating a commit or changing refs.
+fixture_tree=$(git write-tree)
+stage_text notes.md "$(printf 'Filler context line.\n%.0s' {1..100})"$'\n''Late recovery feedback now redirects native POST requests to GET without repeating OTP validation or retaining sensitive form fields.'
+complete_late_diff=$(git diff --cached "$fixture_tree" --no-color -U3 -- notes.md)
+late_excerpt=$(build_reference_excerpt "$complete_late_diff" markdown 180)
+assert_contains "$late_excerpt" 'Late recovery feedback' 'Important prose after long unchanged context'
+assert_absent "$late_excerpt" $'\n Filler context line.' 'Unchanged context lines removed'
+unicode_diff=$'@@ -1 +1 @@\n-old\n+🕌 café naïve 状態を保持する。 Pemulihan akun aman.'
+unicode_excerpt=$(build_reference_excerpt "$unicode_diff" markdown 55)
+[[ "${#unicode_excerpt}" -le 55 ]] || fail 'Unicode excerpt exceeds its character budget'
+assert_contains "$unicode_excerpt" '🕌' 'Unicode character preserved'
+printf '%s' "$unicode_excerpt" | jq -Res 'contains("\ufffd") | not' >/dev/null
+pass 'Late hunks and Unicode are bounded without wasting context or breaking encoding'
+
+old_paragraph="$(printf 'Existing runtime details. %.0s' {1..100})"'LEGACY_CACHE_REFERENCE remains here.'
+new_paragraph="$(printf 'Existing runtime details. %.0s' {1..100})"'CURRENT_CACHE_GUIDANCE belongs here.'
+paragraph_diff=$'@@ -1 +1 @@\n-'"$old_paragraph"$'\n+'"$new_paragraph"
+paragraph_excerpt=$(build_reference_excerpt "$paragraph_diff" markdown 300)
+assert_contains "$paragraph_excerpt" LEGACY_CACHE_REFERENCE 'Removed prose after a long common prefix'
+assert_contains "$paragraph_excerpt" CURRENT_CACHE_GUIDANCE 'Added prose after a long common prefix'
+boundary_diff=$'@@ -1 +1 @@\n-Cloudflare. Caddy uses caching. Purge affected URLs.\n+Cloudflare. Purge affected URLs.'
+boundary_excerpt=$(build_reference_excerpt "$boundary_diff" markdown 300)
+assert_contains "$boundary_excerpt" Cloudflare 'Compacted prose retains complete boundary words'
+source_diff=$'@@ -1 +1,40 @@\n'
+for number in {1..40}; do source_diff+="+runtime_line_${number}"$'\n'; done
+source_excerpt=$(build_reference_excerpt "$source_diff" source 200)
+assert_contains "$source_excerpt" runtime_line_1 'Beginning of a long source hunk'
+assert_contains "$source_excerpt" runtime_line_27 'Middle of a long source hunk'
+assert_contains "$source_excerpt" runtime_line_40 'End of a long source hunk'
+pass 'Compacted paragraphs expose changed text and long source hunks retain representative evidence'
 
 for kind in absent short heading setext_heading link url; do
   start_case
@@ -176,8 +290,8 @@ stage_text Renamed.md "$content"
 git update-index --force-remove -- README.md
 stage_source
 context
-assert_equal "$REFERENCE_MODE" markdown 'Modified rename supplies new prose'
-assert_equal "${REFERENCE_PATHS[0]}" Renamed.md 'Rename destination'
+assert_equal "$REFERENCE_MODE" mixed 'Modified rename supplies corroborating prose'
+assert_equal "${REFERENCE_PATHS[1]}" Renamed.md 'Rename destination after runtime reference'
 pass 'Modified Markdown rename preserves added-text evidence'
 
 start_case
@@ -213,7 +327,7 @@ for word_count in 11 12; do
   for ((word=0; word<word_count; word++)); do content+='word '; done
   stage_text notes.md "$content"
   context
-  if [[ "$word_count" -eq 12 ]]; then expected_mode=markdown; else expected_mode=source; fi
+  if [[ "$word_count" -eq 12 ]]; then expected_mode=mixed; else expected_mode=source; fi
   assert_equal "$REFERENCE_MODE" "$expected_mode" 'Added-word threshold'
 done
 assert_equal "$(printf '%s\n' '-one two three four' '+one two three four five six seven eight nine ten eleven twelve' | markdown_reference_score)" 8 'Eight net-new words qualify'
@@ -333,9 +447,9 @@ stage_source
 stage_text notes.md "$description"
 MAX_HUNK_CHARS=90
 context
-assert_equal "$REFERENCE_MODE" source 'Truncated prose cannot qualify'
-assert_equal "${#REFERENCE_DIFFS[0]}" 90 'Per-file excerpt bound'
-pass 'Heuristic evaluates the bounded excerpt, not unseen text'
+assert_equal "$REFERENCE_MODE" mixed 'Complete prose qualifies before truncation'
+[[ "${#REFERENCE_DIFFS[1]}" -le 90 ]] || fail 'Per-file excerpt bound exceeded'
+pass 'Full-diff scoring is independent of bounded excerpts'
 
 start_case
 stage_text notes.md "$description"
@@ -367,6 +481,7 @@ start_case
 stage_text notes.md "$description"
 stage_text unsafe.sh "$fake_key_marker"
 context 1
+assert_contains "$(cat "$test_root/context.log")" 'no eligible safe source excerpts' 'Limited runtime evidence diagnostic'
 assert_equal "$TOP_HUNKS" '' 'Safe mode primary diff omission'
 assert_equal "$DIFF_TERMS" '' 'Safe mode diff term omission'
 analyze_files_individually 2> "$test_root/analysis.log"

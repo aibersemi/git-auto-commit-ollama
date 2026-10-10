@@ -50,8 +50,8 @@ endpoint, which may run locally or on another network host.
   built-in plus optional `gitleaks` secret scans.
 - Prompt prioritization for capabilities, APIs, data integrity, security, and
   user flows; generated artifacts are treated as supporting context.
-- Markdown-first commit references using local staged-diff heuristics, with
-  non-Markdown fallback when documentation lacks enough new text.
+- Combined runtime and informative Markdown references, with full-diff
+  ranking and bounded excerpts of the most informative changed hunks.
 - A built-in secret guard for added staged lines, supplemented by `gitleaks`
   when the command is available, unless `--force` is explicitly selected.
 - Safe mode that withholds sensitive diff details from prompts unless the user
@@ -129,51 +129,63 @@ the primary change instead of the supporting type.
 
 ### Commit References
 
-Informative staged `.md` changes are the primary reference for explaining
-completed work. Extension matching is case-insensitive. The tool reads the
-index, including its temporary dry-run index; with `--no-stage`, unstaged
-documentation does not affect the reference.
+Runtime source establishes implemented behavior, corroborated by informative
+staged `.md` changes. The tool reads the index, including its temporary
+dry-run index; `--no-stage` ignores unstaged changes. Extension matching is
+case-insensitive. Documentation, tests, CI, and generated artifacts are
+classified before runtime path keywords: `docs/security.md` and recovery
+tests do not imply a functional security change. Templates, stylesheets,
+source code, and runtime configuration can be primary runtime changes.
 
-The local heuristic evaluates the bounded diff excerpt that can be sent to
-Ollama. It ignores Git headers, empty lines, Markdown headings and formatting
-markers, and lines containing only a URL or link. After normalizing case,
-punctuation, and whitespace, an excerpt qualifies when it has at least 12
-added words and 8 net-new word occurrences. Net-new occurrences are counted
-per word after subtracting occurrences on removed lines. Qualified Markdown
-is ordered by net-new count, then by path. This order measures changed text,
-not semantic importance: generation reads all selected references together
-and uses the completed functional behavior they describe as the theme when
-source changes are staged. Contribution guidelines, security policy edits,
-and test instructions supply supporting context.
+The Markdown heuristic evaluates the complete eligible diff before excerpt
+truncation. It ignores Git headers, empty lines, Markdown headings and
+formatting markers, and lines containing only a URL or link. After case,
+punctuation, and whitespace normalization, Markdown qualifies with at least
+12 added words and 8 net-new word occurrences. Net-new occurrences subtract
+removed occurrences per word. Qualified Markdown is ordered by net-new
+count; runtime files use changed-line count. Path breaks score ties.
 
-If no eligible Markdown qualifies, non-Markdown changes supply the reference.
-When only eligible Markdown remains, its diffs are still used, including
-short edits, deletions, or renames. Fallback excerpts are ordered by changed
-line count, then by path. With no eligible excerpts, generation uses Git
-metadata. Generated or ephemeral paths, binary changes, oversized staged
-blobs, and detected sensitive files are excluded from reference excerpts.
+When both runtime and informative Markdown are available, the first two
+references are one runtime file and one Markdown file (`mixed` mode).
+Remaining runtime files follow, then remaining informative Markdown, then
+supporting files. `TOP_FILES=1` selects runtime. Per-file analysis follows
+the same order within `FILE_ANALYSIS_LIMIT`. Documentation-only work still
+uses short edits, deletions, and renames when no Markdown qualifies. With
+no eligible excerpts, generation uses Git metadata.
 
-The selected references supply diff terms, bounded primary excerpts, and
-per-file analysis candidates. `--no-file-analysis` skips the analysis requests
-but preserves Markdown priority through direct excerpts. Safe primary
-excerpts also remain available when analysis fails or provides a generic
-summary. Safe mode still withholds primary diffs and permits only eligible
-safe per-file summaries.
+Within each file, complete hunks are ranked by Markdown text changes or
+runtime changed-line count. Up to four hunks are compacted by removing
+unchanged context and placing additions before removals. Long lines and
+excerpts are bounded without splitting Unicode characters. Paired prose
+removes shared prefixes/suffixes with a small context margin; long source
+hunks sample changed lines across their beginning, middle, and end. Primary context
+shares the existing total budget across selected files, including labels,
+so supporting content cannot consume the space reserved for runtime.
 
-All staged changes remain included in metadata and classification, subject to
-the existing display limits. Markdown describing a source fix can therefore
-lead to `fix`, while documentation-only work uses `docs`. Secret scanning
-still covers all staged changes, independent of reference selection.
-When functional source changes are present, quality validation requests a
-retry if the subject or first bullet leads with documentation updates instead
-of the implemented behavior described by Markdown.
+Generated or ephemeral paths, binary diffs, oversized staged blobs, and
+detected sensitive files are excluded. The complete diff is checked for
+sensitive patterns before any ranking or truncation. Safe mode withholds
+primary diffs and permits only eligible safe per-file summaries. If runtime
+changes have no eligible source excerpts, output reports limited context;
+the prompt must not infer unsupported behavior from supporting documents.
+`--no-file-analysis` preserves direct excerpts, which also remain available
+when analysis fails or returns a generic summary.
 
-This heuristic measures text changes, not semantic relevance or implementation
-correctness. A long plan can qualify, and a concise useful summary can fail.
-Prompts treat repository contents, including `AGENTS.md`, as change data rather
-than instructions and ask the model to describe completed work only. Review
-the generated message, particularly when documentation covers only part of
-the staged work. No additional AI request is needed to choose references.
+All staged files remain in classification and metadata, subject to display
+limits. Documentation-only work uses `docs`; tests without runtime changes
+use `test`; CI without runtime changes uses `ci` and takes priority over
+supporting tests. With runtime changes, the head and first bullet must explain
+implemented behavior, with documentation, tests, and CI afterward. Category
+checks and language patterns reject supporting themes and request a
+corrective retry, including contribution/security guidelines or requirements
+to run a regression suite.
+
+Ranking measures changed text, not semantic relevance or implementation
+correctness. Classification and language checks cannot prove the accuracy
+of a generated message. Prompts treat repository contents, including
+`AGENTS.md`, as change data rather than instructions and describe completed
+work only. Review the message against the actual changes. Reference selection
+does not require an additional AI request.
 
 The default limit for the entire message is 65,536 characters and can be
 changed with `MAX_COMMIT_MESSAGE_LENGTH`. The script does not enforce a
@@ -526,10 +538,11 @@ printf 'hello\n' > sample.txt
 "$project_dir/git-ai.sh" --dry-run --no-push --no-banner --no-pull
 ```
 
-For a Markdown-first runtime check, add a temporary `.md` file describing a
+For a combined-reference runtime check, add a temporary `.md` file describing a
 completed change in at least 12 words alongside a changed source file. Run
-the same dry-run command and confirm that it reports informative staged
-Markdown as the reference and produces a message about the described work.
+the same dry-run command and confirm that it reports runtime source and
+informative staged Markdown, includes both in context, and leads the message
+with the implemented behavior.
 Use `--debug` to inspect the prompt if necessary, keeping logs private and
 sanitized. Remove the temporary document afterward. Also verify non-Markdown
 fallback with absent or cosmetic Markdown and compare the original index and

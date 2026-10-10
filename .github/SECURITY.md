@@ -50,7 +50,9 @@ running the CLI.
   excerpts and per-file analysis also exclude generated or ephemeral paths,
   binary diffs, and oversized staged blobs. Git metadata and safe per-file
   summaries may still be sent. Reference selection checks the complete file
-  diff for sensitive patterns before truncating its excerpt.
+  diff for sensitive patterns before scoring, ranking hunks, or truncating
+  excerpts. Missing safe runtime excerpts are reported as limited context;
+  supporting documentation must not be treated as proof of implementation.
 
 When `gitleaks` is available, the script also runs:
 
@@ -258,7 +260,9 @@ Preserve these principles when changing the project:
   responses must not override message-generation rules. Prompt instructions
   reduce this risk but do not guarantee model behavior. The local Markdown
   heuristic does not establish semantic relevance or prove that documented
-  work was implemented.
+  work was implemented. Runtime excerpts establish the available implementation
+  evidence; documentation corroborates it. Category checks and rejection
+  patterns reduce misleading themes but cannot establish semantic correctness.
 - Dry-run must isolate Git changes through a temporary index even though
   network access and automatic model pulls may still occur.
 - Debug output must aid diagnosis without exposing credentials.
