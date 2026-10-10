@@ -109,10 +109,25 @@ real commits or pushes for validation.
 
 If a change affects secret detection, test at least:
 
+- Run `bash tests/secret-scanning.sh` with the syntax and lint checks listed
+  in [`README.md#development`](../README.md#development). This suite uses
+  isolated Git indexes and mocked Ollama/Gitleaks responses.
+- Generated values, environment lookups, and variable/member references in
+  Python and JavaScript/TypeScript without enabling safe mode.
+- Quoted literals, unquoted configuration values, and unknown file types
+  without granting expression exemptions.
 - A placeholder secret that should be allowed.
+- Multiple candidates on one line, ensuring placeholders cannot hide another
+  literal or a provider/private-key signature.
 - A realistic fake token that should be blocked.
+- Removed and unchanged context lines that remain protected from AI context
+  without blocking harmless added lines.
 - Preview mode when a secret is detected.
 - The secret-commit override if its behavior changed.
+
+Assemble synthetic credential-like values at runtime rather than storing
+complete token/key markers in test source. Reports must never contain values,
+and tests must preserve the original index and refs without commits or pushes.
 
 If a change affects Ollama integration, test:
 
@@ -134,6 +149,11 @@ smaller and larger than the number of ready jobs. Measure overlapping analysis
 requests and verify balanced batch limits and loading rows using the checks in
 [`README.md#development`](../README.md#development). Both secret scanners must
 finish before the secret-policy decision.
+
+For analysis-progress changes, use delayed mock responses and a simulated
+clock to check progress before results arrive, queued batches, completion out
+of order, and local fallbacks. Follow the terminal dry-run checks and estimated
+progress behavior documented in the README.
 
 ## Issue Guidelines
 

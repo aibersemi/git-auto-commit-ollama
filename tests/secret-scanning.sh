@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+# Exercise the real matcher and CLI with isolated Git state and mocked network calls.
+# The dynamically loaded library consumes runtime configuration variables.
+# shellcheck disable=SC2034
+set -euo pipefail
+umask 0002
+
+project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+trap 'rm -rf -- "$test_root"' EXIT
+git config --file "$test_root/clone.config" --add safe.directory "$project_dir"
+git config --file "$test_root/clone.config" --add safe.directory "$project_dir/.git"
+GIT_CONFIG_GLOBAL="$test_root/clone.config" git clone --quiet --no-hardlinks "$project_dir" "$test_root/repo"
+
+[[ "$(tail -n 1 "$project_dir/git-ai.sh")" == 'main "$@"' ]]
+sed '$d' "$project_dir/git-ai.sh" > "$test_root/library.sh"
+cp "$project_dir/git-ai.sh" "$test_root/git-ai.sh"
+cat > "$test_root/git-ai.conf" <<'CONFIG'
+DEFAULT_MODEL="test-model"
+DEFAULT_OLLAMA_HOST="http://localhost:11434"
+FALLBACK_OLLAMA_HOST=""
+USE_STRUCTURED_OUTPUT=1
+NON_AI_PARALLELISM=2
+CONFIG
+# shellcheck source=/dev/null
+source "$test_root/library.sh"
+cd -- "$test_root/repo"
+export GIT_INDEX_FILE="$test_root/fixture-index"
+original_refs=$(git show-ref)
+original_index=$(git hash-object .git/index)
+passed=0
+
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+assert_equal() { [[ "$1" == "$2" ]] || fail "$3"; }
+assert_contains() { [[ "$1" == *"$2"* ]] || fail "$3"; }
+assert_absent() { [[ "$1" != *"$2"* ]] || fail "$3"; }
+pass() { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
+assignment() { printf '%s = %s' "$1" "$2"; }
+stage_text() {
+  local blob
+  blob=$(printf '%s\n' "$2" | git hash-object -w --stdin)
+  git update-index --add --cacheinfo 100644 "$blob" "$1"
+}
+start_case() {
+  unset TEST_BASE_TREE
+  git read-tree HEAD
+  FORCE=0
+  FORCE_DIFF=0
+  DRY_RUN=0
+  ALLOW_SECRET_COMMIT=0
+  RESOLVED_NON_AI_PARALLELISM=2
+  MOCK_GITLEAKS_FINDING=0
+}
+expect_safe() {
+  local path="$1" content="$2" label="$3"
+  start_case
+  stage_text "$path" "$content"
+  [[ -z "$(detect_staged_secret_lines)" ]] || fail "$label: guard rejected expression/placeholder"
+  if detect_sensitive_patterns; then fail "$label: global safe mode activated"; fi
+  if has_sensitive_patterns "$content" "$path"; then fail "$label: per-file matcher rejected content"; fi
+  select_commit_references 2> "$test_root/references.log"
+  assert_equal "$REFERENCE_SENSITIVE_SKIPPED" 0 "$label: safe reference excluded"
+  assert_equal "${REFERENCE_PATHS[0]:-}" "$path" "$label: reference not retained"
+  pass "$label"
+}
+expect_sensitive() {
+  local path="$1" content="$2" label="$3" report
+  start_case
+  stage_text "$path" "$content"
+  report=$(detect_staged_secret_lines)
+  assert_equal "$report" "$path:1 potential secret on added line" "$label: missing/redaction-invalid report"
+  detect_sensitive_patterns || fail "$label: global safe mode did not activate"
+  has_sensitive_patterns "$content" "$path" || fail "$label: per-file matcher missed content"
+  select_commit_references 2> "$test_root/references.log"
+  assert_equal "$REFERENCE_SENSITIVE_SKIPPED" 1 "$label: unsafe reference retained"
+  pass "$label"
+}
+
+# Synthetic values and provider markers are assembled at runtime, never stored as credentials.
+literal_value=$(printf 'a%.0s' {1..24})
+provider_value="gh""p_$(printf 'b%.0s' {1..32})"
+key_marker="BEGIN"" SAMPLE"" PRIVATE KEY"
+
+mkdir "$test_root/bin" "$test_root/requests"
+export TEST_REAL_GIT
+TEST_REAL_GIT=$(command -v git)
+export TEST_REQUEST_DIR="$test_root/requests"
+export TEST_MUTATION_LOG="$test_root/mutations.log"
+export TEST_GITLEAKS_LOG="$test_root/gitleaks.log"
+export MOCK_GITLEAKS_FINDING=0
+cat > "$test_root/bin/git" <<'MOCK_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+arguments=()
+for argument in "$@"; do
+  case "$argument" in
+    commit|push)
+      printf '%s\n' "$argument" >> "$TEST_MUTATION_LOG"
+      exit 99
+      ;;
+  esac
+  arguments+=("$argument")
+  if [[ "$argument" == --cached && -n "${TEST_BASE_TREE:-}" ]]; then
+    arguments+=("$TEST_BASE_TREE")
+  fi
+done
+exec "$TEST_REAL_GIT" "${arguments[@]}"
+MOCK_GIT
+cat > "$test_root/bin/gitleaks" <<'MOCK_GITLEAKS'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == 'protect --staged --redact --no-banner' ]] || exit 98
+printf 'scanned\n' >> "$TEST_GITLEAKS_LOG"
+if [[ "${MOCK_GITLEAKS_FINDING:-0}" == 1 ]]; then
+  printf 'external scanner found a potential secret\n'
+  exit 1
+fi
+MOCK_GITLEAKS
+cat > "$test_root/bin/curl" <<'MOCK_CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+payload='{}'
+output_file=''
+http_output=0
+url=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d) payload="$2"; shift 2 ;;
+    -o) output_file="$2"; shift 2 ;;
+    -w) http_output=1; shift 2 ;;
+    --connect-timeout|--max-time|-H) shift 2 ;;
+    http://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  */api/tags|*/api/ps) body='{"models":[{"name":"test-model"}]}' ;;
+  */api/chat)
+    if jq -e '.messages | length > 0' >/dev/null <<<"$payload"; then
+      request_file=$(mktemp "$TEST_REQUEST_DIR/request.XXXXXX")
+      printf '%s\n' "$payload" > "$request_file"
+    fi
+    content='{"type":"fix","summary":"preserve runtime status handling","bullets":[]}'
+    body=$(jq -nc --arg content "$content" '{model:"test-model",done:true,message:{content:$content}}')
+    ;;
+  *) printf 'Unexpected network request\n' >&2; exit 98 ;;
+esac
+if [[ -n "$output_file" ]]; then printf '%s\n' "$body" > "$output_file"; else printf '%s\n' "$body"; fi
+[[ "$http_output" == 0 ]] || printf '200'
+MOCK_CURL
+chmod +x "$test_root/bin/git" "$test_root/bin/gitleaks" "$test_root/bin/curl"
+export PATH="$test_root/bin:$PATH"
+
+for expression in \
+  'secrets.token_urlsafe(16)' 'secrets.token_hex(32)' \
+  'os.environ.get("WHATSAPP_ACCESS_TOKEN")' 'os.environ["ACCESS_TOKEN"]' \
+  'settings.DATABASE_PASSWORD' 'config.api_key' 'CONFIGURED_TOKEN'; do
+  expect_safe src/runtime.py "$(assignment self.secret "$expression")" "Python expression: $expression"
+done
+expect_safe tests/test_archive.py "$(assignment SECRET_KEY 'secrets.token_urlsafe(32), SECRET_KEY_FALLBACKS=[old_key]')" 'Saqqina settings override regression'
+for extension in js jsx mjs cjs ts tsx mts cts; do
+  expect_safe "src/runtime.$extension" "$(assignment access_token 'process.env.ACCESS_TOKEN;')" "Environment reference in .$extension"
+done
+expect_safe src/runtime.ts "$(assignment api_key 'config.api_key,')" 'Member reference followed by punctuation'
+expect_safe 'tests/space name.py' "$(assignment self.secret 'secrets.token_urlsafe (16)')" 'Function call with whitespace and spaced path'
+expect_safe $'tests/tab\tnewline\nbackslash\\name.py' "$(assignment self.secret 'secrets.token_hex(32)')" 'NUL-delimited paths preserve expression exemptions'
+
+for placeholder in '"dummy-secret-value"' '"your-api-key-here"' 'changeme-secret-value'; do
+  expect_safe .env "$(assignment password "$placeholder")" "Placeholder candidate: $placeholder"
+done
+environment_value=$(printf '$%s' '{ACCESS_TOKEN}')
+expect_safe .env "$(assignment access_token "$environment_value")" 'Environment interpolation contains no literal'
+
+for quote in '"' "'"; do
+  expect_sensitive tests/test_archive.py "$(assignment password "$quote$literal_value$quote")" 'Quoted literal in tests is protected'
+done
+for path in .env production.env settings.ini settings.conf settings.yaml unknown.data; do
+  expect_sensitive "$path" "$(assignment password "$literal_value")" "Unquoted literal in $path"
+done
+expect_sensitive settings.json "$(printf '{"%s": "%s"}' password "$literal_value")" 'JSON quoted property name'
+expect_sensitive .env "$(assignment password settings.DATABASE_PASSWORD)" 'Config member-like text remains literal'
+expect_sensitive unknown.data "$(assignment SECRET_KEY 'secrets.token_urlsafe(32)')" 'Unknown file type has no code exemptions'
+expect_sensitive src/runtime.py "$(assignment password '"settings.DATABASE_PASSWORD"')" 'Quoted expression-like text remains literal'
+expect_sensitive .env "$(assignment password "$literal_value") # dummy example" 'Placeholder comment cannot hide a literal'
+for order in first last; do
+  placeholder_line=$(assignment api_key '"dummy-secret-value"')
+  sensitive_line=$(assignment password "\"$literal_value\"")
+  if [[ "$order" == first ]]; then mixed_line="$placeholder_line; $sensitive_line"; else mixed_line="$sensitive_line; $placeholder_line"; fi
+  expect_sensitive src/runtime.py "$mixed_line" "Multiple candidates with placeholder $order"
+done
+
+signature_index=0
+for signature in \
+  "$provider_value" \
+  "github""_pat_$(printf 'c%.0s' {1..24})" \
+  "AK""IA$(printf 'A%.0s' {1..16})" \
+  "xox""b-$(printf 'd%.0s' {1..16})" \
+  "AI""za$(printf 'e%.0s' {1..35})" \
+  "sk""-$(printf 'f%.0s' {1..24})" \
+  "ey""J$(printf 'g%.0s' {1..12}).$(printf 'h%.0s' {1..12}).$(printf 'i%.0s' {1..12})" \
+  "$key_marker"; do
+  signature_index=$((signature_index + 1))
+  expect_sensitive src/runtime.py "$(printf 'note = "example %s"' "$signature")" "Provider/key signature $signature_index overrides placeholder text"
+done
+expect_sensitive src/runtime.py "$(assignment api_key "settings.KEY + \"$provider_value\"")" 'Provider signature overrides expression exemption'
+expect_sensitive src/runtime.py "$(assignment api_key "config.load(password=\"$literal_value\")")" 'Nested literal argument remains protected'
+
+start_case
+stage_text src/runtime.py $'status = "ready"\n'"$(assignment password "\"$literal_value\"")"$'\nstatus_reason = "idle"'
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+for scenario in removed context; do
+  if [[ "$scenario" == removed ]]; then
+    stage_text src/runtime.py $'status = "ready"\nstatus_reason = "active"'
+  else
+    stage_text src/runtime.py $'status = "ready"\n'"$(assignment password "\"$literal_value\"")"$'\nstatus_reason = "active"'
+  fi
+  [[ -z "$(detect_staged_secret_lines)" ]] || fail "$scenario: guard scanned a non-added credential"
+  detect_sensitive_patterns || fail "$scenario: safe mode missed full-diff credential"
+  select_commit_references 2> "$test_root/references.log"
+  assert_equal "$REFERENCE_SENSITIVE_SKIPPED" 1 "$scenario: credential-containing reference retained"
+  pass "Full diff protects $scenario lines without blocking harmless additions"
+done
+
+if has_sensitive_patterns "$(assignment password settings.DATABASE_PASSWORD)" src/runtime.py old.env; then
+  pass 'Config-to-code rename keeps conservative full-diff matching'
+else
+  fail 'Config-to-code rename lost literal protection'
+fi
+
+start_case
+stage_text src/runtime.py "$(assignment self.secret 'secrets.token_urlsafe(16)')"
+stage_text .env "$(assignment password "$literal_value")"
+assert_equal "$(detect_staged_secret_lines)" '.env:1 potential secret on added line' 'Per-file language context leaked between files'
+pass 'Mixed source and config changes retain separate syntax rules'
+
+# Policy tests stop before commit/push and use mocked AI even in preview mode.
+cli_options=(--no-stage --no-push --no-pull --no-banner --no-file-analysis)
+run_cli() {
+  local status=0
+  rm -f "$test_root"/requests/request.* "$TEST_MUTATION_LOG"
+  bash "$test_root/git-ai.sh" "${cli_options[@]}" "$@" > "$test_root/cli.out" 2> "$test_root/cli.err" || status=$?
+  [[ ! -e "$TEST_MUTATION_LOG" ]] || fail 'CLI attempted commit/push'
+  CLI_STATUS="$status"
+}
+
+start_case
+safe_content=$'status = "ready"\n'"$(assignment self.secret 'secrets.token_urlsafe(16)')"
+stage_text src/runtime.py "$safe_content"
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Benign preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'Benign preview guard warning'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Benign preview lost primary context'
+requests=$(cat "$test_root"/requests/request.*)
+assert_contains "$requests" 'secrets.token_urlsafe(16)' 'Benign expression missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Benign preview changed the caller index'
+pass 'Benign CLI preview retains source context without Git mutations'
+
+start_case
+stage_text src/runtime.py "$(assignment password "\"$literal_value\"")"
+staging_before=$(git ls-files --stage -z | git hash-object --stdin)
+run_cli
+assert_equal "$CLI_STATUS" 1 'Normal invocation did not block a literal'
+assert_contains "$(cat "$test_root/cli.err")" 'Commit cancelled' 'Normal invocation missed guard cancellation'
+if compgen -G "$test_root/requests/request.*" >/dev/null; then fail 'Blocked invocation sent a generation prompt'; fi
+assert_absent "$(cat "$test_root/cli.err")" "$literal_value" 'Guard exposed a literal in its report'
+assert_equal "$(git ls-files --stage -z | git hash-object --stdin)" "$staging_before" 'Blocked invocation changed staged content'
+pass 'Normal CLI blocks before generation, commit, or push and redacts reports'
+
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Sensitive preview failed'
+assert_contains "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Sensitive preview did not enable safe mode'
+assert_contains "$(cat "$test_root/cli.err")" 'commit would be blocked normally' 'Sensitive preview missed guard warning'
+assert_absent "$(cat "$test_root"/requests/request.*)" "$literal_value" 'Sensitive preview exposed the literal to AI'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Sensitive preview changed the caller index'
+pass 'Sensitive CLI preview continues safely with an isolated index'
+
+(
+  DRY_RUN=0
+  ALLOW_SECRET_COMMIT=1
+  enforce_staged_secret_policy 2> "$test_root/override.err"
+  detect_sensitive_patterns || fail 'Secret-commit override disabled safe mode'
+)
+assert_contains "$(cat "$test_root/override.err")" 'Secret commit allowed' 'Secret-commit override stopped working'
+pass 'Secret-commit override remains independent of safe mode'
+
+start_case
+stage_text src/runtime.py "$safe_content"
+MOCK_GITLEAKS_FINDING=1
+run_cli
+assert_equal "$CLI_STATUS" 1 'External finding did not block'
+assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External finding missing from policy report'
+[[ -s "$TEST_GITLEAKS_LOG" ]] || fail 'External scanner was not called'
+pass 'External scanner still supplements the built-in guard'
+
+assert_equal "$(git hash-object .git/index)" "$original_index" 'Original clone index changed'
+assert_equal "$(git show-ref)" "$original_refs" 'Original refs changed'
+printf 'All %s secret scanning regression scenarios passed.\n' "$passed"

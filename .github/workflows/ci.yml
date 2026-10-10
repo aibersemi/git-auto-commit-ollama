@@ -40,3 +40,11 @@ jobs:
 
       - name: Test Markdown commit references
         run: bash tests/markdown-references.sh
+
+      - name: Validate secret scanning tests
+        run: |
+          bash -n tests/secret-scanning.sh
+          shellcheck tests/secret-scanning.sh
+
+      - name: Test secret scanning and safe previews
+        run: bash tests/secret-scanning.sh

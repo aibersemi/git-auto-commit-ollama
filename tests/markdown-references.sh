@@ -421,6 +421,127 @@ for specification in '1 4 6 1 1' '3 4 6 3 3' '6 4 6 4 4' '8 2 3 3 2' '6 1 6 1 1'
   pass "Measured concurrency: $file_total files, capacity $capacity, maximum batch $batch_limit"
 done
 
+for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 partial' '6 2 2 complete' '1 4 6 complete'; do
+  read -r file_total capacity batch_limit response_mode <<< "$specification"
+  (
+    start_case
+    for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}.md" "$description"; done
+    context
+    FILE_ANALYSIS_LIMIT="$file_total"
+    FILE_ANALYSIS_BATCH_SIZE="$batch_limit"
+    RESOLVED_FILE_ANALYSIS_PARALLELISM="$capacity"
+    TEST_ANALYSIS_MODE="$response_mode"
+    progress_dir="$test_root/progress-${file_total}-${capacity}-${batch_limit}-${response_mode}"
+    mkdir "$progress_dir"
+    case "$specification" in
+      '6 4 6 '*)
+        completion_order=(2 3 1 4)
+        expected_counts=(2 2 1 1)
+        launch_percentages=(10 20 30 40)
+        initial_percent=40; waiting_percent=70; capped_percent=95 ;;
+      '6 2 2 complete')
+        completion_order=(2 3 1)
+        expected_counts=(2 2 2)
+        launch_percentages=(13 26)
+        initial_percent=26; waiting_percent=46; capped_percent=63 ;;
+      '1 4 6 complete')
+        completion_order=(1)
+        expected_counts=(1)
+        launch_percentages=(40)
+        initial_percent=40; waiting_percent=70; capped_percent=95 ;;
+    esac
+    # Preserve the real renderer and response handling while controlling delivery.
+    eval "$(declare -f run_file_analysis_batch | sed '1s/run_file_analysis_batch/progress_original_batch/')"
+    eval "$(declare -f live_status_update | sed '1s/live_status_update/progress_original_status/')"
+    # Called indirectly by the loaded scheduler.
+    # shellcheck disable=SC2317,SC2329
+    run_file_analysis_batch() {
+      local polls=0
+      while [[ ! -f "$progress_dir/release-$1" ]]; do
+        polls=$((polls + 1))
+        [[ "$polls" -le 500 ]] || return 1
+        sleep 0.01
+      done
+      progress_original_batch "$@"
+    }
+    # Unsetting SECONDS removes its clock behavior in this test subshell only.
+    unset SECONDS
+    SECONDS=0
+    progress_phase=0
+    released_jobs=0
+    release_after_files=0
+    # Called indirectly by both the scheduler and the real renderer.
+    # shellcheck disable=SC2317,SC2329
+    live_status_update() {
+      local message="$1" files percent active job
+      progress_original_status "$@"
+      [[ "$message" =~ ([0-9]+)/([0-9]+)[[:space:]]([0-9]+)% ]] || fail 'Missing progress counter'
+      files="${BASH_REMATCH[1]}"
+      assert_equal "${BASH_REMATCH[2]}" "$file_total" 'Progress file total'
+      percent="${BASH_REMATCH[3]}"
+      [[ "$message" =~ ([0-9]+)/([0-9]+)[[:space:]]active ]] || return 0
+      active="${BASH_REMATCH[1]}"
+      assert_equal "$(( $# - 1 ))" "$active" 'One loading row per active batch'
+      printf '%s %s\n' "$files" "$percent" >> "$progress_dir/frames"
+      if [[ "$files" -lt "$file_total" ]]; then
+        [[ "$percent" -ge 1 && "$percent" -le 95 ]] || fail 'Active progress outside 1-95%'
+        assert_contains "$message" 'est.' 'Waiting progress is labeled as an estimate'
+      else
+        assert_equal "$percent" 100 'Completion reaches 100%'
+        assert_absent "$message" 'est.' 'Completed progress is no longer estimated'
+      fi
+      case "$progress_phase" in
+        0)
+          assert_equal "$files" 0 'Launch progress precedes all results'
+          assert_equal "$percent" "${launch_percentages[$((active - 1))]}" 'Progress after each launch'
+          if [[ "$percent" -eq "$initial_percent" ]]; then
+            progress_phase=1
+            SECONDS=30
+          fi ;;
+        1)
+          assert_equal "$files" 0 'Waiting progress does not complete files'
+          assert_equal "$percent" "$waiting_percent" 'Progress rises with simulated time'
+          progress_phase=2
+          SECONDS=55 ;;
+        2)
+          assert_equal "$files" 0 'Capped progress precedes all results'
+          assert_equal "$percent" "$capped_percent" 'Running batch contributions stop at 95'
+          progress_phase=3
+          SECONDS=120 ;;
+        3)
+          assert_equal "$files" 0 'Held AI responses keep the file counter at zero'
+          assert_equal "$percent" "$capped_percent" 'Long waits cannot inflate progress'
+          progress_phase=4 ;;
+      esac
+      if [[ "$progress_phase" -eq 4 && "$files" -eq "$release_after_files" && "$released_jobs" -lt "${#completion_order[@]}" ]]; then
+        job="${completion_order[$released_jobs]}"
+        : > "$progress_dir/release-$job"
+        released_jobs=$((released_jobs + 1))
+        release_after_files=$((release_after_files + expected_counts[job - 1]))
+      fi
+    }
+    IS_TTY=1
+    analyze_files_individually 2> "$progress_dir/terminal.log"
+    assert_equal "$progress_phase" 4 'All waiting phases were observed'
+    assert_equal "$released_jobs" "${#completion_order[@]}" 'Every held batch was released'
+    assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 100" 'All files handled before 100%'
+    awk 'NR > 1 && $2 < previous {exit 1} {previous = $2}' "$progress_dir/frames" || fail 'Progress decreased'
+    assert_equal "$LIVE_STATUS_ROWS" 0 'Loading rows cleared after analysis'
+    assert_equal "$LIVE_STATUS_ACTIVE" 0 'Live status stopped after analysis'
+    [[ "$LIVE_STATUS_FRAME" -gt 4 ]] || fail 'Spinner did not advance while waiting'
+    assert_contains "$(cat "$progress_dir/terminal.log")" $'\033[?25h' 'Cursor restored after analysis'
+    if [[ "$response_mode" == complete ]]; then
+      expected_order=$(printf '%s\n' "${BATCH_ANALYSIS_FILE_NAMES[@]}")
+      actual_order=$(printf '%s' "$FILE_ANALYSES" | sed -n 's/^<file name="\(.*\)\">$/\1/p')
+      assert_equal "$actual_order" "$expected_order" 'Out-of-order responses retain reference order'
+    else
+      assert_equal "$FILE_ANALYSES" '' 'Generic fallbacks remain omitted from the prompt'
+      assert_contains "$(cat "$progress_dir/terminal.log")" '6 local fallback(s)' 'Every failed or incomplete file handled'
+    fi
+  )
+  pass "Estimated progress with held responses: $file_total files, capacity $capacity, batch limit $batch_limit, $response_mode"
+done
+
 (
   IS_TTY=1
   LIVE_STATUS_ACTIVE=1
@@ -612,6 +733,9 @@ PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no
 assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" 'Automatic-stage dry-run index isolation'
 assert_contains "$(cat "$test_root/cli.out")" 'fix: improve timeout handling' 'Structured CLI message'
 assert_contains "$(cat "$test_root/cli.err")" 'informative staged Markdown' 'Structured CLI reference mode'
+assert_contains "$(cat "$test_root/cli.err")" 'Sending ' 'Non-TTY analysis retains its plain status'
+assert_absent "$(cat "$test_root/cli.err")" $'\033[' 'Non-TTY output has no terminal control sequences'
+assert_absent "$(cat "$test_root/cli.err")" ' est.' 'Non-TTY output has no animated progress frames'
 pass 'Full structured CLI analyzes Markdown using an isolated dry-run index'
 
 for mode in plain structured structured_plain; do

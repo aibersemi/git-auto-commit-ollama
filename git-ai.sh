@@ -618,6 +618,7 @@ live_status_stop() {
 
 progress_status_text() {
   local current="$1" total="$2" label="${3:-Processing}" elapsed="${4:-}"
+  local percent_override="${5:-}" percent_suffix="${6:-}"
   local width=14
   local filled=0 percent=0
   local bar="" i
@@ -626,14 +627,18 @@ progress_status_text() {
     filled=$((current * width / total))
     percent=$((current * 100 / total))
   fi
+  if [[ -n "$percent_override" ]]; then
+    percent="$percent_override"
+    filled=$((percent * width / 100))
+  fi
 
   for ((i=0; i<filled; i++)); do bar+="█"; done
   for ((i=filled; i<width; i++)); do bar+="░"; done
 
   if [[ -n "$elapsed" ]]; then
-    printf '%s [%s] %d/%d %d%% · %s' "$label" "$bar" "$current" "$total" "$percent" "$elapsed"
+    printf '%s [%s] %d/%d %d%%%s · %s' "$label" "$bar" "$current" "$total" "$percent" "$percent_suffix" "$elapsed"
   else
-    printf '%s [%s] %d/%d %d%%' "$label" "$bar" "$current" "$total" "$percent"
+    printf '%s [%s] %d/%d %d%%%s' "$label" "$bar" "$current" "$total" "$percent" "$percent_suffix"
   fi
 }
 
@@ -1002,75 +1007,119 @@ stage_changes() {
   enforce_staged_secret_policy
 }
 
-sensitive_pattern_regex() {
-  cat <<'EOF'
-(([A-Za-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*)[[:space:]]*[:=][[:space:]]*['"]?[A-Za-z0-9_./+=:@-]{12,}['"]?|BEGIN [A-Z]+ PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pous]_[A-Za-z0-9_]{30,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|sk-[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})
-EOF
+# One matcher serves added-line reports and all diff/context safety checks.
+scan_sensitive_content() {
+  local path="${1:-}" scan_mode="${2:-content}" old_path="${3:-}"
+  # Environment transport preserves backslashes, tabs, and newlines in paths.
+  GIT_AI_SCAN_PATH="$path" GIT_AI_SCAN_OLD_PATH="$old_path" awk -v scan_mode="$scan_mode" '
+    BEGIN {
+      path = ENVIRON["GIT_AI_SCAN_PATH"]
+      old_path = ENVIRON["GIT_AI_SCAN_OLD_PATH"]
+      code_file = is_code_path(path) && (old_path == "" || is_code_path(old_path))
+      quote_chars = "\042\047"
+      assignment_regex = "[a-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[a-z0-9_.-]*[" quote_chars "]?[[:space:]]*[:=][[:space:]]*"
+      # Fixed minima plus * keep multi-part token matching consistent across Awk implementations.
+      strong_regex = "(begin [a-z]+ private key|akia[0-9a-z]{16}|gh[pous]_[a-z0-9_]{30,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{10,}|aiza[0-9a-z_-]{35}|sk-[a-z0-9]{20,}|eyj[a-z0-9_-]{10}[a-z0-9_-]*[.][a-z0-9_-]{10}[a-z0-9_-]*[.][a-z0-9_-]{10}[a-z0-9_-]*)"
+      placeholder_regex = "(placeholder|changeme|change_me|change-me|dummy|sample|example|your[-_ ]?[a-z0-9_-]*|<[^>]+>|[$][{]|[{][{][[:space:]]*secrets[.])"
+      identifier = "[a-z_$][a-z0-9_$]*"
+      reference = identifier "([.]" identifier ")*"
+      new_line = 0
+      in_hunk = 0
+      found = 0
+    }
+    function is_code_path(value) {
+      return tolower(value) ~ /[.](py|pyi|js|jsx|mjs|cjs|ts|tsx|mts|cts)$/
+    }
+    function is_expression(value) {
+      # Only code files receive syntax exemptions; .env/config values are literals.
+      return code_file && (value ~ ("^" reference "[[:space:]]*[(]") ||
+        value ~ ("^" reference "[[:space:]]*[[]") ||
+        value ~ ("^" reference "[[:space:]]*($|[,;)}#]|[]]|[+*/?])"))
+    }
+    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote) {
+      lower = tolower(content)
+      # Token/key signatures always take precedence over expression/placeholder exemptions.
+      if (lower ~ strong_regex) return 1
+      rest = lower
+      while (match(rest, assignment_regex)) {
+        rhs = substr(rest, RSTART + RLENGTH)
+        rest = rhs
+        quote = substr(rhs, 1, 1)
+        if (quote != "" && index(quote_chars, quote)) {
+          candidate = substr(rhs, 2)
+          end_quote = index(candidate, quote)
+          if (end_quote) candidate = substr(candidate, 1, end_quote - 1)
+        } else {
+          if (is_expression(rhs)) continue
+          if (!match(rhs, /^[a-z0-9_.\/+=:@-]+/)) continue
+          candidate = substr(rhs, RSTART, RLENGTH)
+        }
+        if (candidate ~ /^[a-z0-9_.\/+=:@-]{12,}/ && candidate !~ placeholder_regex) return 1
+      }
+      return 0
+    }
+    scan_mode == "content" {
+      if (has_secret($0)) { found = 1; exit }
+      next
+    }
+    /^diff --git / { in_hunk = 0; next }
+    /^@@/ {
+      header = $0
+      sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", header)
+      split(header, parts, /[, ]/)
+      new_line = parts[1] ~ /^[0-9]+$/ ? parts[1] + 0 : 0
+      in_hunk = 1
+      next
+    }
+    in_hunk && substr($0, 1, 1) == "+" {
+      if (has_secret(substr($0, 2))) {
+        line_no = new_line > 0 ? new_line : "?"
+        printf "%s:%s potential secret on added line\n", path, line_no
+      }
+      if (new_line > 0) new_line++
+      next
+    }
+    in_hunk && substr($0, 1, 1) == " " { if (new_line > 0) new_line++ }
+    END { if (scan_mode == "content") exit(found ? 0 : 1) }
+  '
 }
 
 has_sensitive_patterns() {
-  local content="$1"
-  grep -Eiq "$(sensitive_pattern_regex)" <<<"$content"
+  scan_sensitive_content "${2:-}" content "${3:-}" <<<"$1"
+}
+
+scan_staged_sensitive_patterns() {
+  local scan_mode="$1" additions deletions path old_path full_diff
+  local -a pathspecs
+  local unified=3
+  [[ "$scan_mode" != added ]] || unified=0
+
+  while IFS=$'\t' read -r -d '' additions deletions path; do
+    old_path=""
+    if [[ -z "$path" ]]; then
+      IFS= read -r -d '' old_path || break
+      IFS= read -r -d '' path || break
+    fi
+    pathspecs=("$path")
+    [[ -z "$old_path" ]] || pathspecs+=("$old_path")
+    full_diff=$(git --literal-pathspecs diff --cached --no-color --no-ext-diff --no-textconv -M -U"$unified" -- "${pathspecs[@]}" 2>/dev/null || true)
+    if [[ "$scan_mode" == added ]]; then
+      # Only the destination file syntax matters for newly added lines.
+      scan_sensitive_content "$path" added <<<"$full_diff"
+    elif has_sensitive_patterns "$full_diff" "$path" "$old_path"; then
+      return 0
+    fi
+  done < <(git diff --cached --numstat --no-ext-diff --no-textconv -M -z 2>/dev/null || true)
+
+  [[ "$scan_mode" == added ]]
 }
 
 detect_sensitive_patterns() {
-  local sample
-  sample=$(git diff --cached --no-color --no-ext-diff || true)
-
-  has_sensitive_patterns "$sample"
+  scan_staged_sensitive_patterns content
 }
 
 detect_staged_secret_lines() {
-  local sensitive_regex placeholder_regex
-  sensitive_regex="(([a-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[a-z0-9_.-]*)[[:space:]]*[:=][[:space:]]*['\"]?[a-z0-9_./+=:@-]{12,}['\"]?|begin [a-z]+ private key|akia[0-9a-z]{16}|gh[pous]_[a-z0-9_]{30,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{10,}|aiza[0-9a-z_-]{35}|sk-[a-z0-9]{20,}|eyj[a-z0-9_-]{10,}[.][a-z0-9_-]{10,}[.][a-z0-9_-]{10,})"
-  placeholder_regex='(placeholder|changeme|change_me|change-me|dummy|sample|example|your[-_ ]?[a-z0-9_-]*|<[^>]+>|[$][{]|[{][{][[:space:]]*secrets[.])'
-
-  git diff --cached --no-color --unified=0 --no-ext-diff 2>/dev/null |
-    awk -v sensitive_regex="$sensitive_regex" -v placeholder_regex="$placeholder_regex" '
-      BEGIN {
-        current_file = "?"
-        new_line = 0
-      }
-      /^\+\+\+ b\// {
-        current_file = substr($0, 7)
-        next
-      }
-      /^\+\+\+ \/dev\/null$/ {
-        current_file = "?"
-        next
-      }
-      /^@@/ {
-        header = $0
-        sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", header)
-        split(header, parts, /[, ]/)
-        if (parts[1] ~ /^[0-9]+$/) {
-          new_line = parts[1] + 0
-        } else {
-          new_line = 0
-        }
-        next
-      }
-      substr($0, 1, 1) == "+" {
-        content = substr($0, 2)
-        lower = tolower(content)
-        if (lower ~ sensitive_regex && lower !~ placeholder_regex) {
-          line_no = new_line > 0 ? new_line : "?"
-          printf "%s:%s potential secret on added line\n", current_file, line_no
-        }
-        if (new_line > 0) {
-          new_line++
-        }
-        next
-      }
-      substr($0, 1, 1) == "-" {
-        next
-      }
-      {
-        if (new_line > 0) {
-          new_line++
-        }
-      }
-    ' || true
+  scan_staged_sensitive_patterns added
 }
 
 run_gitleaks_secret_scan() {
@@ -1325,7 +1374,7 @@ select_commit_references() {
     pathspecs=("$path")
     [[ -z "$old_path" ]] || pathspecs+=("$old_path")
     full_diff=$(git --literal-pathspecs diff --cached --no-color --no-ext-diff --no-textconv -M -U3 -- "${pathspecs[@]}" 2>/dev/null || true)
-    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$full_diff"; then
+    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$full_diff" "$path" "$old_path"; then
       REFERENCE_SENSITIVE_SKIPPED=$((REFERENCE_SENSITIVE_SKIPPED + 1))
       continue
     fi
@@ -2038,6 +2087,39 @@ extract_file_analysis_from_batch() {
     "$output_file" 2>/dev/null | head -n 1 || true
 }
 
+file_analysis_status_update() {
+  [[ "$IS_TTY" -eq 1 ]] || return 0
+
+  # Scheduler arrays and counters belong to analyze_files_individually's local scope.
+  local now="$SECONDS" i batch_elapsed contribution percent status_msg
+  local progress_sum=$((completed_batches * 100)) percent_suffix=" est."
+  local -a worker_status_lines=()
+  for ((i=0; i<next_job; i++)); do
+    [[ "${batch_done[$i]:-0}" -eq 0 ]] || continue
+    batch_elapsed=$((now - batch_started_seconds[i]))
+    [[ "$batch_elapsed" -ge 0 ]] || batch_elapsed=0
+    contribution=$((40 + batch_elapsed))
+    [[ "$contribution" -le 95 ]] || contribution=95
+    progress_sum=$((progress_sum + contribution))
+    worker_status_lines+=("Batch $((i + 1))/${batch_total}: ${batch_counts[$i]} file(s) · ${BATCH_ANALYSIS_FILE_NAMES[${batch_starts[$i]}]}")
+  done
+
+  if [[ "$completed_batches" -eq "$batch_total" ]]; then
+    percent=100
+    percent_suffix=""
+  else
+    percent=$((progress_sum / batch_total))
+    [[ "$percent" -ge 1 ]] || percent=1
+    [[ "$percent" -le 95 ]] || percent=95
+    [[ "$percent" -ge "$analysis_progress_percent" ]] || percent="$analysis_progress_percent"
+  fi
+  analysis_progress_percent="$percent"
+  status_msg=$(progress_status_text "$completed_files" "$analysis_total" \
+    "Analyzing files with AI (${running}/${parallelism} active)" \
+    "$(elapsed_since "$analysis_start")" "$percent" "$percent_suffix")
+  live_status_update "$status_msg" "${worker_status_lines[@]}"
+}
+
 analyze_files_individually() {
   local candidate_paths=("${REFERENCE_PATHS[@]}")
   local total_files="$REFERENCE_TOTAL_FILES"
@@ -2072,7 +2154,7 @@ analyze_files_individually() {
     truncated_chunk="${REFERENCE_DIFFS[$((selected_index - 1))]}"
     [[ -n "$truncated_chunk" ]] || continue
 
-    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$truncated_chunk"; then
+    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$truncated_chunk" "$file_name"; then
       sensitive_files_skipped=$((sensitive_files_skipped + 1))
       continue
     fi
@@ -2104,6 +2186,7 @@ analyze_files_individually() {
   local batch_pids=()
   local batch_done=()
   local batch_starts=()
+  local batch_started_seconds=()
   local batch_counts=()
   local analysis_results=()
 
@@ -2124,8 +2207,8 @@ analyze_files_individually() {
   local completed_files=0
   local failed_batches=0
   local fallback_items=0
+  local analysis_progress_percent=0
   local i offset result_index batch_start batch_count batch_output batch_status analysis status made_progress job_index
-  local -a worker_status_lines=()
 
   while [[ "$completed_batches" -lt "$batch_total" ]]; do
     while [[ "$next_job" -lt "$batch_total" && "$running" -lt "$parallelism" ]]; do
@@ -2142,6 +2225,7 @@ analyze_files_individually() {
       batch_status_files[job_index]="$batch_status"
       batch_done[job_index]=0
       batch_starts[job_index]="$batch_start"
+      batch_started_seconds[job_index]="$SECONDS"
       batch_counts[job_index]="$batch_count"
 
       (
@@ -2155,6 +2239,7 @@ analyze_files_individually() {
 
       next_job=$((next_job + 1))
       running=$((running + 1))
+      file_analysis_status_update
     done
 
     made_progress=0
@@ -2190,14 +2275,7 @@ analyze_files_individually() {
       [[ "$status" -ne 0 ]] && failed_batches=$((failed_batches + 1))
     done
 
-    status_msg=$(progress_status_text "$completed_files" "$analysis_total" "Analyzing files with AI (${running}/${parallelism} active)" "$(elapsed_since "$analysis_start")")
-    worker_status_lines=()
-    for ((i=0; i<next_job; i++)); do
-      [[ "${batch_done[$i]:-0}" -eq 0 ]] || continue
-      batch_start="${batch_starts[$i]}"
-      worker_status_lines+=("Batch $((i + 1))/${batch_total}: ${batch_counts[$i]} file(s) · ${BATCH_ANALYSIS_FILE_NAMES[$batch_start]}")
-    done
-    live_status_update "$status_msg" "${worker_status_lines[@]}"
+    file_analysis_status_update
     [[ "$completed_batches" -ge "$batch_total" ]] && break
     [[ "$made_progress" -eq 1 ]] || sleep 0.2
   done

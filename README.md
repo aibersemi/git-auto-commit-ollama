@@ -335,9 +335,22 @@ requests containing two, two, one, and one files. With capacity `1`, up to six
 files still use one request by default. Terminal output shows the detected
 capacity and its source, active workers, and a separate animated row for each
 running batch. Completed results retain reference order in the final prompt.
-Ollama does not expose that setting
-through its public API, so remote endpoints should set
-`OLLAMA_PARALLELISM_HINT` or use a numeric `FILE_ANALYSIS_PARALLELISM`.
+Ollama does not expose its parallelism setting through its public API, so
+remote endpoints should set `OLLAMA_PARALLELISM_HINT` or use a numeric
+`FILE_ANALYSIS_PARALLELISM`.
+
+The terminal progress bar is an estimate, marked `est.` while analysis is
+running. Each batch contributes 40 points when it starts, then one additional
+point per second up to 95, and 100 once its response or local fallback has
+been processed. The overall percentage averages all batches, including queued
+batches at zero. Starting four batches therefore advances the bar through
+`10%`, `20%`, `30%`, and `40%` before any result arrives. Progress never decreases,
+stays between 1% and 95% once work starts, and reaches 100% only after every
+batch is handled. The file counter still reports completed files, so
+`0/6 40% est.` is expected while all four batches are waiting for AI. The
+spinner and elapsed time continue updating even when the estimate reaches its
+limit. Ollama responses are not streamed, so this is not a measurement of
+model completion.
 
 Additional environment variables:
 
@@ -453,6 +466,14 @@ Available protections:
 - The built-in secret guard checks added lines in the staged diff. When
   `gitleaks` is available, its result is added to the scan unless `--force`
   is explicitly selected.
+- The guard and safe mode share a path-aware matcher. In Python and
+  JavaScript/TypeScript files, unquoted function calls, environment lookups,
+  and variable/member references are treated as expressions rather than
+  credential literals. Quoted literals and unquoted configuration values
+  remain checked at the existing 12-character threshold. Unknown file types
+  receive no expression exemptions; test files follow the same rules as code.
+  Placeholder exemptions apply to each value, not the whole line. Provider
+  token and private-key signatures take precedence over all exemptions.
 - During a normal run, a secret finding cancels the commit.
   `--allow-secret-commit` only bypasses that cancellation.
 - Safe mode removes detailed diffs from the primary prompt and skips sensitive
@@ -515,13 +536,18 @@ shellcheck git-ai.sh
 bash -n tests/markdown-references.sh
 shellcheck tests/markdown-references.sh
 bash tests/markdown-references.sh
+bash -n tests/secret-scanning.sh
+shellcheck tests/secret-scanning.sh
+bash tests/secret-scanning.sh
 ```
 
 The [CI workflow](.github/workflows/ci.yml) runs these checks on pushes to
 `main`, pull requests, and manual `workflow_dispatch` runs. The Markdown
-reference regression suite uses a temporary local clone, isolated indexes,
-and mocked Ollama responses. It creates no new commits, performs no pushes,
-and requires no active Ollama endpoint.
+reference and secret scanning regression suites use temporary local clones,
+isolated indexes, and mocked Ollama responses. They create no new commits,
+perform no pushes, and require no active Ollama endpoint. The secret scanning
+suite also mocks external scanning and verifies blocking, safe previews,
+expression/placeholder handling, and protection of removed/context lines.
 
 For a runtime smoke test, use a temporary repository and dry-run. This command
 still requires an active Ollama endpoint and an available model because
@@ -562,7 +588,8 @@ systemd Ollama service, a remote endpoint with `OLLAMA_PARALLELISM_HINT`, and
 the conservative fallback. Confirm that result order is deterministic and
 that effective concurrency never exceeds the number of ready jobs or batches.
 The regression suite measures overlapping requests and checks loading-row
-refresh, completed-worker removal, and cursor restoration. Also run a dry-run
+refresh, estimated progress before results arrive, the 95% waiting limit,
+completed-worker removal, and cursor restoration. Also run a dry-run
 in a terminal to inspect the animations and result output.
 
 Do not run commit or push smoke tests in a primary working repository. See the
