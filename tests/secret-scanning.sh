@@ -55,6 +55,7 @@ expect_safe() {
   local path="$1" content="$2" label="$3"
   start_case
   stage_text "$path" "$content"
+  if git --literal-pathspecs diff --cached --quiet -- "$path"; then fail "$label: fixture has no staged changes"; fi
   [[ -z "$(detect_staged_secret_lines)" ]] || fail "$label: guard rejected expression/placeholder"
   if detect_sensitive_patterns; then fail "$label: global safe mode activated"; fi
   if has_sensitive_patterns "$content" "$path"; then fail "$label: per-file matcher rejected content"; fi
@@ -67,6 +68,7 @@ expect_sensitive() {
   local path="$1" content="$2" label="$3" report
   start_case
   stage_text "$path" "$content"
+  if git --literal-pathspecs diff --cached --quiet -- "$path"; then fail "$label: fixture has no staged changes"; fi
   report=$(detect_staged_secret_lines)
   assert_equal "$report" "$path:1 potential secret on added line" "$label: missing/redaction-invalid report"
   detect_sensitive_patterns || fail "$label: global safe mode did not activate"
@@ -151,7 +153,8 @@ MOCK_CURL
 chmod +x "$test_root/bin/git" "$test_root/bin/gitleaks" "$test_root/bin/curl"
 export PATH="$test_root/bin:$PATH"
 
-expect_safe tests/secret-scanning.sh "$(cat "$project_dir/tests/secret-scanning.sh")" 'Secret-scanning test source is safe to scan'
+# Use a separate fixture path so clean checkouts stage the entire test source.
+expect_safe tests/fixtures/secret-scanning.sh "$(cat "$project_dir/tests/secret-scanning.sh")" 'Secret-scanning test source is safe to scan'
 
 for expression in \
   'secrets.token_urlsafe(16)' 'secrets.token_hex(32)' \
