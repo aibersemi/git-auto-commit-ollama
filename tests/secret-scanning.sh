@@ -151,6 +151,8 @@ MOCK_CURL
 chmod +x "$test_root/bin/git" "$test_root/bin/gitleaks" "$test_root/bin/curl"
 export PATH="$test_root/bin:$PATH"
 
+expect_safe tests/secret-scanning.sh "$(cat "$project_dir/tests/secret-scanning.sh")" 'Secret-scanning test source is safe to scan'
+
 for expression in \
   'secrets.token_urlsafe(16)' 'secrets.token_hex(32)' \
   'os.environ.get("WHATSAPP_ACCESS_TOKEN")' 'os.environ["ACCESS_TOKEN"]' \
@@ -170,6 +172,35 @@ for placeholder in '"dummy-secret-value"' '"your-api-key-here"' 'changeme-secret
 done
 environment_value=$(printf '$%s' '{ACCESS_TOKEN}')
 expect_safe .env "$(assignment access_token "$environment_value")" 'Environment interpolation contains no literal'
+
+synthetic_content="override_settings($(assignment WHATSAPP_DEEPSEEK_API_KEY '"credential-sintetis-khusus-test"')),"
+expect_safe tests/test_workflow.py "$synthetic_content" 'Saqqina synthetic credential regression'
+for placeholder in 'synthetic-api-key-for-tests' 'SYNTHETIC_TEST_TOKEN' 'password_sintetis_untuk_test'; do
+  expect_safe src/runtime.py "$(assignment api_key "\"$placeholder\"")" 'Explicit synthetic placeholder vocabulary'
+done
+expect_safe src/runtime.ts "$(assignment api_key "'synthetic-api-key-for-tests';")" 'Single-quoted synthetic placeholder in TypeScript'
+expect_safe src/runtime.py "$(assignment api_key '"synthetic-token"') # runtime configuration" 'Synthetic placeholder followed by a comment'
+for path in .env settings.yaml unknown.data; do
+  expect_sensitive "$path" "$(assignment api_key '"synthetic-api-key-for-tests"')" "Synthetic-looking config value remains protected in $path"
+done
+for candidate in \
+  "credential-synthetic-$literal_value" \
+  "${literal_value}-synthetic-credential" \
+  'synthetic-credential-production' \
+  'synthetic-credential-123456789012' \
+  'synthetic-for-tests' \
+  'credential-only-for-tests'; do
+  expect_sensitive tests/test_workflow.py "$(assignment api_key "\"$candidate\"")" 'Synthetic marker alone cannot exempt arbitrary values'
+done
+expect_sensitive src/runtime.py "$(assignment api_key '"synthetic-token')" 'Unterminated synthetic literal remains protected'
+expect_sensitive src/runtime.py "$(assignment api_key "\"synthetic-token\" + \"$literal_value\"")" 'Synthetic prefix cannot exempt a concatenated credential'
+expect_sensitive src/runtime.py "$(assignment api_key "\"synthetic-token-$provider_value\"")" 'Provider signature overrides synthetic placeholder vocabulary'
+for order in first last; do
+  placeholder_line=$(assignment api_key '"synthetic-api-key-for-tests"')
+  sensitive_line=$(assignment password "\"$literal_value\"")
+  if [[ "$order" == first ]]; then mixed_line="$placeholder_line; $sensitive_line"; else mixed_line="$sensitive_line; $placeholder_line"; fi
+  expect_sensitive tests/test_workflow.py "$mixed_line" "Multiple candidates with synthetic placeholder $order"
+done
 
 for quote in '"' "'"; do
   expect_sensitive tests/test_archive.py "$(assignment password "$quote$literal_value$quote")" 'Quoted literal in tests is protected'
@@ -258,6 +289,17 @@ assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Benign prev
 pass 'Benign CLI preview retains source context without Git mutations'
 
 start_case
+stage_text tests/test_workflow.py "$synthetic_content"
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Synthetic placeholder preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'Synthetic placeholder triggered the guard'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Synthetic placeholder activated safe mode'
+assert_contains "$(cat "$test_root"/requests/request.*)" 'credential-sintetis-khusus-test' 'Synthetic placeholder missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Synthetic placeholder preview changed the caller index'
+pass 'Synthetic placeholder CLI preview preserves useful context and Git state'
+
+start_case
 stage_text src/runtime.py "$(assignment password "\"$literal_value\"")"
 staging_before=$(git ls-files --stage -z | git hash-object --stdin)
 run_cli
@@ -287,7 +329,7 @@ assert_contains "$(cat "$test_root/override.err")" 'Secret commit allowed' 'Secr
 pass 'Secret-commit override remains independent of safe mode'
 
 start_case
-stage_text src/runtime.py "$safe_content"
+stage_text tests/test_workflow.py "$synthetic_content"
 MOCK_GITLEAKS_FINDING=1
 run_cli
 assert_equal "$CLI_STATUS" 1 'External finding did not block'

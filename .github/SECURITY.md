@@ -63,6 +63,12 @@ exempt other values on the same line or provider/private-key signatures.
 There is no blanket exemption for test files. See
 [`README.md#security`](../README.md#security) for matching behavior.
 
+The synthetic-placeholder exemption requires a complete quoted source literal
+composed entirely of approved placeholder words, an explicit synthetic marker,
+and a credential noun. Configuration values and concatenated expressions do
+not receive this exemption. Provider and private-key signatures always take
+precedence, and Gitleaks findings remain independent of built-in exemptions.
+
 When `gitleaks` is available, the script also runs:
 
 ```bash

@@ -48,6 +48,7 @@ start_case() {
   FILE_ANALYSIS_BATCH_SIZE=6
   RESOLVED_NON_AI_PARALLELISM=2
   RESOLVED_FILE_ANALYSIS_PARALLELISM=2
+  AI_PROGRESS_START_MS=""
   FILE_ANALYSES=""
   FORCE_DIFF=0
   TEST_ANALYSIS_MODE="complete"
@@ -421,6 +422,23 @@ for specification in '1 4 6 1 1' '3 4 6 3 3' '6 4 6 4 4' '8 2 3 3 2' '6 1 6 1 1'
   pass "Measured concurrency: $file_total files, capacity $capacity, maximum batch $batch_limit"
 done
 
+(
+  AI_PROGRESS_START_MS=1000
+  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 1000)" 0 'Progress starts at zero'
+  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 1099)" 0 'Progress holds through 99ms'
+  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 1100)" 1 'Progress advances after 100ms'
+  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 10499)" 94 'Progress remains below the waiting cap through 9499ms'
+  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 10500)" 95 'Progress reaches the waiting cap after 9500ms'
+  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 121000)" 95 'Progress remains capped while waiting'
+  analysis_status=$(ai_progress_status_text 'Analyzing files with AI' 0 6 1 6000)
+  final_status=$(ai_progress_status_text 'Creating commit message with AI' 0 0 0 6500)
+  retry_status=$(ai_progress_status_text 'Retrying commit message with AI' 0 0 0 7000)
+  assert_contains "$analysis_status" '0/6 50% est.' 'Analysis phase uses the shared elapsed clock'
+  assert_contains "$final_status" '55% est.' 'Final generation continues without resetting progress'
+  assert_contains "$retry_status" '60% est.' 'Retry continues without resetting progress'
+)
+pass 'Continuous AI progress uses 100ms ticks across analysis, generation, and retry phases'
+
 for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 partial' '6 2 2 complete' '1 4 6 complete'; do
   read -r file_total capacity batch_limit response_mode <<< "$specification"
   (
@@ -437,18 +455,15 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
       '6 4 6 '*)
         completion_order=(2 3 1 4)
         expected_counts=(2 2 1 1)
-        launch_percentages=(10 20 30 40)
-        initial_percent=40; waiting_percent=70; capped_percent=95 ;;
+        expected_peak=4 ;;
       '6 2 2 complete')
         completion_order=(2 3 1)
         expected_counts=(2 2 2)
-        launch_percentages=(13 26)
-        initial_percent=26; waiting_percent=46; capped_percent=63 ;;
+        expected_peak=2 ;;
       '1 4 6 complete')
         completion_order=(1)
         expected_counts=(1)
-        launch_percentages=(40)
-        initial_percent=40; waiting_percent=70; capped_percent=95 ;;
+        expected_peak=1 ;;
     esac
     # Preserve the real renderer and response handling while controlling delivery.
     eval "$(declare -f run_file_analysis_batch | sed '1s/run_file_analysis_batch/progress_original_batch/')"
@@ -464,9 +479,11 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
       done
       progress_original_batch "$@"
     }
-    # Unsetting SECONDS removes its clock behavior in this test subshell only.
-    unset SECONDS
-    SECONDS=0
+    TEST_CLOCK_MS=0
+    # Called indirectly by the progress renderer.
+    # shellcheck disable=SC2317,SC2329
+    clock_millis() { printf '%s' "$TEST_CLOCK_MS"; }
+    AI_PROGRESS_START_MS=0
     progress_phase=0
     released_jobs=0
     release_after_files=0
@@ -483,37 +500,37 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
       active="${BASH_REMATCH[1]}"
       assert_equal "$(( $# - 1 ))" "$active" 'One loading row per active batch'
       printf '%s %s\n' "$files" "$percent" >> "$progress_dir/frames"
-      if [[ "$files" -lt "$file_total" ]]; then
-        [[ "$percent" -ge 1 && "$percent" -le 95 ]] || fail 'Active progress outside 1-95%'
-        assert_contains "$message" 'est.' 'Waiting progress is labeled as an estimate'
-      else
-        assert_equal "$percent" 100 'Completion reaches 100%'
-        assert_absent "$message" 'est.' 'Completed progress is no longer estimated'
-      fi
+      [[ "$percent" -ge 0 && "$percent" -le 95 ]] || fail 'Active progress outside 0-95%'
+      assert_contains "$message" 'est.' 'AI work remains estimated until the commit message is ready'
       case "$progress_phase" in
         0)
           assert_equal "$files" 0 'Launch progress precedes all results'
-          assert_equal "$percent" "${launch_percentages[$((active - 1))]}" 'Progress after each launch'
-          if [[ "$percent" -eq "$initial_percent" ]]; then
+          assert_equal "$percent" 0 'Starting workers do not advance progress'
+          if [[ "$active" -eq "$expected_peak" ]]; then
             progress_phase=1
-            SECONDS=30
+            TEST_CLOCK_MS=99
           fi ;;
         1)
           assert_equal "$files" 0 'Waiting progress does not complete files'
-          assert_equal "$percent" "$waiting_percent" 'Progress rises with simulated time'
+          assert_equal "$percent" 0 'Progress holds through 99ms'
           progress_phase=2
-          SECONDS=55 ;;
+          TEST_CLOCK_MS=100 ;;
         2)
-          assert_equal "$files" 0 'Capped progress precedes all results'
-          assert_equal "$percent" "$capped_percent" 'Running batch contributions stop at 95'
+          assert_equal "$files" 0 'Timed progress precedes all results'
+          assert_equal "$percent" 1 'Progress advances by one point after 100ms'
           progress_phase=3
-          SECONDS=120 ;;
+          TEST_CLOCK_MS=9500 ;;
         3)
           assert_equal "$files" 0 'Held AI responses keep the file counter at zero'
-          assert_equal "$percent" "$capped_percent" 'Long waits cannot inflate progress'
-          progress_phase=4 ;;
+          assert_equal "$percent" 95 'Progress reaches the waiting cap'
+          progress_phase=4
+          TEST_CLOCK_MS=120000 ;;
+        4)
+          assert_equal "$files" 0 'Long waits do not complete files'
+          assert_equal "$percent" 95 'Long waits cannot inflate progress'
+          progress_phase=5 ;;
       esac
-      if [[ "$progress_phase" -eq 4 && "$files" -eq "$release_after_files" && "$released_jobs" -lt "${#completion_order[@]}" ]]; then
+      if [[ "$progress_phase" -eq 5 && "$files" -eq "$release_after_files" && "$released_jobs" -lt "${#completion_order[@]}" ]]; then
         job="${completion_order[$released_jobs]}"
         : > "$progress_dir/release-$job"
         released_jobs=$((released_jobs + 1))
@@ -522,14 +539,18 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
     }
     IS_TTY=1
     analyze_files_individually 2> "$progress_dir/terminal.log"
-    assert_equal "$progress_phase" 4 'All waiting phases were observed'
+    assert_equal "$progress_phase" 5 'All waiting phases were observed'
     assert_equal "$released_jobs" "${#completion_order[@]}" 'Every held batch was released'
-    assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 100" 'All files handled before 100%'
+    assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 95" 'File analysis cannot complete the overall AI progress'
     awk 'NR > 1 && $2 < previous {exit 1} {previous = $2}' "$progress_dir/frames" || fail 'Progress decreased'
     assert_equal "$LIVE_STATUS_ROWS" 0 'Loading rows cleared after analysis'
     assert_equal "$LIVE_STATUS_ACTIVE" 0 'Live status stopped after analysis'
     [[ "$LIVE_STATUS_FRAME" -gt 4 ]] || fail 'Spinner did not advance while waiting'
     assert_contains "$(cat "$progress_dir/terminal.log")" $'\033[?25h' 'Cursor restored after analysis'
+    ai_progress_complete 'Commit message received' 2>> "$progress_dir/terminal.log"
+    assert_contains "$(tail -n 1 "$progress_dir/terminal.log")" '100%' 'Final commit-message completion reaches 100%'
+    assert_absent "$(tail -n 1 "$progress_dir/terminal.log")" 'est.' 'Completed progress is no longer estimated'
+    assert_equal "$AI_PROGRESS_START_MS" '' 'Completed progress resets its shared clock'
     if [[ "$response_mode" == complete ]]; then
       expected_order=$(printf '%s\n' "${BATCH_ANALYSIS_FILE_NAMES[@]}")
       actual_order=$(printf '%s' "$FILE_ANALYSES" | sed -n 's/^<file name="\(.*\)\">$/\1/p')

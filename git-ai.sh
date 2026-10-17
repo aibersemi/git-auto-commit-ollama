@@ -471,10 +471,13 @@ LIVE_STATUS_ROWS=0
 LIVE_STATUS_COLUMNS=80
 LIVE_STATUS_MAX_ROWS=21
 SCRIPT_START_EPOCH=""
+AI_PROGRESS_START_MS=""
 CURRENT_STEP=0
 TOTAL_STEPS=6
 
 timer_start() { SCRIPT_START_EPOCH=$(date +%s); }
+
+clock_millis() { date +%s%3N; }
 
 elapsed_since() {
   local start="$1"
@@ -486,6 +489,47 @@ elapsed_since() {
   else
     printf '%d seconds' "$diff"
   fi
+}
+
+elapsed_since_millis() {
+  local start_ms="$1"
+  local now_ms="${2:-}"
+  local diff_ms seconds
+
+  [[ -n "$now_ms" ]] || now_ms=$(clock_millis)
+  if [[ ! "$start_ms" =~ ^[0-9]+$ || ! "$now_ms" =~ ^[0-9]+$ || "$now_ms" -lt "$start_ms" ]]; then
+    seconds=0
+  else
+    diff_ms=$((now_ms - start_ms))
+    seconds=$((diff_ms / 1000))
+  fi
+
+  if [[ "$seconds" -ge 60 ]]; then
+    printf '%dm%ds' $((seconds / 60)) $((seconds % 60))
+  else
+    printf '%d seconds' "$seconds"
+  fi
+}
+
+estimated_ai_progress_percent() {
+  local start_ms="$1"
+  local now_ms="${2:-}"
+  local elapsed_ms percent
+
+  [[ -n "$now_ms" ]] || now_ms=$(clock_millis)
+  if [[ ! "$start_ms" =~ ^[0-9]+$ || ! "$now_ms" =~ ^[0-9]+$ || "$now_ms" -lt "$start_ms" ]]; then
+    printf '0'
+    return 0
+  fi
+
+  elapsed_ms=$((now_ms - start_ms))
+  percent=$((elapsed_ms / 100))
+  [[ "$percent" -le 95 ]] || percent=95
+  printf '%d' "$percent"
+}
+
+ensure_ai_progress_started() {
+  [[ -n "$AI_PROGRESS_START_MS" ]] || AI_PROGRESS_START_MS=$(clock_millis)
 }
 
 spinner_start() {
@@ -619,6 +663,7 @@ live_status_stop() {
 progress_status_text() {
   local current="$1" total="$2" label="${3:-Processing}" elapsed="${4:-}"
   local percent_override="${5:-}" percent_suffix="${6:-}"
+  local show_counter="${7:-1}"
   local width=14
   local filled=0 percent=0
   local bar="" i
@@ -635,11 +680,76 @@ progress_status_text() {
   for ((i=0; i<filled; i++)); do bar+="█"; done
   for ((i=filled; i<width; i++)); do bar+="░"; done
 
-  if [[ -n "$elapsed" ]]; then
+  if [[ "$show_counter" -eq 1 && -n "$elapsed" ]]; then
     printf '%s [%s] %d/%d %d%%%s · %s' "$label" "$bar" "$current" "$total" "$percent" "$percent_suffix" "$elapsed"
-  else
+  elif [[ "$show_counter" -eq 1 ]]; then
     printf '%s [%s] %d/%d %d%%%s' "$label" "$bar" "$current" "$total" "$percent" "$percent_suffix"
+  elif [[ -n "$elapsed" ]]; then
+    printf '%s [%s] %d%%%s · %s' "$label" "$bar" "$percent" "$percent_suffix" "$elapsed"
+  else
+    printf '%s [%s] %d%%%s' "$label" "$bar" "$percent" "$percent_suffix"
   fi
+}
+
+ai_progress_status_text() {
+  local label="$1"
+  local current="${2:-0}"
+  local total="${3:-0}"
+  local show_counter="${4:-0}"
+  local now_ms="${5:-}"
+  local percent elapsed
+
+  ensure_ai_progress_started
+  [[ -n "$now_ms" ]] || now_ms=$(clock_millis)
+  percent=$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$now_ms")
+  elapsed=$(elapsed_since_millis "$AI_PROGRESS_START_MS" "$now_ms")
+  progress_status_text "$current" "$total" "$label" "$elapsed" "$percent" " est." "$show_counter"
+}
+
+ai_progress_status_start() {
+  local label="${1:-AI commit message}"
+  if [[ "$IS_TTY" -ne 1 ]]; then
+    step_info "⟩ ${label}..."
+    return 0
+  fi
+
+  ensure_ai_progress_started
+  live_status_stop 2>/dev/null || true
+  spinner_stop
+
+  local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+  local start_ms="$AI_PROGRESS_START_MS"
+  printf '\033[?25l' >&2
+  (
+    local i=0 len=${#chars} status_msg
+    while true; do
+      status_msg=$(AI_PROGRESS_START_MS="$start_ms" ai_progress_status_text "$label")
+      printf '\r  %b%s%b %s\033[K' "$CYAN" "${chars:i%len:1}" "$NC" "$status_msg" >&2
+      i=$((i + 1))
+      sleep 0.08
+    done
+  ) &
+  SPINNER_PID=$!
+  disown "$SPINNER_PID" 2>/dev/null || true
+}
+
+ai_progress_complete() {
+  local label="${1:-Commit message received}"
+  local now_ms elapsed status_msg
+
+  ensure_ai_progress_started
+  now_ms=$(clock_millis)
+  elapsed=$(elapsed_since_millis "$AI_PROGRESS_START_MS" "$now_ms")
+  live_status_stop 2>/dev/null || true
+  spinner_stop
+
+  if [[ "$IS_TTY" -eq 1 ]]; then
+    status_msg=$(progress_status_text 0 0 "$label" "$elapsed" 100 "" 0)
+    printf '  %b✓%b %s\n' "$GREEN" "$NC" "$status_msg" >&2
+  else
+    step_ok "${label} (${elapsed})"
+  fi
+  AI_PROGRESS_START_MS=""
 }
 
 show_step() {
@@ -1036,6 +1146,17 @@ scan_sensitive_content() {
         value ~ ("^" reference "[[:space:]]*[[]") ||
         value ~ ("^" reference "[[:space:]]*($|[,;)}#]|[]]|[+*/?])"))
     }
+    function is_synthetic_placeholder(value, words, count, i, has_marker, has_kind) {
+      # Match complete natural-language labels, never arbitrary values containing a marker.
+      if (value !~ /^[a-z]+([-_][a-z]+)+$/) return 0
+      count = split(value, words, /[-_]/)
+      for (i = 1; i <= count; i++) {
+        if (words[i] !~ /^(synthetic|sintetis|credential|credentials|key|token|secret|password|api|test|testing|tests|only|value|for|khusus|untuk)$/) return 0
+        if (words[i] ~ /^(synthetic|sintetis)$/) has_marker = 1
+        if (words[i] ~ /^(credential|credentials|key|token|secret|password)$/) has_kind = 1
+      }
+      return has_marker && has_kind
+    }
     function has_secret(content, lower, rest, rhs, quote, candidate, end_quote) {
       lower = tolower(content)
       # Token/key signatures always take precedence over expression/placeholder exemptions.
@@ -1045,6 +1166,7 @@ scan_sensitive_content() {
         rhs = substr(rest, RSTART + RLENGTH)
         rest = rhs
         quote = substr(rhs, 1, 1)
+        end_quote = 0
         if (quote != "" && index(quote_chars, quote)) {
           candidate = substr(rhs, 2)
           end_quote = index(candidate, quote)
@@ -1054,6 +1176,9 @@ scan_sensitive_content() {
           if (!match(rhs, /^[a-z0-9_.\/+=:@-]+/)) continue
           candidate = substr(rhs, RSTART, RLENGTH)
         }
+        # Only complete quoted source literals qualify; concatenations stay conservative.
+        if (code_file && end_quote && is_synthetic_placeholder(candidate) &&
+            substr(rhs, end_quote + 2) ~ /^[[:space:]]*($|[,;)}#]|[]])/) continue
         if (candidate ~ /^[a-z0-9_.\/+=:@-]{12,}/ && candidate !~ placeholder_regex) return 1
       }
       return 0
@@ -2091,32 +2216,22 @@ file_analysis_status_update() {
   [[ "$IS_TTY" -eq 1 ]] || return 0
 
   # Scheduler arrays and counters belong to analyze_files_individually's local scope.
-  local now="$SECONDS" i batch_elapsed contribution percent status_msg
-  local progress_sum=$((completed_batches * 100)) percent_suffix=" est."
+  local now_ms i percent status_msg elapsed
   local -a worker_status_lines=()
   for ((i=0; i<next_job; i++)); do
     [[ "${batch_done[$i]:-0}" -eq 0 ]] || continue
-    batch_elapsed=$((now - batch_started_seconds[i]))
-    [[ "$batch_elapsed" -ge 0 ]] || batch_elapsed=0
-    contribution=$((40 + batch_elapsed))
-    [[ "$contribution" -le 95 ]] || contribution=95
-    progress_sum=$((progress_sum + contribution))
     worker_status_lines+=("Batch $((i + 1))/${batch_total}: ${batch_counts[$i]} file(s) · ${BATCH_ANALYSIS_FILE_NAMES[${batch_starts[$i]}]}")
   done
 
-  if [[ "$completed_batches" -eq "$batch_total" ]]; then
-    percent=100
-    percent_suffix=""
-  else
-    percent=$((progress_sum / batch_total))
-    [[ "$percent" -ge 1 ]] || percent=1
-    [[ "$percent" -le 95 ]] || percent=95
-    [[ "$percent" -ge "$analysis_progress_percent" ]] || percent="$analysis_progress_percent"
-  fi
+  ensure_ai_progress_started
+  now_ms=$(clock_millis)
+  percent=$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$now_ms")
+  [[ "$percent" -ge "$analysis_progress_percent" ]] || percent="$analysis_progress_percent"
   analysis_progress_percent="$percent"
+  elapsed=$(elapsed_since_millis "$AI_PROGRESS_START_MS" "$now_ms")
   status_msg=$(progress_status_text "$completed_files" "$analysis_total" \
-    "Analyzing files with AI (${running}/${parallelism} active)" \
-    "$(elapsed_since "$analysis_start")" "$percent" "$percent_suffix")
+    "AI file analysis (${running}/${parallelism} active)" \
+    "$elapsed" "$percent" " est.")
   live_status_update "$status_msg" "${worker_status_lines[@]}"
 }
 
@@ -2186,7 +2301,6 @@ analyze_files_individually() {
   local batch_pids=()
   local batch_done=()
   local batch_starts=()
-  local batch_started_seconds=()
   local batch_counts=()
   local analysis_results=()
 
@@ -2196,7 +2310,8 @@ analyze_files_individually() {
   dbg "Per-file analysis: total ${total_files}, eligible ${analysis_candidate_total}, selected ${analysis_total}, batches ${batch_total}, batch size ${batch_size}, parallelism capacity ${parallelism_capacity} (${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}), effective parallelism ${parallelism}"
 
   local status_msg
-  status_msg=$(progress_status_text 0 "$analysis_total" "Analyzing files with AI")
+  ensure_ai_progress_started
+  status_msg=$(ai_progress_status_text "AI file analysis" 0 "$analysis_total" 1)
   step_info "Ollama analysis capacity: ${parallelism_capacity} (${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}); using up to ${parallelism} worker(s)."
   live_status_start "$status_msg" "Sending ${analysis_total} file(s) to AI in ${batch_total} batch(es) (batch size ${batch_size}, capacity ${parallelism_capacity}, effective parallelism ${parallelism})..."
 
@@ -2225,7 +2340,6 @@ analyze_files_individually() {
       batch_status_files[job_index]="$batch_status"
       batch_done[job_index]=0
       batch_starts[job_index]="$batch_start"
-      batch_started_seconds[job_index]="$SECONDS"
       batch_counts[job_index]="$batch_count"
 
       (
@@ -3192,6 +3306,7 @@ generate_commit_message() {
   debug_git_context "$safe_mode"
   step_ok "Context: ${STAGED_FILE_COUNT} file(s) staged"
 
+  ensure_ai_progress_started
   FILE_ANALYSES=""
   if [[ "$DO_FILE_ANALYSIS" -eq 1 ]]; then
     analyze_files_individually || true
@@ -3218,7 +3333,7 @@ generate_commit_message() {
     if [[ "$structured_available" -eq 1 ]]; then
       system_prompt=$(build_system_prompt_json)
       schema=$(build_commit_schema)
-      blocking_status_start "Sending prompt to AI model (structured)..."
+      ai_progress_status_start "AI commit message (structured)"
 
       if ! content=$(ollama_chat "$system_prompt" "$user_prompt" "$schema"); then
         blocking_status_stop
@@ -3260,7 +3375,7 @@ generate_commit_message() {
     fi
 
     system_prompt=$(build_system_prompt_text)
-    blocking_status_start "Sending prompt to AI model (plain text)..."
+    ai_progress_status_start "AI commit message (plain text)"
     if ! content=$(ollama_chat "$system_prompt" "$user_prompt" ""); then
       blocking_status_stop
       step_info "AI response unavailable: the Ollama request failed or returned invalid or empty content."
@@ -3426,14 +3541,8 @@ main() {
   local commit_msg_file
   commit_msg_file=$(mktemp)
 
-  local gen_start
-  gen_start=$(date +%s)
-
   generate_commit_message > "$commit_msg_file"
-
-  local gen_elapsed
-  gen_elapsed=$(elapsed_since "$gen_start")
-  step_ok "Commit message received (${gen_elapsed})"
+  ai_progress_complete "Commit message received"
 
   local commit_msg
   commit_msg=$(cat "$commit_msg_file")

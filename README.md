@@ -339,18 +339,18 @@ Ollama does not expose its parallelism setting through its public API, so
 remote endpoints should set `OLLAMA_PARALLELISM_HINT` or use a numeric
 `FILE_ANALYSIS_PARALLELISM`.
 
-The terminal progress bar is an estimate, marked `est.` while analysis is
-running. Each batch contributes 40 points when it starts, then one additional
-point per second up to 95, and 100 once its response or local fallback has
-been processed. The overall percentage averages all batches, including queued
-batches at zero. Starting four batches therefore advances the bar through
-`10%`, `20%`, `30%`, and `40%` before any result arrives. Progress never decreases,
-stays between 1% and 95% once work starts, and reaches 100% only after every
-batch is handled. The file counter still reports completed files, so
-`0/6 40% est.` is expected while all four batches are waiting for AI. The
-spinner and elapsed time continue updating even when the estimate reaches its
-limit. Ollama responses are not streamed, so this is not a measurement of
-model completion.
+The terminal progress bar is a simulated estimate, marked `est.` while AI work
+is running. It starts at `0%`, advances by one point every 100 milliseconds,
+and stops at `95%` while waiting. Starting or completing a batch does not jump
+the percentage. The same clock continues from per-file analysis into final
+commit-message generation and across retries, so changing phases never resets
+the bar. The file counter still reports completed files during per-file
+analysis, while active batches retain separate animated rows. Progress reaches
+`100%` only after the final commit message is available. The spinner and
+elapsed time continue updating at the waiting limit. Ollama responses are not
+streamed, so the percentage improves visual feedback rather than measuring
+model completion. Non-TTY output prints one status per phase without animated
+frames or terminal control sequences.
 
 Additional environment variables:
 
@@ -474,6 +474,13 @@ Available protections:
   receive no expression exemptions; test files follow the same rules as code.
   Placeholder exemptions apply to each value, not the whole line. Provider
   token and private-key signatures take precedence over all exemptions.
+  Complete quoted source literals can also be synthetic placeholders when
+  every hyphen/underscore-separated word belongs to a small placeholder
+  vocabulary and includes both `synthetic`/`sintetis` and a credential noun
+  such as `key`, `token`, or `credential`. This covers labels such as
+  `synthetic-api-key-for-tests` without exempting arbitrary values containing
+  a test marker. This exemption does not apply to configuration values,
+  unknown file types, unterminated strings, or concatenated expressions.
 - During a normal run, a secret finding cancels the commit.
   `--allow-secret-commit` only bypasses that cancellation.
 - Safe mode removes detailed diffs from the primary prompt and skips sensitive
