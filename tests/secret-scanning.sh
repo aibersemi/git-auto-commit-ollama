@@ -170,6 +170,34 @@ expect_safe src/runtime.ts "$(assignment api_key 'config.api_key,')" 'Member ref
 expect_safe 'tests/space name.py' "$(assignment self.secret 'secrets.token_urlsafe (16)')" 'Function call with whitespace and spaced path'
 expect_safe $'tests/tab\tnewline\nbackslash\\name.py' "$(assignment self.secret 'secrets.token_hex(32)')" 'NUL-delimited paths preserve expression exemptions'
 
+oauth_label='OAUTH_GOOGLE_CLIENT_SECRET'
+oauth_id_label='OAUTH_GOOGLE_CLIENT_ID'
+ternary_content=$(printf 'const path = [hasClientId ? "%s" : "%s"];' "$oauth_label" "$oauth_id_label")
+expect_safe src/runtime.ts "$ternary_content" 'OAuth environment names in a TypeScript ternary are labels'
+# The JavaScript template interpolation is literal fixture content.
+# shellcheck disable=SC2016
+expect_safe src/runtime.ts "$(printf 'throw new Error(`Invalid environment: ${hasClientId ? "%s" : "%s"}`);' "$oauth_label" "$oauth_id_label")" 'OAuth environment names in a template interpolation are labels'
+expect_safe src/runtime.ts "$(printf "const path = [hasClientId ? '%s' : '%s'];" "$oauth_label" "$oauth_id_label")" 'Single-quoted environment labels in a ternary'
+expect_safe src/runtime.ts "$(printf 'const path = [hasClientId ? "%s" : "%s", hasToken ? "%s" : "%s"];' "$oauth_label" "$oauth_id_label" ACCESS_TOKEN AUTH_TOKEN)" 'Multiple ternary labels on one line'
+for quote in '"' "'"; do
+  expect_sensitive src/runtime.ts "const config = { $quote""OAUTH_GOOGLE_CLIENT_SECRET$quote: $quote$literal_value$quote };" 'Quoted object properties still protect credential literals'
+done
+expect_sensitive src/runtime.ts "$ternary_content $(assignment password "\"$literal_value\"")" 'Ternary label cannot hide another credential on the same line'
+expect_sensitive src/runtime.ts "$(printf 'const name = hasClientId ? "%s" : "%s";' "$oauth_label" "$provider_value")" 'Provider signature overrides ternary label exemption'
+expect_sensitive unknown.data "$ternary_content" 'Unknown files do not receive ternary syntax exemptions'
+
+for quote in '"' "'"; do
+  expect_safe tests/runtime.test.ts "$(assignment OAUTH_GOOGLE_CLIENT_SECRET "$quote""client-secret$quote")," 'Exact OAuth client-secret placeholder in source'
+done
+for path in .env settings.yaml unknown.data; do
+  expect_sensitive "$path" "$(assignment OAUTH_GOOGLE_CLIENT_SECRET '"client-secret"')" "OAuth placeholder-looking config value remains protected in $path"
+done
+for candidate in client-secret-production client-secret-123456789012 "client-secret-$literal_value"; do
+  expect_sensitive tests/runtime.test.ts "$(assignment OAUTH_GOOGLE_CLIENT_SECRET "\"$candidate\"")" 'OAuth placeholder prefix cannot exempt arbitrary values'
+done
+expect_sensitive src/runtime.ts "$(assignment OAUTH_GOOGLE_CLIENT_SECRET "\"client-secret\" + \"$literal_value\"")" 'OAuth placeholder cannot exempt a concatenated credential'
+expect_sensitive src/runtime.ts "$(assignment OAUTH_GOOGLE_CLIENT_SECRET '"client-secret')" 'Unterminated OAuth placeholder remains protected'
+
 for placeholder in '"dummy-secret-value"' '"your-api-key-here"' 'changeme-secret-value'; do
   expect_safe .env "$(assignment password "$placeholder")" "Placeholder candidate: $placeholder"
 done
@@ -301,6 +329,18 @@ assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Synthetic place
 assert_contains "$(cat "$test_root"/requests/request.*)" 'credential-sintetis-khusus-test' 'Synthetic placeholder missing from AI context'
 assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Synthetic placeholder preview changed the caller index'
 pass 'Synthetic placeholder CLI preview preserves useful context and Git state'
+
+start_case
+stage_text src/runtime.ts "$ternary_content"
+stage_text tests/runtime.test.ts "$(printf 'const config = { %s: "%s" };' "$oauth_label" client-secret)"
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'OAuth environment preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'OAuth environment names or placeholder triggered the guard'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'OAuth environment preview activated safe mode'
+assert_contains "$(cat "$test_root"/requests/request.*)" 'OAUTH_GOOGLE_CLIENT_SECRET' 'OAuth environment source missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'OAuth environment preview changed the caller index'
+pass 'OAuth environment CLI preview preserves source context and Git state'
 
 start_case
 stage_text src/runtime.py "$(assignment password "\"$literal_value\"")"

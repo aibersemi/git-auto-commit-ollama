@@ -1146,7 +1146,15 @@ scan_sensitive_content() {
         value ~ ("^" reference "[[:space:]]*[[]") ||
         value ~ ("^" reference "[[:space:]]*($|[,;)}#]|[]]|[+*/?])"))
     }
-    function is_synthetic_placeholder(value, words, count, i, has_marker, has_kind) {
+    function is_ternary_label(prefix, assignment, quote) {
+      # A quoted branch followed by a colon is not an object property assignment.
+      quote = substr(prefix, length(prefix), 1)
+      return code_file && quote != "" && index(quote_chars, quote) &&
+        prefix ~ ("[?][[:space:]]*" quote "$") &&
+        assignment ~ (quote "[[:space:]]*:[[:space:]]*$")
+    }
+    function is_source_placeholder(value, words, count, i, has_marker, has_kind) {
+      if (value == "client-secret") return 1
       # Match complete natural-language labels, never arbitrary values containing a marker.
       if (value !~ /^[a-z]+([-_][a-z]+)+$/) return 0
       count = split(value, words, /[-_]/)
@@ -1157,14 +1165,16 @@ scan_sensitive_content() {
       }
       return has_marker && has_kind
     }
-    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote) {
+    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote, ternary_label) {
       lower = tolower(content)
       # Token/key signatures always take precedence over expression/placeholder exemptions.
       if (lower ~ strong_regex) return 1
       rest = lower
       while (match(rest, assignment_regex)) {
         rhs = substr(rest, RSTART + RLENGTH)
+        ternary_label = is_ternary_label(substr(rest, 1, RSTART - 1), substr(rest, RSTART, RLENGTH))
         rest = rhs
+        if (ternary_label) continue
         quote = substr(rhs, 1, 1)
         end_quote = 0
         if (quote != "" && index(quote_chars, quote)) {
@@ -1177,7 +1187,7 @@ scan_sensitive_content() {
           candidate = substr(rhs, RSTART, RLENGTH)
         }
         # Only complete quoted source literals qualify; concatenations stay conservative.
-        if (code_file && end_quote && is_synthetic_placeholder(candidate) &&
+        if (code_file && end_quote && is_source_placeholder(candidate) &&
             substr(rhs, end_quote + 2) ~ /^[[:space:]]*($|[,;)}#]|[]])/) continue
         if (candidate ~ /^[a-z0-9_.\/+=:@-]{12,}/ && candidate !~ placeholder_regex) return 1
       }

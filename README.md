@@ -472,6 +472,8 @@ Available protections:
   credential literals. Quoted literals and unquoted configuration values
   remain checked at the existing 12-character threshold. Unknown file types
   receive no expression exemptions; test files follow the same rules as code.
+  Quoted names used as conditional branches, such as environment variable
+  labels in ternary expressions, are not treated as property assignments.
   Placeholder exemptions apply to each value, not the whole line. Provider
   token and private-key signatures take precedence over all exemptions.
   Complete quoted source literals can also be synthetic placeholders when
@@ -479,7 +481,8 @@ Available protections:
   vocabulary and includes both `synthetic`/`sintetis` and a credential noun
   such as `key`, `token`, or `credential`. This covers labels such as
   `synthetic-api-key-for-tests` without exempting arbitrary values containing
-  a test marker. This exemption does not apply to configuration values,
+  a test marker. The exact OAuth example label `client-secret` is also a
+  source placeholder. These exemptions do not apply to configuration values,
   unknown file types, unterminated strings, or concatenated expressions.
 - During a normal run, a secret finding cancels the commit.
   `--allow-secret-commit` only bypasses that cancellation.
