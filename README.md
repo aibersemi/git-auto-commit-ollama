@@ -42,8 +42,7 @@ endpoint, which may run locally or on another network host.
 - Ollama preflight through `/api/tags`, `/api/ps`, and `/api/chat`, including a
   fallback host, automatic model pulling, and model warm-up before staging.
 - Scope-free Conventional Commit messages through Ollama `/api/chat`.
-- JSON Schema structured output with plain-text fallback and a local fallback
-  message when the AI response remains invalid.
+- JSON Schema structured output with plain-text fallback and bounded corrective retries; generation failure stops before committing or pushing.
 - Per-file diff analysis with configurable file-count, blob-size, and adaptive
   Ollama concurrency limits, with incremental progress for each completed file.
 - Adaptive non-AI concurrency for independent read-only context jobs and the
@@ -154,8 +153,7 @@ uses short edits, deletions, and renames when no Markdown qualifies. With
 no eligible excerpts, generation uses Git metadata.
 
 Within each file, complete hunks are ranked by Markdown text changes or
-runtime changed-line count. Up to four hunks are compacted by removing
-unchanged context and placing additions before removals. Long lines and
+runtime changed-line count. Up to four hunks are compacted by placing additions before removals and retaining up to three unchanged source conditions or return statements. Other unchanged context is removed. Context lines keep their space prefix so existing alternatives remain distinguishable from new behavior. Long lines and
 excerpts are bounded without splitting Unicode characters. Paired prose
 removes shared prefixes/suffixes with a small context margin; long source
 hunks sample changed lines across their beginning, middle, and end. Primary context
@@ -179,6 +177,10 @@ implemented behavior, with documentation, tests, and CI afterward. Category
 checks and language patterns reject supporting themes and request a
 corrective retry, including contribution/security guidelines or requirements
 to run a regression suite.
+
+Runtime rules about test credentials or fixture inputs remain runtime work; adding tests or maintaining test fixtures is supporting work. Rejections identify the commit type, subject, or first bullet, with a diagnostic code and the offending text when applicable. Per-file analysis compares accepted inputs before and after validation changes and treats unchanged conditions as existing behavior.
+
+Generation has a total limit of 10 attempts and a separate limit of three invalid commit-message responses, including format and quality failures. Unavailable requests consume the total attempt budget without consuming the invalid-response budget. JSON Schema composition failures consume the invalid-response budget and try plain text within the same attempt when that budget permits. Corrective prompts preserve the response format required by the active system prompt. Exhausting either budget exits with an error before commit or push and preserves staged changes; every emitted commit message must pass validation.
 
 Ranking measures changed text, not semantic relevance or implementation
 correctness. Classification and language checks cannot prove the accuracy
@@ -484,13 +486,15 @@ Available protections:
   labels in ternary expressions, are not treated as property assignments.
   Placeholder exemptions apply to each value, not the whole line. Provider
   token and private-key signatures take precedence over all exemptions.
-  Complete quoted source literals can also be synthetic placeholders when
+  Complete quoted source literals can also be placeholders when
   every hyphen/underscore-separated word belongs to a small placeholder
-  vocabulary and includes both `synthetic`/`sintetis` and a credential noun
-  such as `key`, `token`, or `credential`. This covers labels such as
-  `synthetic-api-key-for-tests` without exempting arbitrary values containing
-  a test marker. The exact OAuth example label `client-secret` is also a
-  source placeholder. These exemptions do not apply to configuration values,
+  vocabulary, includes a credential noun such as `key`, `token`, or
+  `credential`, and either contains `synthetic`/`sintetis` or starts with
+  `test`/`testing`/`tests`. The vocabulary includes `private`, `public`, and
+  `auth`, covering labels such as `test-private-key`, `test-auth-key`, and
+  `synthetic-api-key-for-tests`. A test suffix alone, arbitrary words, and
+  random or numeric suffixes do not qualify. The exact OAuth example label
+  `client-secret` is also a source placeholder. These exemptions do not apply to configuration values,
   unknown file types, unterminated strings, or concatenated expressions.
 - Complete quoted `*_SALT` literals in Python and JavaScript/TypeScript can represent public HMAC/signing namespaces, such as `PASSWORD_RESET_OTP_SALT` with the value `accounts.customer-password-reset-otp`. The value must be a dotted namespace of alphabetic words separated by hyphens or underscores, ending with the variable name without `_SALT` at a dot/hyphen/underscore boundary; hyphens and underscores are equivalent for this comparison. Arbitrary salt values, other credential names, configuration files, unterminated strings, and concatenations do not receive this exemption. Lint suppression comments do not affect scanning. Provider and private-key signatures still take precedence, and `gitleaks` findings remain independent.
 - During a normal run, a secret finding cancels the commit.
@@ -532,7 +536,7 @@ detailed scope.
 | No remote exists | The repository has no remote. | The script skips the push; add a remote when pushing is required. |
 | `git-ai` disappeared after moving the checkout | Installed symlinks still point to the old clone location. | Restore the checkout to its original location or reinstall from the new location. |
 | Changes to `git-ai.conf` are ignored | The `git-ai` command and configuration come from different installations or checkouts. | Run `git-ai --help` to see the active configuration path, then inspect the symlink with `readlink -f "$(command -v git-ai)"`. |
-| Output shows `Retry` | The Ollama request failed, the message format was invalid, or the message failed quality validation, such as leading with documentation while source changes are staged. | Read the preceding `AI response rejected` or `AI response unavailable` message; use `--debug` for detailed format and HTTP diagnostics. Quality retries send the rejected message and correction reason back to the model. JSON Schema failures fall back directly to plain text and do not count as a separate retry. Retry delays increase linearly by one second and are capped at 10 seconds. |
+| Output shows `Retry` | The Ollama request failed or the message failed format or quality validation. | Read the preceding rejection or availability message; use `--debug` for HTTP and format diagnostics. Quality feedback names the rejected part and sends the candidate and reason back to the model. Generation stops after three invalid responses or 10 total attempts, preserving staged changes without commit/push. Retry delays increase by one second, capped at 10 seconds. See [Commit References](#commit-references) for validation and retry behavior. |
 
 Use `git-ai --debug` to inspect the active configuration and endpoint, relevant
 Git and curl commands, command output, the full staged diff, complete prompts

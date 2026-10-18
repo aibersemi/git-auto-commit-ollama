@@ -24,8 +24,7 @@ Useful contributions include:
 - Bug fixes for staging, commits, pushes, repository locking, or Ollama
   integration.
 - Improvements to secret detection, safe mode, and sensitive-data handling.
-- Improvements to prompts, structured output, fallback commit subjects, or
-  subject validation.
+- Improvements to prompts, structured output, corrective retries, or subject validation.
 - Performance improvements for per-file analysis and diff context collection.
 - Usage, troubleshooting, configuration, and deployment documentation.
 - Bash linting, CI validation, and test scenarios.
@@ -104,6 +103,7 @@ hunks, Unicode bounds, reserved runtime context, and rejection of supporting
 themes in the subject or first bullet. Cover visible quality-rejection reasons
 and corrective retries for
 plain text, structured JSON, and plain text returned to a structured request.
+Include runtime rules about test inputs alongside real test-fixture maintenance, exact rejection locations, and bounded unchanged source context. Verify success after two invalid responses, stopping after three invalid responses, mixed request/validation failures, and request exhaustion. Failure tests must assert a nonzero exit, bounded API calls, unchanged index/refs, released locks, and no attempted commit or push. Keep retry-delay mocks scoped to isolated CLI tests.
 Follow the README runtime check when Ollama is available; do not use
 real commits or pushes for validation.
 

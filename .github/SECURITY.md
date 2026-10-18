@@ -56,11 +56,13 @@ running the CLI.
 
 Both built-in protections use the same path-aware matcher, with the guard checking additions and safe mode checking the entire diff, including removed and unchanged context lines. Expression and public namespace-salt exemptions are restricted to Python and JavaScript/TypeScript source files; other quoted literals, configuration values, and unknown file types remain checked conservatively. Placeholders cannot exempt other values on the same line or provider/private-key signatures. There is no blanket exemption for test files or salt-named variables. See [`README.md#security`](../README.md#security) for matching behavior.
 
-The synthetic-placeholder exemption requires a complete quoted source literal
-composed entirely of approved placeholder words, an explicit synthetic marker,
-and a credential noun. Configuration values and concatenated expressions do
-not receive this exemption. Provider and private-key signatures always take
-precedence, and Gitleaks findings remain independent of built-in exemptions.
+The source-placeholder exemption requires a complete quoted source literal
+composed entirely of approved placeholder words, a credential noun, and either
+an explicit synthetic marker or a leading `test`/`testing`/`tests` word. Test
+suffixes alone, arbitrary words, random or numeric suffixes, configuration
+values, and concatenated expressions do not receive this exemption. Provider
+and private-key signatures always take precedence, and Gitleaks findings
+remain independent of built-in exemptions.
 
 When `gitleaks` is available, the script also runs:
 
@@ -71,6 +73,8 @@ gitleaks protect --staged --redact --no-banner
 The built-in scanner and `gitleaks` may run concurrently, but the tool waits
 for both results before applying the secret policy. Adaptive context and AI
 parallelism begins only after staging and secret-policy evaluation complete.
+
+Commit-message generation stops after three invalid responses or 10 total attempts. A generation failure exits before commit or push and preserves staged changes. All emitted messages pass format and quality validation; see [Commit References](../README.md#commit-references) for retry behavior. Bounded unchanged source conditions are included only after the complete diff passes the existing sensitive-content checks.
 
 Overrides are available only for intentional use:
 

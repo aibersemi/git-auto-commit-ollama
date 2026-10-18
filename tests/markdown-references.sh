@@ -179,7 +179,6 @@ for specification in 'test:tests/security/test_recovery.py' 'test:test_auth.py' 
   else
     assert_equal "$HAS_FUNCTIONAL_CHANGE" 0 "$fixture_path supporting classification"
     accept_message "$expected_kind: improve recovery checks"
-    assert_equal "$(build_fallback_type)" "$expected_kind" 'Supporting fallback type'
     reject_message 'feat: improve recovery checks' "$expected_kind commit type"
   fi
   pass "Category precedence: $fixture_path"
@@ -222,6 +221,42 @@ reject_message $'fix: combine runtime and Markdown references\n\n- Require runni
 reject_message $'fix: combine runtime and Markdown references\n\n- Update CI checks for regression tests.' 'first bullet'
 accept_message $'fix: combine runtime and Markdown references\n\n- Rank complete safe diffs and balance worker batches.'
 pass 'Utility guidelines cannot replace runtime behavior in the head or first bullet'
+
+assert_contains "$SEMANTIC_CHANGE_SUMMARY" 'runtime source behavior' 'Runtime shell changes retain a functional theme'
+assert_contains "$CHANGE_PRIORITY_HINT" 'runtime source behavior' 'Runtime takes priority over supporting themes'
+for runtime_bullet in \
+  'Require test fixtures to begin with an explicit test marker in git-ai.sh.' \
+  'Require an explicit test marker at the start of test fixtures in git-ai.sh.' \
+  'Enforce test credential parsing in the secret scanner.' \
+  'Update test credential recognition in the secret scanner.'; do
+  accept_message $'fix: recognize source placeholder labels\n\n- '"$runtime_bullet"
+done
+accept_message $'fix: require test fixtures to carry explicit markers\n\n- Recognize placeholder labels in the runtime scanner.'
+for testing_bullet in \
+  'Add tests for placeholder detection.' \
+  'Update test case coverage.' \
+  'Add test fixtures for scanner checks.' \
+  'Require test coverage for scanner checks.' \
+  'Require running a Markdown reference regression suite.'; do
+  reject_message $'fix: recognize source placeholder labels\n\n- '"$testing_bullet" '[quality.supporting.tests.first_bullet]'
+done
+issue=$(commit_message_quality_issue $'fix: recognize source placeholder labels\n\n- Add tests for placeholder detection.')
+assert_contains "$issue" 'Add tests for placeholder detection.' 'Quality feedback identifies the rejected bullet'
+reject_message $'fix: update test fixtures\n\n- Recognize placeholder labels.' '[quality.supporting.tests.subject]'
+reject_message $'test: recognize source placeholder labels\n\n- Recognize placeholder labels.' '[quality.supporting.type]'
+pass 'Runtime rules about test inputs are accepted while supporting tests receive precise feedback'
+
+conditional_diff=$'@@ -1,3 +1,4 @@ validate_label() {\n+  has_test_marker = starts_with_test(value)\n   if has_synthetic_marker(value):\n     return valid\n }'
+conditional_excerpt=$(build_reference_excerpt "$conditional_diff" source 300)
+assert_contains "$conditional_excerpt" '+  has_test_marker' 'New acceptance branch remains visible'
+assert_contains "$conditional_excerpt" '   if has_synthetic_marker(value):' 'Existing alternative remains visible as unchanged context'
+[[ "${#conditional_excerpt}" -le 300 ]] || fail 'Source condition context exceeds its budget'
+BATCH_ANALYSIS_FILE_NAMES=(src/scanner.py)
+BATCH_ANALYSIS_DIFF_CHUNKS=("$conditional_excerpt")
+batch_prompt=$(build_file_analysis_batch_prompt 0 1)
+assert_contains "$batch_prompt" 'accepting additional inputs from restricting accepted inputs' 'Analysis distinguishes broadening from tightening validation'
+assert_contains "$batch_prompt" '   if has_synthetic_marker(value):' 'Analysis receives existing source conditions'
+pass 'Bounded source context preserves existing validation alternatives'
 
 start_case
 stage_text notes.md "$(printf 'Filler context line.\n%.0s' {1..100})"
@@ -790,11 +825,12 @@ cp "$project_dir/git-ai.sh" "$test_root/git-ai.sh"
 export TEST_REQUEST_DIR="$test_root/requests"
 export TEST_REAL_GIT
 TEST_REAL_GIT=$(command -v git)
+export TEST_MUTATION_LOG="$test_root/mutations.log"
 cat > "$test_root/bin/git" <<'MOCK_GIT'
 #!/usr/bin/env bash
 set -euo pipefail
 for argument in "$@"; do
-  case "$argument" in commit|push) printf 'Unexpected Git mutation\n' >&2; exit 99 ;; esac
+  case "$argument" in commit|push) printf '%s\n' "$argument" >> "$TEST_MUTATION_LOG"; printf 'Unexpected Git mutation\n' >&2; exit 99 ;; esac
 done
 exec "$TEST_REAL_GIT" "$@"
 MOCK_GIT
@@ -826,27 +862,43 @@ case "$url" in
     if jq -e '.format.properties.files' >/dev/null <<<"$payload"; then
       content=$(jq -r '.messages[1].content' <<<"$payload" | awk 'previous == "[FILE]" {print} {previous = $0}' |
         jq -Rsc '{files: (split("\n") | map(select(length > 0)) | map({file: ., analysis: "Explain completed timeout handling."}))}')
-    elif [[ "${TEST_COMMIT_RESPONSE_MODE:-valid}" == retry* ]] && jq -e '.messages | length > 0' >/dev/null <<<"$payload"; then
+    elif jq -e '.messages | length > 0' >/dev/null <<<"$payload"; then
       user_prompt=$(jq -r '.messages[1].content' <<<"$payload")
-      if [[ "$user_prompt" != *'[PREVIOUS COMMIT MESSAGE CORRECTION]'* ]]; then
-        commit_type='docs'
-        summary='update documentation about timeout handling'
-        bullet='Update README to explain retry behavior.'
-      else
-        [[ "$user_prompt" == *'docs: update documentation about timeout handling'* && "$user_prompt" == *'implemented capability'* ]] || exit 97
-        commit_type='fix'
-        summary='improve timeout handling'
-        bullet='Preserve pending changes after interrupted Ollama requests.'
-      fi
-      if [[ "$TEST_COMMIT_RESPONSE_MODE" != retry-plain ]] && jq -e '.format.properties.summary' >/dev/null <<<"$payload"; then
+      commit_type='fix'
+      summary='improve timeout handling'
+      bullet='Preserve pending changes after interrupted Ollama requests.'
+      response_mode="${TEST_COMMIT_RESPONSE_MODE:-valid}"
+      request_number=$(jq -s '[.[] | select((.messages[1].content // "") | contains("[COMMIT MESSAGE RULES]"))] | length' "$TEST_REQUEST_DIR"/request.*)
+      invalid_format=0
+      case "$response_mode" in
+        retry|retry-plain)
+          if [[ "$user_prompt" != *'[PREVIOUS COMMIT MESSAGE CORRECTION]'* ]]; then
+            commit_type='docs'
+            summary='update documentation about timeout handling'
+            bullet='Update README to explain retry behavior.'
+          else
+            [[ "$user_prompt" == *'docs: update documentation about timeout handling'* && "$user_prompt" == *'implemented capability'* ]] || exit 97
+          fi ;;
+        runtime-fixtures)
+          summary='recognize source placeholder labels'
+          bullet='Require test fixtures to begin with an explicit test marker in git-ai.sh.' ;;
+        repeat-quality|quality-twice|network-then-quality)
+          if [[ "$response_mode" == network-then-quality && "$request_number" -le 2 ]]; then exit 7; fi
+          if [[ "$response_mode" != quality-twice || "$request_number" -le 2 ]]; then
+            bullet='Add tests for timeout handling.'
+          fi ;;
+        repeat-format) invalid_format=1 ;;
+        request-failed) exit 7 ;;
+      esac
+      if [[ "$invalid_format" -eq 1 ]]; then
+        content='not a commit message'
+      elif [[ "$response_mode" != retry-plain ]] && jq -e '.format.properties.summary' >/dev/null <<<"$payload"; then
         content=$(jq -nc --arg type "$commit_type" --arg summary "$summary" --arg bullet "$bullet" '{type:$type,summary:$summary,bullets:[$bullet]}')
       else
         content=$(printf '%s: %s\n\n- %s' "$commit_type" "$summary" "$bullet")
       fi
-    elif jq -e '.format.properties.summary' >/dev/null <<<"$payload"; then
-      content='{"type":"fix","summary":"improve timeout handling","bullets":["Preserve pending changes after interrupted Ollama requests."]}'
     else
-      content=$'fix: improve timeout handling\n\n- Preserve pending changes after interrupted Ollama requests.'
+      content='Ready.'
     fi
     body=$(jq -nc --arg content "$content" '{model:"test-model",done:true,message:{content:$content}}')
     ;;
@@ -945,6 +997,71 @@ for mode in plain structured structured_plain; do
   request_count=$(jq -s '[.[] | select((.messages[1].content // "") | contains("[COMMIT MESSAGE RULES]"))] | length' "$TEST_REQUEST_DIR"/request.*)
   assert_equal "$request_count" 2 "$mode main request count"
   pass "Full $mode CLI reports rejection and corrects the next response without Git mutations"
+done
+
+mkdir "$test_root/fast-bin"
+cat > "$test_root/fast-bin/sleep" <<'MOCK_SLEEP'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" >> "$TEST_RETRY_LOG"
+MOCK_SLEEP
+chmod +x "$test_root/fast-bin/sleep"
+export TEST_RETRY_LOG="$test_root/retry-delays.log"
+for specification in \
+  '0 runtime-fixtures 1 success' \
+  '1 runtime-fixtures 1 success' \
+  '0 quality-twice 3 success' \
+  '1 quality-twice 3 success' \
+  '0 repeat-quality 3 failure' \
+  '1 repeat-quality 3 failure' \
+  '0 repeat-format 3 failure' \
+  '1 repeat-format 3 failure' \
+  '0 network-then-quality 5 failure' \
+  '0 request-failed 10 unavailable'; do
+  read -r structured response_mode expected_requests outcome <<< "$specification"
+  printf '\nUSE_STRUCTURED_OUTPUT="%s"\n' "$structured" >> "$test_root/git-ai.conf"
+  export TEST_REQUEST_DIR="$test_root/requests/$structured-$response_mode"
+  mkdir "$TEST_REQUEST_DIR"
+  scratch_dir="$TEST_REQUEST_DIR/scratch"
+  mkdir "$scratch_dir"
+  cli_index_before=$(git hash-object "$GIT_INDEX_FILE")
+  cli_staged_before=$(git ls-files --stage -z | git hash-object --stdin)
+  cli_status=0
+  # Successful cases use dry-run; failing cases prove the real CLI stops before Git mutations.
+  extra_options=()
+  [[ "$outcome" != success ]] || extra_options+=(--dry-run)
+  TMPDIR="$scratch_dir" TEST_COMMIT_RESPONSE_MODE="$response_mode" PATH="$test_root/fast-bin:$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --no-push --no-pull --no-banner --no-stage --no-file-analysis "${extra_options[@]}" > "$test_root/cli.out" 2> "$test_root/cli.err" || cli_status=$?
+  if [[ "$outcome" == success ]]; then
+    assert_equal "$cli_status" 0 "$response_mode valid response succeeds"
+  else
+    assert_equal "$cli_status" 1 "$response_mode exits before commit/push"
+    assert_absent "$(cat "$test_root/cli.out")" 'Commit message "' "$response_mode prints no accepted message"
+    if [[ "$outcome" == failure ]]; then
+      assert_contains "$(cat "$test_root/cli.err")" 'Stopped after 3 invalid AI responses' "$response_mode validation budget"
+      if [[ "$response_mode" == network-then-quality ]]; then
+        assert_contains "$(cat "$test_root/cli.err")" 'Retry 5/10' 'Request failures do not consume the validation budget'
+        assert_absent "$(cat "$test_root/cli.err")" 'Retry 6/10' 'Mixed failures stop at the validation limit'
+      else
+        assert_absent "$(cat "$test_root/cli.err")" 'Retry 4/10' "$response_mode does not exceed validation budget"
+      fi
+    else
+      assert_contains "$(cat "$test_root/cli.err")" 'after 10 attempts' 'Request failures retain their own retry budget'
+    fi
+  fi
+  if [[ "$response_mode" == runtime-fixtures ]]; then
+    assert_absent "$(cat "$test_root/cli.err")" 'AI response rejected' 'Runtime fixture rules avoid semantic retries'
+  fi
+  assert_absent "$(cat "$test_root/cli.err")" 'Using fallback' 'No unchecked message fallback'
+  assert_equal "$(git ls-files --stage -z | git hash-object --stdin)" "$cli_staged_before" "$response_mode preserves staged content"
+  if [[ "$outcome" == success ]]; then
+    assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" "$response_mode dry-run preserves index"
+  fi
+  if compgen -G "$scratch_dir/*" >/dev/null; then fail "$response_mode leaked temporary files"; fi
+  [[ ! -e "$TEST_MUTATION_LOG" ]] || fail "$response_mode attempted commit/push"
+  [[ ! -e .git/git-ai.lock ]] || fail "$response_mode leaked its repository lock"
+  request_count=$(jq -s '[.[] | select((.messages[1].content // "") | contains("[COMMIT MESSAGE RULES]"))] | length' "$TEST_REQUEST_DIR"/request.*)
+  assert_equal "$request_count" "$expected_requests" "$response_mode bounded API calls"
+  pass "CLI $structured/$response_mode: $expected_requests requests, $outcome, no Git mutations"
 done
 
 assert_equal "$(git show-ref)" "$original_refs" 'Original refs preserved'

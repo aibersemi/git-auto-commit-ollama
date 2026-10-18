@@ -142,7 +142,15 @@ case "$url" in
       request_file=$(mktemp "$TEST_REQUEST_DIR/request.XXXXXX")
       printf '%s\n' "$payload" > "$request_file"
     fi
-    content='{"type":"fix","summary":"preserve runtime status handling","bullets":[]}'
+    commit_type=fix
+    if jq -er '.messages[1].content' <<<"$payload" | grep -Fq 'Primary staged work category: test'; then
+      commit_type=test
+    fi
+    bullets='[]'
+    if jq -e '.format.properties.bullets.minItems > 0' >/dev/null <<<"$payload"; then
+      bullets='["Preserve runtime status handling."]'
+    fi
+    content=$(jq -nc --arg type "$commit_type" --argjson bullets "$bullets" '{type:$type,summary:"preserve runtime status handling",bullets:$bullets}')
     body=$(jq -nc --arg content "$content" '{model:"test-model",done:true,message:{content:$content}}')
     ;;
   *) printf 'Unexpected network request\n' >&2; exit 98 ;;
@@ -269,6 +277,60 @@ for order in first last; do
   expect_sensitive tests/test_workflow.py "$mixed_line" "Multiple candidates with synthetic placeholder $order"
 done
 
+vapid_label='WEB_PUSH_VAPID_PRIVATE_KEY'
+notification_content=$(printf '@override_settings(\n    %s,\n)' "$(assignment "$vapid_label" '"test-private-key"')")
+expect_safe tests/test_notifications.py "$notification_content" 'Web Push private-key test fixture regression'
+for placeholder in test-private-key test-public-key test-auth-key test-api-key TEST_SECRET_VALUE testing-private-key tests-private-key; do
+  for quote in '"' "'"; do
+    expect_safe src/runtime.py "$(assignment "$vapid_label" "$quote$placeholder$quote")" "Complete test-prefixed credential label: $quote$placeholder$quote"
+  done
+done
+for extension in pyi js jsx mjs cjs ts tsx mts cts; do
+  expect_safe "src/runtime.$extension" "$(assignment "$vapid_label" '"test-private-key"')," "Test-prefixed credential label in .$extension"
+done
+expect_safe src/runtime.ts "$(printf '{ "%s": "%s" }' "$vapid_label" test-private-key)" 'Test-prefixed placeholder in a quoted object property'
+for path in .env production.env settings.ini settings.conf settings.yaml settings.json unknown.data; do
+  expect_sensitive "$path" "$(assignment "$vapid_label" '"test-private-key"')" "Test-prefixed config value remains protected in $path"
+done
+for candidate in \
+  "test-private-key-$literal_value" \
+  "$literal_value-test-private-key" \
+  'test-private-key-production' \
+  'test-private-key-123456789012' \
+  'test-private-material' \
+  'test-public-label' \
+  'public-private-key' \
+  'private-key-for-testing'; do
+  expect_sensitive tests/test_notifications.py "$(assignment "$vapid_label" "\"$candidate\"")" 'Test marker alone cannot exempt arbitrary values'
+done
+expect_sensitive src/runtime.py "$(assignment "$vapid_label" '"test-private-key')" 'Unterminated test-prefixed placeholder remains protected'
+expect_sensitive src/runtime.py "$(assignment "$vapid_label" 'test-private-key')" 'Unquoted test-prefixed text remains protected'
+expect_sensitive src/runtime.py "$(assignment "$vapid_label" "\"test-private-key\" + \"$literal_value\"")" 'Test prefix cannot exempt a concatenated credential'
+for signature in "$provider_value" "$key_marker"; do
+  expect_sensitive tests/test_notifications.py "$(assignment "$vapid_label" "\"test-private-key-$signature\"")" 'Provider/key signature overrides test-prefixed placeholder'
+done
+for order in first last; do
+  placeholder_line=$(assignment "$vapid_label" '"test-private-key"')
+  sensitive_line=$(assignment password "\"$literal_value\"")
+  if [[ "$order" == first ]]; then mixed_line="$placeholder_line; $sensitive_line"; else mixed_line="$sensitive_line; $placeholder_line"; fi
+  expect_sensitive tests/test_notifications.py "$mixed_line" "Multiple candidates with test-prefixed placeholder $order"
+done
+
+start_case
+stage_text tests/test_notifications.py "$notification_content"
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+for scenario in removed context; do
+  if [[ "$scenario" == removed ]]; then
+    stage_text tests/test_notifications.py '# Test the notification guard.'
+  else
+    stage_text tests/test_notifications.py "$notification_content"$'\n# Test the notification guard.'
+  fi
+  [[ -z "$(detect_staged_secret_lines)" ]] || fail "$scenario: test-prefixed placeholder edit triggered the guard"
+  if detect_sensitive_patterns; then fail "$scenario: test-prefixed placeholder activated safe mode"; fi
+  pass "Full diff treats $scenario test-prefixed placeholders as labels"
+done
+
 for quote in '"' "'"; do
   expect_sensitive tests/test_archive.py "$(assignment password "$quote$literal_value$quote")" 'Quoted literal in tests is protected'
 done
@@ -367,6 +429,17 @@ assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Synthetic p
 pass 'Synthetic placeholder CLI preview preserves useful context and Git state'
 
 start_case
+stage_text tests/test_notifications.py "$notification_content"
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Test-prefixed placeholder preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'Test-prefixed placeholder triggered the guard'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Test-prefixed placeholder activated safe mode'
+assert_contains "$(cat "$test_root"/requests/request.*)" 'test-private-key' 'Test-prefixed placeholder missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Test-prefixed placeholder preview changed the caller index'
+pass 'Test-prefixed placeholder CLI preview preserves useful context and Git state'
+
+start_case
 stage_text src/runtime.ts "$ternary_content"
 stage_text tests/runtime.test.ts "$(printf 'const config = { %s: "%s" };' "$oauth_label" client-secret)"
 index_before=$(git hash-object "$GIT_INDEX_FILE")
@@ -429,6 +502,14 @@ assert_equal "$CLI_STATUS" 1 'External finding did not block'
 assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External finding missing from policy report'
 [[ -s "$TEST_GITLEAKS_LOG" ]] || fail 'External scanner was not called'
 pass 'External scanner still supplements the built-in guard'
+
+start_case
+stage_text tests/test_notifications.py "$notification_content"
+MOCK_GITLEAKS_FINDING=1
+run_cli
+assert_equal "$CLI_STATUS" 1 'External finding on a test-prefixed placeholder did not block'
+assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External test-prefixed finding missing from policy report'
+pass 'External scanner findings remain independent of test-prefixed placeholders'
 
 assert_equal "$(git hash-object .git/index)" "$original_index" 'Original clone index changed'
 assert_equal "$(git show-ref)" "$original_refs" 'Original refs changed'
