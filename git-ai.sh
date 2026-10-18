@@ -1165,14 +1165,31 @@ scan_sensitive_content() {
       }
       return has_marker && has_kind
     }
-    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote, ternary_label) {
+    function is_namespace_salt(assignment, value, name, boundary) {
+      # Public HMAC/signing namespaces must name the salt purpose, not just look dotted.
+      if (!code_file || value !~ /^[a-z]+([-_][a-z]+)*([.][a-z]+([-_][a-z]+)*)+$/) return 0
+      name = assignment
+      sub("[" quote_chars "]?[[:space:]]*[:=][[:space:]]*$", "", name)
+      # A deleted-line diff marker can be captured as part of the assignment name.
+      sub(/^-/, "", name)
+      sub(/^.*[.]/, "", name)
+      if (name !~ /_salt$/) return 0
+      sub(/_salt$/, "", name)
+      gsub(/_/, "-", name)
+      gsub(/_/, "-", value)
+      boundary = length(value) - length(name)
+      return boundary > 0 && substr(value, boundary + 1) == name &&
+        substr(value, boundary, 1) ~ /[.-]/
+    }
+    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote, ternary_label, assignment) {
       lower = tolower(content)
       # Token/key signatures always take precedence over expression/placeholder exemptions.
       if (lower ~ strong_regex) return 1
       rest = lower
       while (match(rest, assignment_regex)) {
+        assignment = substr(rest, RSTART, RLENGTH)
         rhs = substr(rest, RSTART + RLENGTH)
-        ternary_label = is_ternary_label(substr(rest, 1, RSTART - 1), substr(rest, RSTART, RLENGTH))
+        ternary_label = is_ternary_label(substr(rest, 1, RSTART - 1), assignment)
         rest = rhs
         if (ternary_label) continue
         quote = substr(rhs, 1, 1)
@@ -1187,8 +1204,8 @@ scan_sensitive_content() {
           candidate = substr(rhs, RSTART, RLENGTH)
         }
         # Only complete quoted source literals qualify; concatenations stay conservative.
-        if (code_file && end_quote && is_source_placeholder(candidate) &&
-            substr(rhs, end_quote + 2) ~ /^[[:space:]]*($|[,;)}#]|[]])/) continue
+        if (code_file && end_quote && substr(rhs, end_quote + 2) ~ /^[[:space:]]*($|[,;)}#]|[]])/ &&
+            (is_source_placeholder(candidate) || is_namespace_salt(assignment, candidate))) continue
         if (candidate ~ /^[a-z0-9_.\/+=:@-]{12,}/ && candidate !~ placeholder_regex) return 1
       }
       return 0

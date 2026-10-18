@@ -117,6 +117,7 @@ If a change affects secret detection, test at least:
 - Quoted literals, unquoted configuration values, and unknown file types
   without granting expression exemptions.
 - A placeholder secret that should be allowed.
+- Public HMAC/signing namespace salts without warnings, while arbitrary salt literals, configuration values, concatenations, and credentials on the same line remain protected.
 - Multiple candidates on one line, ensuring placeholders cannot hide another
   literal or a provider/private-key signature.
 - A realistic fake token that should be blocked.

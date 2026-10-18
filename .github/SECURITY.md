@@ -54,14 +54,7 @@ running the CLI.
   excerpts. Missing safe runtime excerpts are reported as limited context;
   supporting documentation must not be treated as proof of implementation.
 
-Both built-in protections use the same path-aware matcher, with the guard
-checking additions and safe mode checking the entire diff, including removed
-and unchanged context lines. Expression exemptions are restricted to Python
-and JavaScript/TypeScript source files; quoted literals, configuration values,
-and unknown file types remain checked conservatively. Placeholders cannot
-exempt other values on the same line or provider/private-key signatures.
-There is no blanket exemption for test files. See
-[`README.md#security`](../README.md#security) for matching behavior.
+Both built-in protections use the same path-aware matcher, with the guard checking additions and safe mode checking the entire diff, including removed and unchanged context lines. Expression and public namespace-salt exemptions are restricted to Python and JavaScript/TypeScript source files; other quoted literals, configuration values, and unknown file types remain checked conservatively. Placeholders cannot exempt other values on the same line or provider/private-key signatures. There is no blanket exemption for test files or salt-named variables. See [`README.md#security`](../README.md#security) for matching behavior.
 
 The synthetic-placeholder exemption requires a complete quoted source literal
 composed entirely of approved placeholder words, an explicit synthetic marker,

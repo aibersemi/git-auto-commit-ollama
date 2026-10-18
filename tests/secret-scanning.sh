@@ -170,6 +170,42 @@ expect_safe src/runtime.ts "$(assignment api_key 'config.api_key,')" 'Member ref
 expect_safe 'tests/space name.py' "$(assignment self.secret 'secrets.token_urlsafe (16)')" 'Function call with whitespace and spaced path'
 expect_safe $'tests/tab\tnewline\nbackslash\\name.py' "$(assignment self.secret 'secrets.token_hex(32)')" 'NUL-delimited paths preserve expression exemptions'
 
+otp_salt=$(assignment PASSWORD_RESET_OTP_SALT '"accounts.customer-password-reset-otp"')
+token_salt=$(assignment PASSWORD_RESET_TOKEN_SALT '"accounts.customer-password-reset-token"')
+salt_content="$otp_salt"$'\n'"$token_salt"
+expect_safe src/accounts.py "$salt_content" 'Django password-reset HMAC namespace salts are public labels'
+expect_safe src/accounts.py "$otp_salt # noqa: S105 - Salt namespace." 'Namespace salt followed by a lint comment'
+expect_safe src/accounts.py "$(assignment self.password_reset_otp_salt "'accounts.customer-password-reset-otp'")" 'Single-quoted namespace salt on a member'
+for extension in js jsx mjs cjs ts tsx mts cts; do
+  expect_safe "src/runtime.$extension" "const $otp_salt;" "Namespace salt in .$extension"
+done
+expect_safe src/runtime.ts "$(printf '{ "%s": "%s" }' PASSWORD_RESET_OTP_SALT accounts.customer_password_reset_otp)" 'Quoted namespace salt property with underscore-separated words'
+for path in .env settings.yaml unknown.data; do
+  expect_sensitive "$path" "$otp_salt" "Namespace-looking config value remains protected in $path"
+done
+for candidate in "$literal_value" "accounts.$literal_value" "accounts.customer-password-reset-otp-$literal_value" 'accounts.unrelated-public-label' 'accounts.customerpassword-reset-otp'; do
+  expect_sensitive src/accounts.py "$(assignment PASSWORD_RESET_OTP_SALT "\"$candidate\"")" 'Salt suffix cannot exempt arbitrary values'
+done
+expect_sensitive src/accounts.py "$(assignment PASSWORD_RESET_OTP_SALT "\"$literal_value\"") # noqa: S105 - Salt namespace." 'Lint suppression cannot exempt a salt credential'
+expect_sensitive src/accounts.py "$(assignment PASSWORD_RESET_OTP_SALT '"accounts.customer-password-reset-otp')" 'Unterminated namespace salt remains protected'
+expect_sensitive src/accounts.py "$(assignment PASSWORD_RESET_OTP_SALT "\"accounts.customer-password-reset-otp\" + \"$literal_value\"")" 'Concatenated namespace salt remains protected'
+expect_sensitive src/accounts.py "$(assignment PASSWORD_RESET_OTP_SALT "\"accounts.$provider_value.password-reset-otp\"")" 'Provider signature overrides namespace salt exemption'
+expect_sensitive src/accounts.py "$(assignment PASSWORD_RESET_OTP '"accounts.customer-password-reset-otp"')" 'Namespace-looking credential without a salt suffix remains protected'
+for order in first last; do
+  sensitive_line=$(assignment password "\"$literal_value\"")
+  if [[ "$order" == first ]]; then mixed_line="$otp_salt; $sensitive_line"; else mixed_line="$sensitive_line; $otp_salt"; fi
+  expect_sensitive src/accounts.py "$mixed_line" "Multiple candidates with namespace salt $order"
+done
+
+start_case
+stage_text src/accounts.py "$salt_content"
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+stage_text src/accounts.py "$otp_salt # namespace"$'\n'"$token_salt"
+[[ -z "$(detect_staged_secret_lines)" ]] || fail 'Namespace salt edit triggered the guard'
+if detect_sensitive_patterns; then fail 'Removed/context namespace salts activated safe mode'; fi
+pass 'Full diff treats removed and unchanged namespace salts as public labels'
+
 oauth_label='OAUTH_GOOGLE_CLIENT_SECRET'
 oauth_id_label='OAUTH_GOOGLE_CLIENT_ID'
 ternary_content=$(printf 'const path = [hasClientId ? "%s" : "%s"];' "$oauth_label" "$oauth_id_label")
@@ -341,6 +377,20 @@ assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'OAuth environme
 assert_contains "$(cat "$test_root"/requests/request.*)" 'OAUTH_GOOGLE_CLIENT_SECRET' 'OAuth environment source missing from AI context'
 assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'OAuth environment preview changed the caller index'
 pass 'OAuth environment CLI preview preserves source context and Git state'
+
+start_case
+stage_text src/accounts.py "$salt_content"
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+stage_text src/accounts.py "$otp_salt # namespace"$'\n'"$token_salt # namespace"
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Namespace salt preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'Namespace salt triggered the guard'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Namespace salt activated safe mode'
+assert_contains "$(cat "$test_root"/requests/request.*)" 'accounts.customer-password-reset-otp' 'Namespace salt missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Namespace salt preview changed the caller index'
+pass 'Namespace salt CLI preview preserves source context and Git state'
 
 start_case
 stage_text src/runtime.py "$(assignment password "\"$literal_value\"")"

@@ -484,6 +484,7 @@ Available protections:
   a test marker. The exact OAuth example label `client-secret` is also a
   source placeholder. These exemptions do not apply to configuration values,
   unknown file types, unterminated strings, or concatenated expressions.
+- Complete quoted `*_SALT` literals in Python and JavaScript/TypeScript can represent public HMAC/signing namespaces, such as `PASSWORD_RESET_OTP_SALT` with the value `accounts.customer-password-reset-otp`. The value must be a dotted namespace of alphabetic words separated by hyphens or underscores, ending with the variable name without `_SALT` at a dot/hyphen/underscore boundary; hyphens and underscores are equivalent for this comparison. Arbitrary salt values, other credential names, configuration files, unterminated strings, and concatenations do not receive this exemption. Lint suppression comments do not affect scanning. Provider and private-key signatures still take precedence, and `gitleaks` findings remain independent.
 - During a normal run, a secret finding cancels the commit.
   `--allow-secret-commit` only bypasses that cancellation.
 - Safe mode removes detailed diffs from the primary prompt and skips sensitive
