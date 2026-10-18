@@ -38,6 +38,13 @@ assert_contains() { [[ "$1" == *"$2"* ]] || fail "$3: missing [$2]"; }
 assert_absent() { [[ "$1" != *"$2"* ]] || fail "$3: unexpected [$2]"; }
 pass() { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 
+assert_file_counters() {
+  local log_file="$1" total="$2" number expected='' actual
+  for ((number=1; number<=total; number++)); do expected+="${number}/${total}"$'\n'; done
+  actual=$(sed -n 's/.*→ \[\([0-9]*\/[0-9]*\)\].*/\1/p' "$log_file")
+  assert_equal "$actual" "${expected%$'\n'}" 'Every file completion is printed exactly once in order'
+}
+
 start_case() {
   git read-tree HEAD
   FILE_ANALYSIS_MAX_BLOB_BYTES=1048576
@@ -45,7 +52,7 @@ start_case() {
   MAX_TOTAL_HUNKS_CHARS=3500
   TOP_FILES=4
   FILE_ANALYSIS_LIMIT=6
-  FILE_ANALYSIS_BATCH_SIZE=6
+  FILE_ANALYSIS_BATCH_SIZE=1
   RESOLVED_NON_AI_PARALLELISM=2
   RESOLVED_FILE_ANALYSIS_PARALLELISM=2
   AI_PROGRESS_START_MS=""
@@ -349,12 +356,13 @@ context
 FILE_ANALYSIS_LIMIT=8
 FILE_ANALYSIS_BATCH_SIZE=3
 analyze_files_individually 2> "$test_root/analysis.log"
-assert_equal "${#BATCH_ANALYSIS_FILE_NAMES[@]}" 8 'Multiple batches retain selected files'
-assert_contains "$(cat "$test_root/analysis.log")" '3 batch(es)' 'Batch count'
+assert_equal "${#BATCH_ANALYSIS_FILE_NAMES[@]}" 8 'Separate requests retain selected files'
+assert_contains "$(cat "$test_root/analysis.log")" '8 request(s)' 'One request per selected file'
 assert_contains "$(cat "$test_root/analysis.log")" 'effective parallelism 2' 'Worker cap'
-pass 'Multiple analysis batches preserve limits, ordering, and worker capacity'
+assert_file_counters "$test_root/analysis.log" 8
+pass 'Legacy batch size preserves separate requests, ordering, and worker capacity'
 
-for detection in override hint service environment fallback invalid_service; do
+for detection in override hint local_hint service service_one environment fallback invalid_service invalid_environment invalid_service_environment; do
   (
     FILE_ANALYSIS_PARALLELISM=auto
     NON_AI_PARALLELISM=2
@@ -376,9 +384,15 @@ for detection in override hint service environment fallback invalid_service; do
       hint)
         OLLAMA_BASE_URL='http://ollama.example.invalid:11434'; OLLAMA_PARALLELISM_HINT=2; TEST_SERVICE_PARALLELISM=4
         expected_capacity=2; expected_source=OLLAMA_PARALLELISM_HINT ;;
+      local_hint)
+        OLLAMA_PARALLELISM_HINT=2; TEST_SERVICE_PARALLELISM=4; OLLAMA_NUM_PARALLEL=3
+        expected_capacity=2; expected_source=OLLAMA_PARALLELISM_HINT ;;
       service)
         TEST_SERVICE_PARALLELISM=4; OLLAMA_NUM_PARALLEL=2
         expected_capacity=4; expected_source='local Ollama service' ;;
+      service_one)
+        TEST_SERVICE_PARALLELISM=1; OLLAMA_NUM_PARALLEL=4
+        expected_capacity=1; expected_source='local Ollama service' ;;
       environment)
         OLLAMA_NUM_PARALLEL=2
         expected_capacity=2; expected_source='process environment' ;;
@@ -388,6 +402,12 @@ for detection in override hint service environment fallback invalid_service; do
       invalid_service)
         TEST_SERVICE_PARALLELISM=0
         expected_capacity=1; expected_source='conservative fallback' ;;
+      invalid_environment)
+        TEST_SERVICE_PARALLELISM=invalid; OLLAMA_NUM_PARALLEL=invalid
+        expected_capacity=1; expected_source='conservative fallback' ;;
+      invalid_service_environment)
+        TEST_SERVICE_PARALLELISM=0; OLLAMA_NUM_PARALLEL=2
+        expected_capacity=2; expected_source='process environment' ;;
     esac
     resolve_runtime_parallelism
     assert_equal "$RESOLVED_FILE_ANALYSIS_PARALLELISM" "$expected_capacity" "$detection capacity detection"
@@ -396,8 +416,39 @@ for detection in override hint service environment fallback invalid_service; do
   pass "Dynamic Ollama capacity detection: $detection"
 done
 
-for specification in '1 4 6 1 1' '3 4 6 3 3' '6 4 6 4 4' '8 2 3 3 2' '6 1 6 1 1' '6 4 1 6 4'; do
-  read -r file_total capacity batch_limit expected_batches expected_peak <<< "$specification"
+for service_case in systemctl_one systemctl_many service_file; do
+  (
+    FILE_ANALYSIS_PARALLELISM=auto
+    OLLAMA_PARALLELISM_HINT=''
+    OLLAMA_NUM_PARALLEL=8
+    OLLAMA_BASE_URL='http://localhost:11434'
+    OLLAMA_SERVICE_FILE="$test_root/ollama-${service_case}.service"
+    printf '[Service]\nEnvironment="OLLAMA_NUM_PARALLEL=2"\n' > "$OLLAMA_SERVICE_FILE"
+    case "$service_case" in
+      systemctl_one) TEST_SERVICE_ENVIRONMENT='OLLAMA_NUM_PARALLEL=1'; expected_capacity=1 ;;
+      systemctl_many) TEST_SERVICE_ENVIRONMENT='OLLAMA_NUM_PARALLEL=4 OLLAMA_HOST=127.0.0.1:11434'; expected_capacity=4 ;;
+      service_file) TEST_SERVICE_ENVIRONMENT=''; expected_capacity=2 ;;
+    esac
+    # Called indirectly by the real service environment reader.
+    # shellcheck disable=SC2317,SC2329
+    systemctl() { printf '%s\n' "$TEST_SERVICE_ENVIRONMENT"; }
+    resolve_runtime_parallelism
+    assert_equal "$RESOLVED_FILE_ANALYSIS_PARALLELISM" "$expected_capacity" 'Real service reader selects capacity'
+    assert_equal "$RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE" 'local Ollama service' 'Service reader capacity source'
+  )
+  pass "Ollama service environment parsing: $service_case"
+done
+
+# Record the analysis caller rather than ollama_chat's command-substitution process.
+eval "$(declare -f run_file_analysis_batch | sed '1s/run_file_analysis_batch/concurrency_original_batch/')"
+# Called indirectly by the loaded scheduler.
+# shellcheck disable=SC2317,SC2329
+run_file_analysis_batch() {
+  printf '%s\n' "$BASHPID" >> "$TEST_CONCURRENCY_DIR/callers"
+  concurrency_original_batch "$@"
+}
+for specification in '1 4 6 1' '3 4 6 3' '6 4 6 4' '8 2 3 2' '6 1 6 1' '6 1 1 1' '6 4 1 4' '6 8 6 6'; do
+  read -r file_total capacity batch_limit expected_peak <<< "$specification"
   start_case
   for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}.md" "$description"; done
   context
@@ -409,18 +460,26 @@ for specification in '1 4 6 1 1' '3 4 6 3 3' '6 4 6 4 4' '8 2 3 3 2' '6 1 6 1 1'
   mkdir "$TEST_CONCURRENCY_DIR"
   printf '0\n' > "$TEST_CONCURRENCY_DIR/running"
   printf '0\n' > "$TEST_CONCURRENCY_DIR/peak"
+  analysis_caller_pid="$BASHPID"
   analyze_files_individually 2> "$test_root/analysis.log"
   assert_equal "$(cat "$TEST_CONCURRENCY_DIR/peak")" "$expected_peak" 'Measured concurrent requests'
   assert_equal "$(cat "$TEST_CONCURRENCY_DIR/running")" 0 'All workers completed'
-  assert_equal "$(wc -l < "$TEST_CONCURRENCY_DIR/batch-sizes" | tr -d '[:space:]')" "$expected_batches" 'Balanced batch count'
+  assert_equal "$(wc -l < "$TEST_CONCURRENCY_DIR/batch-sizes" | tr -d '[:space:]')" "$file_total" 'One request per selected file'
   assert_equal "$(awk '{sum += $1} END {print sum}' "$TEST_CONCURRENCY_DIR/batch-sizes")" "$file_total" 'Each selected file analyzed once'
-  [[ "$(sort -nr "$TEST_CONCURRENCY_DIR/batch-sizes" | head -n 1)" -le "$batch_limit" ]] || fail 'Maximum batch size exceeded'
+  assert_equal "$(sort -u "$TEST_CONCURRENCY_DIR/batch-sizes")" 1 'Legacy batch limit cannot combine files'
+  if [[ "$expected_peak" -eq 1 ]]; then
+    assert_equal "$(sort -u "$TEST_CONCURRENCY_DIR/callers")" "$analysis_caller_pid" 'Single worker calls analysis in the foreground'
+  else
+    awk -v caller="$analysis_caller_pid" '$0 == caller {exit 1}' "$TEST_CONCURRENCY_DIR/callers" || fail 'Parallel analysis ran in the foreground'
+  fi
+  assert_file_counters "$test_root/analysis.log" "$file_total"
   expected_order=$(printf '%s\n' "${BATCH_ANALYSIS_FILE_NAMES[@]}")
   actual_order=$(printf '%s' "$FILE_ANALYSES" | sed -n 's/^<file name="\(.*\)">$/\1/p')
   assert_equal "$actual_order" "$expected_order" 'Concurrent results retain reference order'
   unset TEST_CONCURRENCY_DIR TEST_CONCURRENCY_TARGET
   pass "Measured concurrency: $file_total files, capacity $capacity, maximum batch $batch_limit"
 done
+eval "$(declare -f concurrency_original_batch | sed '1s/concurrency_original_batch/run_file_analysis_batch/')"
 
 (
   AI_PROGRESS_START_MS=1000
@@ -439,7 +498,7 @@ done
 )
 pass 'Continuous AI progress uses 100ms ticks across analysis, generation, and retry phases'
 
-for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 partial' '6 2 2 complete' '1 4 6 complete'; do
+for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 partial' '6 4 6 generic' '6 2 2 complete'; do
   read -r file_total capacity batch_limit response_mode <<< "$specification"
   (
     start_case
@@ -453,17 +512,11 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
     mkdir "$progress_dir"
     case "$specification" in
       '6 4 6 '*)
-        completion_order=(2 3 1 4)
-        expected_counts=(2 2 1 1)
+        completion_order=(2 5 3 6 4 1)
         expected_peak=4 ;;
       '6 2 2 complete')
-        completion_order=(2 3 1)
-        expected_counts=(2 2 2)
+        completion_order=(2 3 4 5 6 1)
         expected_peak=2 ;;
-      '1 4 6 complete')
-        completion_order=(1)
-        expected_counts=(1)
-        expected_peak=1 ;;
     esac
     # Preserve the real renderer and response handling while controlling delivery.
     eval "$(declare -f run_file_analysis_batch | sed '1s/run_file_analysis_batch/progress_original_batch/')"
@@ -471,6 +524,7 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
     # Called indirectly by the loaded scheduler.
     # shellcheck disable=SC2317,SC2329
     run_file_analysis_batch() {
+      assert_equal "$3" 1 'Held requests contain exactly one file'
       local polls=0
       while [[ ! -f "$progress_dir/release-$1" ]]; do
         polls=$((polls + 1))
@@ -498,7 +552,7 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
       percent="${BASH_REMATCH[3]}"
       [[ "$message" =~ ([0-9]+)/([0-9]+)[[:space:]]active ]] || return 0
       active="${BASH_REMATCH[1]}"
-      assert_equal "$(( $# - 1 ))" "$active" 'One loading row per active batch'
+      assert_equal "$(( $# - 1 ))" "$active" 'One loading row per active file'
       printf '%s %s\n' "$files" "$percent" >> "$progress_dir/frames"
       [[ "$percent" -ge 0 && "$percent" -le 95 ]] || fail 'Active progress outside 0-95%'
       assert_contains "$message" 'est.' 'AI work remains estimated until the commit message is ready'
@@ -534,17 +588,18 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
         job="${completion_order[$released_jobs]}"
         : > "$progress_dir/release-$job"
         released_jobs=$((released_jobs + 1))
-        release_after_files=$((release_after_files + expected_counts[job - 1]))
+        release_after_files=$((release_after_files + 1))
       fi
     }
     IS_TTY=1
     analyze_files_individually 2> "$progress_dir/terminal.log"
     assert_equal "$progress_phase" 5 'All waiting phases were observed'
-    assert_equal "$released_jobs" "${#completion_order[@]}" 'Every held batch was released'
+    assert_equal "$released_jobs" "${#completion_order[@]}" 'Every held request was released'
     assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 95" 'File analysis cannot complete the overall AI progress'
     awk 'NR > 1 && $2 < previous {exit 1} {previous = $2}' "$progress_dir/frames" || fail 'Progress decreased'
     assert_equal "$LIVE_STATUS_ROWS" 0 'Loading rows cleared after analysis'
     assert_equal "$LIVE_STATUS_ACTIVE" 0 'Live status stopped after analysis'
+    assert_file_counters "$progress_dir/terminal.log" "$file_total"
     [[ "$LIVE_STATUS_FRAME" -gt 4 ]] || fail 'Spinner did not advance while waiting'
     assert_contains "$(cat "$progress_dir/terminal.log")" $'\033[?25h' 'Cursor restored after analysis'
     ai_progress_complete 'Commit message received' 2>> "$progress_dir/terminal.log"
@@ -558,9 +613,76 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
     else
       assert_equal "$FILE_ANALYSES" '' 'Generic fallbacks remain omitted from the prompt'
       assert_contains "$(cat "$progress_dir/terminal.log")" '6 local fallback(s)' 'Every failed or incomplete file handled'
+      assert_equal "$(awk '/→ .*\(local fallback\)/ {count++} END {print count + 0}' "$progress_dir/terminal.log")" 6 'Every fallback result is labeled'
     fi
   )
   pass "Estimated progress with held responses: $file_total files, capacity $capacity, batch limit $batch_limit, $response_mode"
+done
+
+for specification in '6 1 complete' '6 1 failed' '1 4 complete'; do
+  read -r file_total capacity response_mode <<< "$specification"
+  (
+    start_case
+    for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}.md" "$description"; done
+    context
+    FILE_ANALYSIS_LIMIT="$file_total"
+    RESOLVED_FILE_ANALYSIS_PARALLELISM="$capacity"
+    TEST_ANALYSIS_MODE="$response_mode"
+    progress_dir="$test_root/foreground-${file_total}-${capacity}-${response_mode}"
+    mkdir "$progress_dir"
+    printf '0\n' > "$progress_dir/clock"
+    AI_PROGRESS_START_MS=0
+    analysis_caller_pid="$BASHPID"
+    eval "$(declare -f run_file_analysis_batch | sed '1s/run_file_analysis_batch/foreground_original_batch/')"
+    eval "$(declare -f live_status_update | sed '1s/live_status_update/foreground_original_status/')"
+    # Called indirectly by the foreground renderer and analysis wrapper.
+    # shellcheck disable=SC2317,SC2329
+    clock_millis() { cat "$progress_dir/clock"; }
+    # shellcheck disable=SC2317,SC2329
+    run_file_analysis_batch() {
+      assert_equal "$BASHPID" "$analysis_caller_pid" 'TTY analysis stays in the foreground'
+      assert_equal "$3" 1 'Foreground request contains exactly one file'
+      [[ -n "$SPINNER_PID" ]] || fail 'Foreground loading renderer was not started'
+      printf '%s\n' "$SPINNER_PID" >> "$progress_dir/renderers"
+      if [[ "$1" -eq 1 ]]; then
+        for tick in 99 100 9500 120000; do
+          printf '%s\n' "$tick" > "$progress_dir/next-clock"
+          mv "$progress_dir/next-clock" "$progress_dir/clock"
+          sleep 0.2
+        done
+      else
+        sleep 0.12
+      fi
+      foreground_original_batch "$@"
+    }
+    # shellcheck disable=SC2317,SC2329
+    live_status_update() {
+      local message="$1"
+      foreground_original_status "$@"
+      if [[ "$message" =~ ([0-9]+)/([0-9]+)[[:space:]]([0-9]+)% ]]; then
+        printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" >> "$progress_dir/frames"
+      fi
+    }
+    IS_TTY=1
+    analyze_files_individually 2> "$progress_dir/terminal.log"
+    assert_file_counters "$progress_dir/terminal.log" "$file_total"
+    assert_contains "$(cat "$progress_dir/frames")" '0 1' 'Foreground progress advances while the request is blocked'
+    assert_contains "$(cat "$progress_dir/frames")" '0 95' 'Foreground renderer reaches the waiting limit before a result'
+    assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 95" 'Foreground file completion preserves the estimated percentage'
+    awk 'NR > 1 && $2 < previous {exit 1} {previous = $2}' "$progress_dir/frames" || fail 'Foreground progress decreased'
+    assert_equal "$SPINNER_PID" '' 'Foreground renderer state cleared'
+    while IFS= read -r renderer_pid; do
+      if kill -0 "$renderer_pid" 2>/dev/null; then fail 'Foreground renderer left running'; fi
+    done < "$progress_dir/renderers"
+    assert_equal "$LIVE_STATUS_ROWS" 0 'Foreground loading rows cleared'
+    assert_equal "$LIVE_STATUS_ACTIVE" 0 'Foreground live status stopped'
+    assert_contains "$(cat "$progress_dir/terminal.log")" $'\033[?25h' 'Foreground cursor restored'
+    if [[ "$response_mode" == failed ]]; then
+      assert_equal "$FILE_ANALYSES" '' 'Foreground fallbacks add no prompt evidence'
+      assert_equal "$(awk '/→ .*\(local fallback\)/ {count++} END {print count + 0}' "$progress_dir/terminal.log")" "$file_total" 'Foreground fallbacks are labeled once'
+    fi
+  )
+  pass "Foreground AI requests retain animated progress: $file_total files, capacity $capacity, $response_mode"
 done
 
 (
@@ -568,14 +690,14 @@ done
   LIVE_STATUS_ACTIVE=1
   LIVE_STATUS_COLUMNS=60
   LIVE_STATUS_FRAME=0
-  live_status_update 'Analyzing files with AI (3/3 active)' 'Batch 1/3: notes-1.md' 'Batch 2/3: notes-2.md' 'Batch 3/3: notes-3.md' 2> "$test_root/terminal.log"
+  live_status_update 'Analyzing files with AI (3/3 active)' 'File 1/3: notes-1.md' 'File 2/3: notes-2.md' 'File 3/3: notes-3.md' 2> "$test_root/terminal.log"
   assert_equal "$LIVE_STATUS_ROWS" 4 'One aggregate row and three parallel loading rows'
   live_status_print_above 'Completed notes-1.md' 2>> "$test_root/terminal.log"
   assert_equal "$LIVE_STATUS_ROWS" 4 'Result output preserves loading rows'
-  live_status_update 'Analyzing files with AI (1/3 active)' 'Batch 3/3: notes-3.md' 2>> "$test_root/terminal.log"
+  live_status_update 'Analyzing files with AI (1/3 active)' 'File 3/3: notes-3.md' 2>> "$test_root/terminal.log"
   assert_equal "$LIVE_STATUS_ROWS" 2 'Completed worker rows removed'
   LIVE_STATUS_MAX_ROWS=2
-  live_status_update 'Analyzing files with AI (3/3 active)' 'Batch 1/3: notes-1.md' 'Batch 2/3: notes-2.md' 'Batch 3/3: notes-3.md' 2>> "$test_root/terminal.log"
+  live_status_update 'Analyzing files with AI (3/3 active)' 'File 1/3: notes-1.md' 'File 2/3: notes-2.md' 'File 3/3: notes-3.md' 2>> "$test_root/terminal.log"
   assert_equal "$LIVE_STATUS_ROWS" 2 'Loading rows fit the terminal height'
   live_status_stop 2>> "$test_root/terminal.log"
   assert_equal "$LIVE_STATUS_ROWS" 0 'Loading rows cleared on completion'
@@ -694,6 +816,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$url" in
+  http://localhost:11434/api/tags)
+    [[ "${TEST_PRIMARY_UNAVAILABLE:-0}" -eq 0 ]] || exit 7
+    body='{"models":[{"name":"test-model"}]}' ;;
   */api/tags|*/api/ps) body='{"models":[{"name":"test-model"}]}' ;;
   */api/chat)
     request_file=$(mktemp "$TEST_REQUEST_DIR/request.XXXXXX")
@@ -757,7 +882,47 @@ assert_contains "$(cat "$test_root/cli.err")" 'informative staged Markdown' 'Str
 assert_contains "$(cat "$test_root/cli.err")" 'Sending ' 'Non-TTY analysis retains its plain status'
 assert_absent "$(cat "$test_root/cli.err")" $'\033[' 'Non-TTY output has no terminal control sequences'
 assert_absent "$(cat "$test_root/cli.err")" ' est.' 'Non-TTY output has no animated progress frames'
+assert_file_counters "$test_root/cli.err" 2
 pass 'Full structured CLI analyzes Markdown using an isolated dry-run index'
+
+start_case
+stage_source
+stage_text notes.md "$description"
+export TEST_REQUEST_DIR="$test_root/requests/legacy"
+mkdir "$TEST_REQUEST_DIR"
+cli_index_before=$(git hash-object "$GIT_INDEX_FILE")
+PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no-pull --no-banner --no-stage --file-analysis-batch-size 6 --file-analysis-parallelism 1 > "$test_root/cli.out" 2> "$test_root/cli.err"
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" 'Legacy batch option preserves the caller index'
+assert_file_counters "$test_root/cli.err" 2
+request_sizes=$(jq -sc '[.[] | select(.format.properties.files) | .messages[1].content | split("\n") | map(select(. == "[FILE]")) | length]' "$TEST_REQUEST_DIR"/request.*)
+assert_equal "$request_sizes" '[1,1]' 'Legacy CLI batch size still sends one file per request'
+assert_contains "$(cat "$test_root/cli.err")" 'capacity: 1 (configuration)' 'Numeric CLI worker override retained'
+pass 'Legacy batch option retains single-file requests and numbered non-TTY results'
+
+cat >> "$test_root/git-ai.conf" <<'CONFIG'
+FALLBACK_OLLAMA_HOST="http://ollama.example.invalid:11434"
+FILE_ANALYSIS_BATCH_SIZE="6"
+FILE_ANALYSIS_PARALLELISM="auto"
+OLLAMA_PARALLELISM_HINT=""
+CONFIG
+export TEST_REQUEST_DIR="$test_root/requests/fallback"
+mkdir "$TEST_REQUEST_DIR"
+TEST_PRIMARY_UNAVAILABLE=1 OLLAMA_NUM_PARALLEL=4 PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no-pull --no-banner --no-stage > "$test_root/cli.out" 2> "$test_root/cli.err"
+assert_contains "$(cat "$test_root/cli.err")" 'Fallback Ollama host enabled: http://ollama.example.invalid:11434' 'Fallback endpoint selected'
+assert_contains "$(cat "$test_root/cli.err")" 'capacity: 1 (conservative fallback)' 'Capacity is resolved again for the active remote endpoint'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" 'Fallback endpoint preserves the caller index'
+assert_file_counters "$test_root/cli.err" 2
+request_sizes=$(jq -sc '[.[] | select(.format.properties.files) | .messages[1].content | split("\n") | map(select(. == "[FILE]")) | length]' "$TEST_REQUEST_DIR"/request.*)
+assert_equal "$request_sizes" '[1,1]' 'Legacy configuration batch size still sends one file per request'
+pass 'Fallback endpoint resolves conservative capacity before analysis'
+
+PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --help > "$test_root/help.out"
+assert_contains "$(cat "$test_root/help.out")" 'Compatibility option; requests always contain one file' 'Help explains legacy batch behavior'
+if PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --file-analysis-batch-size 0 > "$test_root/cli.out" 2> "$test_root/cli.err"; then
+  fail 'Invalid legacy batch size was accepted'
+fi
+assert_contains "$(cat "$test_root/cli.err")" '--file-analysis-batch-size must be a number >= 1' 'Legacy batch option remains validated'
+pass 'Help documents compatibility and legacy batch validation remains active'
 
 for mode in plain structured structured_plain; do
   case "$mode" in

@@ -44,8 +44,8 @@ endpoint, which may run locally or on another network host.
 - Scope-free Conventional Commit messages through Ollama `/api/chat`.
 - JSON Schema structured output with plain-text fallback and a local fallback
   message when the AI response remains invalid.
-- Batched per-file diff analysis with configurable file-count, batch-size,
-  blob-size, and adaptive Ollama concurrency limits.
+- Per-file diff analysis with configurable file-count, blob-size, and adaptive
+  Ollama concurrency limits, with incremental progress for each completed file.
 - Adaptive non-AI concurrency for independent read-only context jobs and the
   built-in plus optional `gitleaks` secret scans.
 - Prompt prioritization for capabilities, APIs, data integrity, security, and
@@ -302,9 +302,9 @@ Current `git-ai.conf` values:
 | `USE_STRUCTURED_OUTPUT` | `0` | Use JSON Schema (`1`) or plain text (`0`). Disabled by default because `gemma4:e4b` does not consistently follow structured output. |
 | `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Maximum length of the entire commit message. |
 | `FILE_ANALYSIS_LIMIT` | `6` | Maximum files selected for per-file analysis; `0` disables those requests. |
-| `FILE_ANALYSIS_BATCH_SIZE` | `6` | Maximum files per analysis request; files are balanced across available Ollama workers. |
-| `FILE_ANALYSIS_PARALLELISM` | `auto` | Maximum concurrent per-file analysis batches. `auto` reads `OLLAMA_NUM_PARALLEL` from a local systemd service, then the local process environment, and uses capacity `1` when neither provides a valid value. |
-| `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `192` | Output-token budget allocated to each file in an analysis batch. |
+| `FILE_ANALYSIS_BATCH_SIZE` | `1` | Compatibility option accepting a positive integer; requests always contain one file, including when this value is larger than `1`. |
+| `FILE_ANALYSIS_PARALLELISM` | `auto` | Maximum concurrent per-file analysis requests. `auto` reads `OLLAMA_NUM_PARALLEL` from a local systemd service, then the local process environment, and uses capacity `1` when neither provides a valid value. |
+| `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `192` | Output-token budget allocated to each file analysis. |
 | `FILE_ANALYSIS_MAX_BLOB_BYTES` | `1048576` | Maximum staged blob size eligible for commit reference excerpts and per-file AI analysis. |
 | `NON_AI_PARALLELISM` | `auto` | Maximum workers for independent local read-only jobs. `auto` uses the logical CPU capacity available to the process. |
 | `OLLAMA_PARALLELISM_HINT` | empty | Optional positive-integer capacity hint when a remote, containerized, or custom Ollama service cannot be inspected. |
@@ -328,29 +328,37 @@ Parallelism is a capacity, not a request target. Local non-AI jobs use at most
 `NON_AI_PARALLELISM` workers and never overlap staging, the secret-policy
 decision, commit creation, or pushing. Per-file AI analysis uses at most the
 resolved Ollama capacity and the number of selected files. Selected files are
-split into balanced batches, creating enough requests to use available workers
-while keeping each request within `FILE_ANALYSIS_BATCH_SIZE`. With capacity
-`4`, three files use three one-file requests in parallel; six files use four
-requests containing two, two, one, and one files. With capacity `1`, up to six
-files still use one request by default. Terminal output shows the detected
+sent in separate requests. With capacity `4`, three files use three requests
+in parallel; six files start four requests and fill freed worker slots with
+the remaining files. With effective capacity `1`, each request runs in the
+foreground and finishes before the next starts; only the loading renderer
+runs in the background. One request per file adds request overhead but allows
+incremental file progress. Terminal output shows the detected
 capacity and its source, active workers, and a separate animated row for each
-running batch. Completed results retain reference order in the final prompt.
+active file. Capacity is resolved after the active endpoint is selected.
+A numeric `FILE_ANALYSIS_PARALLELISM` takes precedence over
+`OLLAMA_PARALLELISM_HINT`, local service detection, the local process
+environment, and the conservative fallback, in that order. Completed results
+retain reference order in the final prompt.
 Ollama does not expose its parallelism setting through its public API, so
 remote endpoints should set `OLLAMA_PARALLELISM_HINT` or use a numeric
 `FILE_ANALYSIS_PARALLELISM`.
 
 The terminal progress bar is a simulated estimate, marked `est.` while AI work
 is running. It starts at `0%`, advances by one point every 100 milliseconds,
-and stops at `95%` while waiting. Starting or completing a batch does not jump
+and stops at `95%` while waiting. Starting or completing a request does not jump
 the percentage. The same clock continues from per-file analysis into final
 commit-message generation and across retries, so changing phases never resets
-the bar. The file counter still reports completed files during per-file
-analysis, while active batches retain separate animated rows. Progress reaches
+the bar. The file counter advances once for each completed file, from `0/6`
+through `1/6`, `2/6`, and finally `6/6` for six selected files. Result lines
+retain `[n/total]` counters even when responses finish together or out of order.
+Failed or incomplete responses also advance the counter once and are marked
+`(local fallback)`. Active files retain separate animated rows. Progress reaches
 `100%` only after the final commit message is available. The spinner and
 elapsed time continue updating at the waiting limit. Ollama responses are not
 streamed, so the percentage improves visual feedback rather than measuring
-model completion. Non-TTY output prints one status per phase without animated
-frames or terminal control sequences.
+model completion. Non-TTY output prints phase statuses and numbered file
+results without animated frames or terminal control sequences.
 
 Additional environment variables:
 
@@ -422,8 +430,8 @@ Available options:
 | `-a`, `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
 | `--no-file-analysis` | Disable per-file AI analysis. |
 | `--file-analysis-limit N` | Limit analyzed files; accepts a non-negative integer. |
-| `--file-analysis-batch-size N` | Set the maximum files per analysis request; minimum `1`. |
-| `--file-analysis-parallelism N\|auto` | Set concurrent analysis-batch capacity or detect it from a local Ollama service. |
+| `--file-analysis-batch-size N` | Compatibility option; accepts integers of at least `1`, while effective request size remains one file. |
+| `--file-analysis-parallelism N\|auto` | Set concurrent file-analysis request capacity or detect it from a local Ollama service. |
 | `--non-ai-parallelism N\|auto` | Set local worker capacity or use the available logical CPU count. |
 | `--no-structured` | Skip JSON Schema and use plain text, including when `USE_STRUCTURED_OUTPUT=1`. Without this option, a structured response containing plain commit text is retried as plain text; if still invalid, the request falls back to plain text within the same attempt. |
 | `--no-pull` | Fail when the model is unavailable without running `ollama pull`. |
@@ -587,8 +595,10 @@ refs before and after each dry-run. Never create real commits or pushes for
 these checks.
 
 For per-file analysis performance changes, repeat the smoke test with six
-small text files. Confirm that balanced batches use the detected worker
-capacity without exceeding the configured batch size, and measure the
+small text files. Confirm that each request contains one file, that capacity
+`1` runs AI requests in the foreground, and that larger capacities overlap
+requests within the worker limit. Legacy batch-size values must still be
+accepted without combining files. Measure the
 `Analyzed ...` and `Commit message received ...`
 durations with a warm model. Also test generated paths, binary files, and a
 text blob larger than `FILE_ANALYSIS_MAX_BLOB_BYTES` to confirm they are
@@ -597,10 +607,11 @@ excluded from per-file requests.
 For adaptive parallelism changes, also test numeric and `auto` values, a local
 systemd Ollama service, a remote endpoint with `OLLAMA_PARALLELISM_HINT`, and
 the conservative fallback. Confirm that result order is deterministic and
-that effective concurrency never exceeds the number of ready jobs or batches.
+that effective concurrency never exceeds the number of ready jobs or files.
 The regression suite measures overlapping requests and checks loading-row
 refresh, estimated progress before results arrive, the 95% waiting limit,
-completed-worker removal, and cursor restoration. Also run a dry-run
+completed-worker removal, every counter from `1/6` through `6/6`, and cursor
+restoration. Also run a dry-run
 in a terminal to inspect the animations and result output.
 
 Do not run commit or push smoke tests in a primary working repository. See the

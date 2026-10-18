@@ -79,7 +79,7 @@ AI_THINK="${AI_THINK:-${OLLAMA_THINK:-false}}"
 AI_NUM_PREDICT="${AI_NUM_PREDICT:-${OLLAMA_NUM_PREDICT:-512}}"
 AI_MAX_NUM_PREDICT="${AI_MAX_NUM_PREDICT:-${OLLAMA_MAX_NUM_PREDICT:-2048}}"
 FILE_ANALYSIS_LIMIT="${FILE_ANALYSIS_LIMIT:-6}"
-FILE_ANALYSIS_BATCH_SIZE="${FILE_ANALYSIS_BATCH_SIZE:-6}"
+FILE_ANALYSIS_BATCH_SIZE="${FILE_ANALYSIS_BATCH_SIZE:-1}"
 FILE_ANALYSIS_NUM_PREDICT_PER_FILE="${FILE_ANALYSIS_NUM_PREDICT_PER_FILE:-192}"
 FILE_ANALYSIS_MAX_BLOB_BYTES="${FILE_ANALYSIS_MAX_BLOB_BYTES:-1048576}"
 FILE_ANALYSIS_PARALLELISM="${FILE_ANALYSIS_PARALLELISM:-auto}"
@@ -323,6 +323,7 @@ structured_output=${USE_STRUCTURED_OUTPUT}
 file_analysis=${DO_FILE_ANALYSIS}
 file_analysis_limit=${FILE_ANALYSIS_LIMIT}
 file_analysis_batch_size=${FILE_ANALYSIS_BATCH_SIZE}
+file_analysis_effective_batch_size=1
 file_analysis_parallelism=${FILE_ANALYSIS_PARALLELISM}
 file_analysis_parallelism_resolved=${RESOLVED_FILE_ANALYSIS_PARALLELISM:-<pending>}
 file_analysis_parallelism_source=${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}
@@ -817,9 +818,9 @@ Options:
       --no-file-analysis      Disable per-file analysis (faster)
       --file-analysis-limit N Limit the number of files for per-file analysis (default: ${FILE_ANALYSIS_LIMIT})
       --file-analysis-batch-size N
-                              Maximum files per analysis request; split across available workers (default: ${FILE_ANALYSIS_BATCH_SIZE})
+                              Compatibility option; requests always contain one file (default: ${FILE_ANALYSIS_BATCH_SIZE})
       --file-analysis-parallelism N|auto
-                              Parallel file-analysis batch capacity (default: ${FILE_ANALYSIS_PARALLELISM})
+                              Concurrent file-analysis request capacity (default: ${FILE_ANALYSIS_PARALLELISM})
       --non-ai-parallelism N|auto
                               Parallel capacity for independent local work (default: ${NON_AI_PARALLELISM})
       --no-structured         Disable structured output (fall back to plain text)
@@ -841,7 +842,7 @@ Config variables:
   AI_NUM_PREDICT              Output tokens per request (max: ${AI_MAX_NUM_PREDICT})
   AI_MAX_NUM_PREDICT          Maximum num_predict value
   FILE_ANALYSIS_LIMIT         Maximum number of files for per-file analysis
-  FILE_ANALYSIS_BATCH_SIZE    Maximum files sent in one analysis request (default: ${FILE_ANALYSIS_BATCH_SIZE})
+  FILE_ANALYSIS_BATCH_SIZE    Compatibility limit; effective request size is always 1 (default: ${FILE_ANALYSIS_BATCH_SIZE})
   FILE_ANALYSIS_NUM_PREDICT_PER_FILE
                               Output tokens per file analysis (default: ${FILE_ANALYSIS_NUM_PREDICT_PER_FILE})
   FILE_ANALYSIS_MAX_BLOB_BYTES
@@ -2239,6 +2240,28 @@ extract_file_analysis_from_batch() {
     "$output_file" 2>/dev/null | head -n 1 || true
 }
 
+run_file_analysis_foreground() {
+  # Only the renderer runs in the background; the AI request stays foreground.
+  if [[ "$IS_TTY" -eq 1 ]]; then
+    (
+      while sleep 0.08; do
+        file_analysis_status_update
+      done
+    ) &
+    SPINNER_PID=$!
+  fi
+
+  local status=0
+  run_file_analysis_batch "$@" || status=$?
+
+  if [[ -n "$SPINNER_PID" ]]; then
+    kill "$SPINNER_PID" 2>/dev/null || true
+    wait "$SPINNER_PID" 2>/dev/null || true
+    SPINNER_PID=""
+  fi
+  return "$status"
+}
+
 file_analysis_status_update() {
   [[ "$IS_TTY" -eq 1 ]] || return 0
 
@@ -2246,8 +2269,8 @@ file_analysis_status_update() {
   local now_ms i percent status_msg elapsed
   local -a worker_status_lines=()
   for ((i=0; i<next_job; i++)); do
-    [[ "${batch_done[$i]:-0}" -eq 0 ]] || continue
-    worker_status_lines+=("Batch $((i + 1))/${batch_total}: ${batch_counts[$i]} file(s) · ${BATCH_ANALYSIS_FILE_NAMES[${batch_starts[$i]}]}")
+    [[ "${request_done[$i]:-0}" -eq 0 ]] || continue
+    worker_status_lines+=("File $((i + 1))/${analysis_total}: ${BATCH_ANALYSIS_FILE_NAMES[$i]}")
   done
 
   ensure_ai_progress_started
@@ -2317,107 +2340,97 @@ analyze_files_individually() {
   local parallelism_capacity="${RESOLVED_FILE_ANALYSIS_PARALLELISM:-1}"
   local parallelism="$parallelism_capacity"
   [[ "$parallelism" -gt "$analysis_total" ]] && parallelism="$analysis_total"
-  local batch_total=$(((analysis_total + FILE_ANALYSIS_BATCH_SIZE - 1) / FILE_ANALYSIS_BATCH_SIZE))
-  [[ "$batch_total" -ge "$parallelism" ]] || batch_total="$parallelism"
-  local batch_size=$(((analysis_total + batch_total - 1) / batch_total))
-  local batch_base_size=$((analysis_total / batch_total))
-  local batch_extra_files=$((analysis_total % batch_total))
 
-  local batch_output_files=()
-  local batch_status_files=()
-  local batch_pids=()
-  local batch_done=()
-  local batch_starts=()
-  local batch_counts=()
+  local request_output_files=()
+  local request_status_files=()
+  local request_pids=()
+  local request_done=()
   local analysis_results=()
 
   if [[ "$generated_files_skipped" -gt 0 || "$binary_files_skipped" -gt 0 || "$oversized_files_skipped" -gt 0 || "$sensitive_files_skipped" -gt 0 ]]; then
     step_info "  ⟩ Skipped from per-file analysis: ${generated_files_skipped} generated/ephemeral, ${binary_files_skipped} binary, ${oversized_files_skipped} oversized, ${sensitive_files_skipped} sensitive file(s)."
   fi
-  dbg "Per-file analysis: total ${total_files}, eligible ${analysis_candidate_total}, selected ${analysis_total}, batches ${batch_total}, batch size ${batch_size}, parallelism capacity ${parallelism_capacity} (${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}), effective parallelism ${parallelism}"
+  dbg "Per-file analysis: total ${total_files}, eligible ${analysis_candidate_total}, selected ${analysis_total}, requests ${analysis_total}, request size 1, parallelism capacity ${parallelism_capacity} (${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}), effective parallelism ${parallelism}"
 
   local status_msg
   ensure_ai_progress_started
   status_msg=$(ai_progress_status_text "AI file analysis" 0 "$analysis_total" 1)
   step_info "Ollama analysis capacity: ${parallelism_capacity} (${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}); using up to ${parallelism} worker(s)."
-  live_status_start "$status_msg" "Sending ${analysis_total} file(s) to AI in ${batch_total} batch(es) (batch size ${batch_size}, capacity ${parallelism_capacity}, effective parallelism ${parallelism})..."
+  live_status_start "$status_msg" "Sending ${analysis_total} file(s) to AI in ${analysis_total} request(s) (one file per request, capacity ${parallelism_capacity}, effective parallelism ${parallelism})..."
 
   local running=0
   local next_job=0
-  local next_file=0
-  local completed_batches=0
   local completed_files=0
-  local failed_batches=0
+  local failed_requests=0
   local fallback_items=0
   local analysis_progress_percent=0
-  local i offset result_index batch_start batch_count batch_output batch_status analysis status made_progress job_index
+  local i request_output request_status analysis status made_progress job_index fallback_note
 
-  while [[ "$completed_batches" -lt "$batch_total" ]]; do
-    while [[ "$next_job" -lt "$batch_total" && "$running" -lt "$parallelism" ]]; do
+  while [[ "$completed_files" -lt "$analysis_total" ]]; do
+    while [[ "$next_job" -lt "$analysis_total" && "$running" -lt "$parallelism" ]]; do
       job_index="$next_job"
-      batch_start="$next_file"
-      batch_count="$batch_base_size"
-      [[ "$job_index" -ge "$batch_extra_files" ]] || batch_count=$((batch_count + 1))
-      next_file=$((next_file + batch_count))
-      batch_output=$(mktemp)
-      batch_status=$(mktemp)
-      rm -f "$batch_status"
+      request_output=$(mktemp)
+      request_status=$(mktemp)
+      rm -f "$request_status"
 
-      batch_output_files[job_index]="$batch_output"
-      batch_status_files[job_index]="$batch_status"
-      batch_done[job_index]=0
-      batch_starts[job_index]="$batch_start"
-      batch_counts[job_index]="$batch_count"
-
-      (
-        if run_file_analysis_batch "$((job_index + 1))" "$batch_start" "$batch_count" "$batch_output"; then
-          printf '0\n' > "$batch_status"
-        else
-          printf '1\n' > "$batch_status"
-        fi
-      ) &
-      batch_pids[job_index]="$!"
+      request_output_files[job_index]="$request_output"
+      request_status_files[job_index]="$request_status"
+      request_done[job_index]=0
 
       next_job=$((next_job + 1))
       running=$((running + 1))
-      file_analysis_status_update
+      if [[ "$parallelism" -eq 1 ]]; then
+        file_analysis_status_update
+        status=0
+        run_file_analysis_foreground "$((job_index + 1))" "$job_index" 1 "$request_output" || status=$?
+        printf '%s\n' "$status" > "$request_status"
+        request_pids[job_index]=""
+      else
+        (
+          if run_file_analysis_batch "$((job_index + 1))" "$job_index" 1 "$request_output"; then
+            printf '0\n' > "$request_status"
+          else
+            printf '1\n' > "$request_status"
+          fi
+        ) &
+        request_pids[job_index]="$!"
+        file_analysis_status_update
+      fi
     done
 
     made_progress=0
     for ((i=0; i<next_job; i++)); do
-      [[ "${batch_done[$i]:-0}" -eq 1 ]] && continue
-      [[ -f "${batch_status_files[$i]}" ]] || continue
+      [[ "${request_done[$i]:-0}" -eq 1 ]] && continue
+      [[ -s "${request_status_files[$i]}" ]] || continue
 
-      status=$(cat "${batch_status_files[$i]}" 2>/dev/null || printf '1')
-      wait "${batch_pids[$i]}" 2>/dev/null || true
+      if [[ -n "${request_pids[$i]}" ]]; then
+        wait "${request_pids[$i]}" 2>/dev/null || true
+      fi
+      status=$(cat "${request_status_files[$i]}" 2>/dev/null || printf '1')
 
-      batch_done[i]=1
+      request_done[i]=1
       running=$((running - 1))
-      completed_batches=$((completed_batches + 1))
+      completed_files=$((completed_files + 1))
       made_progress=1
-      batch_start="${batch_starts[$i]}"
-      batch_count="${batch_counts[$i]}"
-      completed_files=$((completed_files + batch_count))
+      file_name="${BATCH_ANALYSIS_FILE_NAMES[$i]}"
+      analysis=$(extract_file_analysis_from_batch "${request_output_files[$i]}" "$file_name")
+      analysis=$(echo "$analysis" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 
-      for ((offset=0; offset<batch_count; offset++)); do
-        result_index=$((batch_start + offset))
-        file_name="${BATCH_ANALYSIS_FILE_NAMES[$result_index]}"
-        analysis=$(extract_file_analysis_from_batch "${batch_output_files[$i]}" "$file_name")
-        analysis=$(echo "$analysis" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      fallback_note=""
+      if [[ -z "$analysis" || "$analysis" == "Changes in $file_name" || "$analysis" == "$file_name" ]]; then
+        analysis="Changes in $file_name"
+        fallback_items=$((fallback_items + 1))
+        fallback_note=" (local fallback)"
+      fi
 
-        if [[ -z "$analysis" ]]; then
-          analysis="Changes in $file_name"
-          fallback_items=$((fallback_items + 1))
-        fi
-
-        analysis_results[result_index]="$analysis"
-        live_status_print_above "  ${GREEN}→${NC} ${BOLD}${file_name}${NC}: ${DIM}${analysis}${NC}"
-      done
-      [[ "$status" -ne 0 ]] && failed_batches=$((failed_batches + 1))
+      analysis_results[i]="$analysis"
+      [[ "$status" -ne 0 ]] && failed_requests=$((failed_requests + 1))
+      file_analysis_status_update
+      live_status_print_above "  ${GREEN}→${NC} [${completed_files}/${analysis_total}] ${BOLD}${file_name}${NC}: ${DIM}${analysis}${fallback_note}${NC}"
     done
 
     file_analysis_status_update
-    [[ "$completed_batches" -ge "$batch_total" ]] && break
+    [[ "$completed_files" -ge "$analysis_total" ]] && break
     [[ "$made_progress" -eq 1 ]] || sleep 0.2
   done
 
@@ -2432,14 +2445,14 @@ analyze_files_individually() {
     FILE_ANALYSES+=$'<file name="'${file_name}$'">\n'${analysis}$'\n</file>\n'
   done
 
-  rm -f "${batch_output_files[@]}" "${batch_status_files[@]}"
+  rm -f "${request_output_files[@]}" "${request_status_files[@]}"
 
   local analysis_elapsed
   analysis_elapsed=$(elapsed_since "$analysis_start")
   if [[ "$fallback_items" -gt 0 ]]; then
-    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${batch_total} batch(es) with ${fallback_items} local fallback(s) across ${failed_batches} failed batch(es) (${analysis_elapsed})"
+    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${analysis_total} request(s) with ${fallback_items} local fallback(s) across ${failed_requests} failed request(s) (${analysis_elapsed})"
   else
-    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${batch_total} batch(es) (${analysis_elapsed})"
+    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${analysis_total} request(s) (${analysis_elapsed})"
   fi
 }
 

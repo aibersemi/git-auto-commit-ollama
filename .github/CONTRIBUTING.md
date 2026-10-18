@@ -137,24 +137,28 @@ If a change affects Ollama integration, test:
 - A missing model with and without `--no-pull`.
 - `--no-structured` when structured-output logic changed.
 
-If a change affects per-file analysis performance, test one file, a full
-default batch of six files, more than one batch, and local-summary fallback for
-an invalid or partial batch response. Confirm that generated or ephemeral
-paths, binary files, and oversized staged blobs are excluded from per-file AI
-requests without changing dry-run Git state.
+If a change affects per-file analysis performance, test one file, the default
+selection of six files, a larger selection, and local-summary fallback for
+an invalid or incomplete response. Confirm that every request contains one file
+even when a legacy batch-size value exceeds `1`. Confirm that generated or
+ephemeral paths, binary files, and oversized staged blobs are excluded from
+per-file AI requests without changing dry-run Git state.
 
 If a change affects adaptive parallelism, test `auto` and numeric overrides for
 both local and AI jobs. Cover local systemd detection, a remote Ollama capacity
 hint, conservative fallback, deterministic result ordering, and worker caps
 smaller and larger than the number of ready jobs. Measure overlapping analysis
-requests and verify balanced batch limits and loading rows using the checks in
+requests and verify worker limits and loading rows using the checks in
 [`README.md#development`](../README.md#development). Both secret scanners must
-finish before the secret-policy decision.
+finish before the secret-policy decision. Effective AI capacity `1` must call
+the analysis function in the foreground; only the renderer may run in the
+background.
 
 For analysis-progress changes, use delayed mock responses and a simulated
-clock to check progress before results arrive, queued batches, completion out
-of order, and local fallbacks. Follow the terminal dry-run checks and estimated
-progress behavior documented in the README.
+clock to check progress before results arrive, queued files, completion out
+of order, and local fallbacks. Assert that each numbered completion is printed
+exactly once and the final file count remains visible. Follow the terminal
+dry-run checks and estimated progress behavior documented in the README.
 
 ## Issue Guidelines
 
