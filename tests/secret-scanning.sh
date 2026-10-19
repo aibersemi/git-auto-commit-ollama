@@ -331,6 +331,75 @@ for scenario in removed context; do
   pass "Full diff treats $scenario test-prefixed placeholders as labels"
 done
 
+fixture_token=$(printf '%s-%s-%s' test google token)
+fixture_password=$(printf '%s%s' RegressionPassword '123!')
+fixture_token_line="OAuthTokenPayload($(assignment access_token "\"$fixture_token\"")),"
+fixture_password_line=$(printf '"%s": "%s",' new_password "$fixture_password")
+test_fixture_content="$fixture_token_line"$'\n'"$fixture_password_line"$'\n'"$(printf '"%s": "%s",' new_password_confirm "$fixture_password")"
+expect_safe backend/apps/api/tests/test_security_boundaries.py "$test_fixture_content" 'OAuth and registration test fixtures do not trigger secret warnings'
+for path in tests/runtime.py test/runtime.py src/test_runtime.py src/runtime_test.py src/test_runtime.pyi src/__tests__/runtime.ts src/runtime.test.ts src/runtime.spec.js; do
+  expect_safe "$path" "$test_fixture_content" "Predictable fixtures in conventional test path: $path"
+done
+for candidate in test-google-token testing-github-access-token tests-oauth-refresh-token test_oauth_auth_token; do
+  for quote in '"' "'"; do
+    expect_safe tests/runtime.py "$(assignment access_token "$quote$candidate$quote")" 'Complete provider-labeled token fixture in tests'
+  done
+done
+for candidate in "$fixture_password" TestPassword123 test-password-123! regression_password_123; do
+  for quote in '"' "'"; do
+    expect_safe tests/runtime.py "$(assignment password "$quote$candidate$quote")" 'Complete predictable password fixture in tests'
+  done
+done
+for path in src/runtime.py src/runtime.ts src/contest.py src/test_runtime.py.bak tests/.env tests/settings.json tests/settings.yaml tests/unknown.data; do
+  expect_sensitive "$path" "$fixture_token_line" "Provider-labeled fixture remains protected outside test source: $path"
+  expect_sensitive "$path" "$fixture_password_line" "Predictable password remains protected outside test source: $path"
+done
+for candidate in \
+  "$fixture_token-$literal_value" \
+  "$literal_value-$fixture_token" \
+  test-google-token-production \
+  test-google-token-123456789012 \
+  "test-$literal_value-token" \
+  "RegressionPassword$literal_value" \
+  RegressionPassword987654321 \
+  "${fixture_password}production"; do
+  expect_sensitive tests/runtime.py "$(assignment password "\"$candidate\"")" 'Test path and marker cannot exempt arbitrary credential values'
+done
+for candidate in "$fixture_token" "$fixture_password"; do
+  expect_sensitive tests/runtime.py "$(assignment password "$candidate")" 'Unquoted test fixture remains protected'
+  expect_sensitive tests/runtime.py "$(assignment password "\"$candidate")" 'Unterminated test fixture remains protected'
+  expect_sensitive tests/runtime.py "$(assignment password "\"$candidate\" + \"$literal_value\"")" 'Concatenated test fixture remains protected'
+  for signature in "$provider_value" "$key_marker"; do
+    expect_sensitive tests/runtime.py "$(assignment password "\"$candidate-$signature\"")" 'Provider/key signature overrides test fixture exemption'
+  done
+  for order in first last; do
+    fixture_line=$(assignment password "\"$candidate\"")
+    sensitive_line=$(assignment api_key "\"$literal_value\"")
+    if [[ "$order" == first ]]; then mixed_line="$fixture_line; $sensitive_line"; else mixed_line="$sensitive_line; $fixture_line"; fi
+    expect_sensitive tests/runtime.py "$mixed_line" "Test fixture cannot hide another credential: $order"
+  done
+  if has_sensitive_patterns "$(assignment password "\"$candidate\"")" tests/runtime.py src/runtime.py; then
+    pass 'Source-to-test rename retains conservative full-diff matching'
+  else
+    fail 'Source-to-test rename granted a test fixture exemption to removed production content'
+  fi
+done
+
+start_case
+stage_text tests/runtime.py "$test_fixture_content"
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+for scenario in removed context; do
+  if [[ "$scenario" == removed ]]; then
+    stage_text tests/runtime.py '# Test the security boundary.'
+  else
+    stage_text tests/runtime.py "$test_fixture_content"$'\n# Test the security boundary.'
+  fi
+  [[ -z "$(detect_staged_secret_lines)" ]] || fail "$scenario: predictable test fixture edit triggered the guard"
+  if detect_sensitive_patterns; then fail "$scenario: predictable test fixture activated safe mode"; fi
+  pass "Full diff treats $scenario predictable fixtures as test values"
+done
+
 for quote in '"' "'"; do
   expect_sensitive tests/test_archive.py "$(assignment password "$quote$literal_value$quote")" 'Quoted literal in tests is protected'
 done
@@ -440,6 +509,19 @@ assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Test-prefix
 pass 'Test-prefixed placeholder CLI preview preserves useful context and Git state'
 
 start_case
+stage_text backend/apps/api/tests/test_security_boundaries.py "$test_fixture_content"
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Predictable test fixture preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'Predictable test fixture triggered the guard'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Predictable test fixture activated safe mode'
+requests=$(cat "$test_root"/requests/request.*)
+assert_contains "$requests" "$fixture_token" 'Token fixture missing from AI context'
+assert_contains "$requests" "$fixture_password" 'Password fixture missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Predictable test fixture preview changed the caller index'
+pass 'Predictable test fixture CLI preview preserves source context and Git state'
+
+start_case
 stage_text src/runtime.ts "$ternary_content"
 stage_text tests/runtime.test.ts "$(printf 'const config = { %s: "%s" };' "$oauth_label" client-secret)"
 index_before=$(git hash-object "$GIT_INDEX_FILE")
@@ -510,6 +592,14 @@ run_cli
 assert_equal "$CLI_STATUS" 1 'External finding on a test-prefixed placeholder did not block'
 assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External test-prefixed finding missing from policy report'
 pass 'External scanner findings remain independent of test-prefixed placeholders'
+
+start_case
+stage_text tests/runtime.py "$test_fixture_content"
+MOCK_GITLEAKS_FINDING=1
+run_cli
+assert_equal "$CLI_STATUS" 1 'External finding on a predictable test fixture did not block'
+assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External test fixture finding missing from policy report'
+pass 'External scanner findings remain independent of predictable test fixtures'
 
 assert_equal "$(git hash-object .git/index)" "$original_index" 'Original clone index changed'
 assert_equal "$(git show-ref)" "$original_refs" 'Original refs changed'

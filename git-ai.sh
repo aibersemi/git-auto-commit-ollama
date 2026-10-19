@@ -1128,6 +1128,7 @@ scan_sensitive_content() {
       path = ENVIRON["GIT_AI_SCAN_PATH"]
       old_path = ENVIRON["GIT_AI_SCAN_OLD_PATH"]
       code_file = is_code_path(path) && (old_path == "" || is_code_path(old_path))
+      test_file = code_file && is_test_path(path) && (old_path == "" || is_test_path(old_path))
       quote_chars = "\042\047"
       assignment_regex = "[a-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[a-z0-9_.-]*[" quote_chars "]?[[:space:]]*[:=][[:space:]]*"
       # Fixed minima plus * keep multi-part token matching consistent across Awk implementations.
@@ -1141,6 +1142,12 @@ scan_sensitive_content() {
     }
     function is_code_path(value) {
       return tolower(value) ~ /[.](py|pyi|js|jsx|mjs|cjs|ts|tsx|mts|cts)$/
+    }
+    function is_test_path(value) {
+      value = tolower(value)
+      return value ~ /(^|\/)(__tests__|tests?)\// ||
+        value ~ /(^|\/)(test_[^/]+|[^/]+_test)[.]pyi?$/ ||
+        value ~ /[.](test|spec)[.](js|jsx|mjs|cjs|ts|tsx|mts|cts)$/
     }
     function is_expression(value) {
       # Only code files receive syntax exemptions; .env/config values are literals.
@@ -1168,6 +1175,12 @@ scan_sensitive_content() {
         if (words[i] ~ /^(credential|credentials|key|token|secret|password)$/) has_kind = 1
       }
       return has_marker && has_kind
+    }
+    function is_test_placeholder(value) {
+      # Only conventional test paths receive these complete, predictable fixture patterns.
+      if (!test_file) return 0
+      return value ~ /^(test|testing|tests)[-_](google|github|oauth)[-_](access[-_]|auth[-_]|refresh[-_])?token$/ ||
+        value ~ /^(test|regression)[-_]?password[-_]?123[!]?$/
     }
     function is_namespace_salt(assignment, value, name, boundary) {
       # Public HMAC/signing namespaces must name the salt purpose, not just look dotted.
@@ -1209,7 +1222,7 @@ scan_sensitive_content() {
         }
         # Only complete quoted source literals qualify; concatenations stay conservative.
         if (code_file && end_quote && substr(rhs, end_quote + 2) ~ /^[[:space:]]*($|[,;)}#]|[]])/ &&
-            (is_source_placeholder(candidate) || is_namespace_salt(assignment, candidate))) continue
+            (is_source_placeholder(candidate) || is_test_placeholder(candidate) || is_namespace_salt(assignment, candidate))) continue
         if (candidate ~ /^[a-z0-9_.\/+=:@-]{12,}/ && candidate !~ placeholder_regex) return 1
       }
       return 0

@@ -481,7 +481,7 @@ Available protections:
   and variable/member references are treated as expressions rather than
   credential literals. Quoted literals and unquoted configuration values
   remain checked at the existing 12-character threshold. Unknown file types
-  receive no expression exemptions; test files follow the same rules as code.
+  receive no expression exemptions.
   Quoted names used as conditional branches, such as environment variable
   labels in ternary expressions, are not treated as property assignments.
   Placeholder exemptions apply to each value, not the whole line. Provider
@@ -496,6 +496,21 @@ Available protections:
   random or numeric suffixes do not qualify. The exact OAuth example label
   `client-secret` is also a source placeholder. These exemptions do not apply to configuration values,
   unknown file types, unterminated strings, or concatenated expressions.
+- Conventional Python and JavaScript/TypeScript test paths also recognize
+  complete quoted fixture labels such as `test-google-token` and
+  `RegressionPassword123!`. Token labels start with `test`, `testing`, or
+  `tests`, followed by `google`, `github`, or `oauth` and `token`, optionally
+  preceded by `access`, `auth`, or `refresh`; words use hyphens or underscores.
+  Password labels start with `test` or `regression`, followed by `password`
+  and the exact suffix `123`, with optional hyphens/underscores between words
+  and an optional final `!`. Matching is case-insensitive. These patterns
+  apply only to source under `test/`, `tests/`, or `__tests__/`, Python
+  `test_*.py`/`*_test.py` files (including `.pyi`), and JavaScript/TypeScript
+  `*.test.*`/`*.spec.*` files. Other values in test files remain scanned.
+  Production source, configuration files, arbitrary suffixes, unterminated
+  strings, and concatenations remain protected. Full-diff checks require
+  both paths of a rename to qualify. Provider/private-key signatures and
+  independent `gitleaks` findings still take precedence.
 - Complete quoted `*_SALT` literals in Python and JavaScript/TypeScript can represent public HMAC/signing namespaces, such as `PASSWORD_RESET_OTP_SALT` with the value `accounts.customer-password-reset-otp`. The value must be a dotted namespace of alphabetic words separated by hyphens or underscores, ending with the variable name without `_SALT` at a dot/hyphen/underscore boundary; hyphens and underscores are equivalent for this comparison. Arbitrary salt values, other credential names, configuration files, unterminated strings, and concatenations do not receive this exemption. Lint suppression comments do not affect scanning. Provider and private-key signatures still take precedence, and `gitleaks` findings remain independent.
 - During a normal run, a secret finding cancels the commit.
   `--allow-secret-commit` only bypasses that cancellation.

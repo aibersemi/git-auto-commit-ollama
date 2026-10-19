@@ -117,6 +117,7 @@ If a change affects secret detection, test at least:
 - Quoted literals, unquoted configuration values, and unknown file types
   without granting expression exemptions.
 - A placeholder secret that should be allowed.
+- Predictable provider-token and password fixtures in conventional test source paths, while production/configuration paths, arbitrary suffixes, concatenations, source-to-test renames, and other credentials in the same tests remain protected. See the bounded fixture rules in [`README.md#security`](../README.md#security).
 - Public HMAC/signing namespace salts without warnings, while arbitrary salt literals, configuration values, concatenations, and credentials on the same line remain protected.
 - Multiple candidates on one line, ensuring placeholders cannot hide another
   literal or a provider/private-key signature.

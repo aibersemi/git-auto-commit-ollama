@@ -64,6 +64,14 @@ values, and concatenated expressions do not receive this exemption. Provider
 and private-key signatures always take precedence, and Gitleaks findings
 remain independent of built-in exemptions.
 
+Conventional test source paths additionally recognize bounded, predictable
+provider-token and password fixture patterns. This exemption requires a
+complete quoted literal; it does not skip other credentials in tests,
+production source, configuration values, concatenations, or signatures.
+Full-diff checks also require the old path of a rename to qualify as test
+source. The exact patterns and path rules are documented in
+[`README.md#security`](../README.md#security).
+
 When `gitleaks` is available, the script also runs:
 
 ```bash
