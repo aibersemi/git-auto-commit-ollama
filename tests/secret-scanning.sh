@@ -178,10 +178,67 @@ expect_safe src/runtime.ts "$(assignment api_key 'config.api_key,')" 'Member ref
 expect_safe 'tests/space name.py' "$(assignment self.secret 'secrets.token_urlsafe (16)')" 'Function call with whitespace and spaced path'
 expect_safe $'tests/tab\tnewline\nbackslash\\name.py' "$(assignment self.secret 'secrets.token_hex(32)')" 'NUL-delimited paths preserve expression exemptions'
 
+# Logical reference operands must not hide credential literals in fallbacks.
+logical_expression="$(assignment password "env.POSTGRES_PASSWORD || ''")"
+for extension in js jsx mjs cjs ts tsx mts cts; do
+  expect_safe "src/runtime.$extension" "const $logical_expression;" "Empty logical fallback in .$extension"
+done
+for expression in \
+  'env.POSTGRES_PASSWORD || "";' \
+  'env.POSTGRES_PASSWORD || config.DEFAULT_PASSWORD;' \
+  "env.POSTGRES_PASSWORD || config.DEFAULT_PASSWORD || '';" \
+  "env.POSTGRES_PASSWORD||'';" \
+  'config.enabled && env.POSTGRES_PASSWORD;' \
+  "config.enabled && env.POSTGRES_PASSWORD || '';" \
+  "env.POSTGRES_PASSWORD || loadPassword();"; do
+  expect_safe src/runtime.mjs "$(assignment password "$expression")" "Logical source expression: $expression"
+done
+for path in .env settings.yaml unknown.data; do
+  expect_sensitive "$path" "$logical_expression" "Logical-looking config value remains literal: $path"
+done
+expect_sensitive src/runtime.mjs "$(assignment password '"env.POSTGRES_PASSWORD || config.DEFAULT_PASSWORD"')" 'Quoted logical expression remains a credential literal'
+for operator in '||' '&&'; do
+  for expression in \
+    "env.POSTGRES_PASSWORD $operator \"$literal_value\";" \
+    "env.key $operator \"$literal_value\";" \
+    "env.POSTGRES_PASSWORD $operator '' $operator \"$literal_value\";" \
+    "env.POSTGRES_PASSWORD $operator 'dummy-password' $operator \"$literal_value\";" \
+    "env.POSTGRES_PASSWORD $operator \"$literal_value\" $operator '';" \
+    "env.POSTGRES_PASSWORD $operator config.load(password=\"$literal_value\");"; do
+    expect_sensitive src/runtime.mjs "$(assignment password "$expression")" 'Logical fallback literal remains protected'
+  done
+  expect_sensitive src/runtime.mjs "$(assignment password "env.POSTGRES_PASSWORD $operator \"$provider_value\";")" 'Provider signature overrides logical syntax'
+done
+expect_sensitive src/runtime.mjs "$logical_expression; $(assignment api_key "\"$literal_value\"")" 'Logical reference cannot hide another assignment'
+if has_sensitive_patterns "$logical_expression" src/runtime.mjs old.env; then
+  pass 'Config-to-source rename retains conservative logical matching'
+else
+  fail 'Config-to-source rename exempted a literal logical-looking value'
+fi
+
+start_case
+stage_text scripts/runtime.mjs "$logical_expression;"
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+for scenario in removed context; do
+  if [[ "$scenario" == removed ]]; then
+    stage_text scripts/runtime.mjs 'export const status = "active";'
+  else
+    stage_text scripts/runtime.mjs "$logical_expression;"$'\nexport const status = "active";'
+  fi
+  [[ -z "$(detect_staged_secret_lines)" ]] || fail "$scenario: logical reference triggered guard"
+  if detect_sensitive_patterns; then fail "$scenario: logical reference activated safe mode"; fi
+  select_commit_references 2> "$test_root/references.log"
+  assert_equal "$REFERENCE_SENSITIVE_SKIPPED" 0 "$scenario: logical reference excluded"
+  pass "Full diff treats $scenario logical references as source expressions"
+done
+
 # Documentation receives source rules only inside explicitly typed fences.
 markdown_expression=$(assignment secret process.env.API_SECRET)
 markdown_literal=$(assignment password "\"$literal_value\"")
 markdown_content=$'```tsx\n'"$markdown_expression"$'\n```'
+expect_safe docs/example.md $'```js\n'"$logical_expression"$'\n```' 'Logical references in Markdown source fences'
+expect_sensitive docs/example.md $'```env\n'"$logical_expression"$'\n```' 'Markdown configuration fence retains literal logical values' 2
 for language in py python js javascript ts typescript jsx tsx mjs cjs mts cts; do
   for fence in '```' '~~~'; do
     expect_safe docs/example.md "$fence$language"$'\n'"$markdown_expression"$'\n'"$fence" "Markdown $language expression with $fence fence"
@@ -554,6 +611,34 @@ requests=$(cat "$test_root"/requests/request.*)
 assert_contains "$requests" 'secrets.token_urlsafe(16)' 'Benign expression missing from AI context'
 assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Benign preview changed the caller index'
 pass 'Benign CLI preview retains source context without Git mutations'
+
+start_case
+stage_text scripts/runtime.mjs "$logical_expression;"
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+stage_text scripts/runtime.mjs 'export const status = "active";'
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Removed logical reference preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'Removed logical reference triggered guard'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Removed logical reference activated safe mode'
+assert_contains "$(cat "$test_root"/requests/request.*)" 'env.POSTGRES_PASSWORD' 'Removed logical reference missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Logical reference preview changed the caller index'
+pass 'Removed logical reference CLI preview retains context without Git mutations'
+
+start_case
+stage_text src/runtime.mjs "$(assignment password "env.key || \"$literal_value\";")"
+run_cli
+assert_equal "$CLI_STATUS" 1 'Logical credential fallback was not blocked'
+assert_contains "$(cat "$test_root/cli.err")" 'Commit cancelled' 'Logical credential fallback missed guard cancellation'
+if compgen -G "$test_root/requests/request.*" >/dev/null; then fail 'Logical fallback sent a generation prompt'; fi
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Logical credential fallback preview failed'
+assert_contains "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Logical credential fallback preview lost safe mode'
+assert_absent "$(cat "$test_root"/requests/request.*)" "$literal_value" 'Logical credential fallback exposed to AI'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Logical fallback preview changed the caller index'
+pass 'Logical credential fallback CLI blocks commits and redacts preview context'
 
 start_case
 stage_text docs/example.md "$markdown_content"

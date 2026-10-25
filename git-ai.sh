@@ -1228,7 +1228,7 @@ scan_sensitive_content() {
       return boundary > 0 && substr(value, boundary + 1) == name &&
         substr(value, boundary, 1) ~ /[.-]/
     }
-    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote, ternary_label, assignment) {
+    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote, ternary_label, assignment, suffix) {
       lower = tolower(content)
       # Token/key signatures always take precedence over expression/placeholder exemptions.
       if (lower ~ strong_regex) return 1
@@ -1239,12 +1239,23 @@ scan_sensitive_content() {
         ternary_label = is_ternary_label(substr(rest, 1, RSTART - 1), assignment)
         rest = rhs
         if (ternary_label) continue
+        # A logical reference is code, but its fallback can still be a literal
+        # credential. Inspect the remaining operand instead of exempting it.
+        if (code_file) {
+          while (match(rhs, "^" reference "[[:space:]]*([|][|]|&&)[[:space:]]*")) {
+            rhs = substr(rhs, RLENGTH + 1)
+          }
+        }
         quote = substr(rhs, 1, 1)
         end_quote = 0
         if (quote != "" && index(quote_chars, quote)) {
           candidate = substr(rhs, 2)
           end_quote = index(candidate, quote)
           if (end_quote) candidate = substr(candidate, 1, end_quote - 1)
+          suffix = substr(rhs, end_quote + 2)
+          if (code_file && end_quote && match(suffix, /^[[:space:]]*([|][|]|&&)[[:space:]]*/)) {
+            if (has_secret(assignment substr(suffix, RLENGTH + 1))) return 1
+          }
         } else {
           if (is_expression(rhs)) continue
           if (!match(rhs, /^[a-z0-9_.\/+=:@-]+/)) continue

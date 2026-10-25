@@ -64,6 +64,12 @@ values, and concatenated expressions do not receive this exemption. Provider
 and private-key signatures always take precedence, and Gitleaks findings
 remain independent of built-in exemptions.
 
+Logical source references using `||` or `&&` retain literal checks on their
+remaining operands. Empty fallbacks and variable/member references are not
+credentials; literal credential fallbacks remain protected, including later
+operands after empty strings or placeholders. Configuration values and quoted
+expression text do not receive logical-expression exemptions.
+
 Conventional test source paths additionally recognize bounded, predictable
 provider-token and password fixture patterns. This exemption requires a
 complete quoted literal; it does not skip other credentials in tests,

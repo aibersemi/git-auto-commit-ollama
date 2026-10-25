@@ -482,6 +482,11 @@ Available protections:
   credential literals. Quoted literals and unquoted configuration values
   remain checked at the existing 12-character threshold. Unknown file types
   receive no expression exemptions.
+  Logical reference chains using `||` or `&&`, such as
+  `env.POSTGRES_PASSWORD || ''`, are also source expressions. Each remaining
+  operand is checked, so credential literals in fallbacks still trigger the
+  guard and safe mode, even after empty strings or placeholder operands.
+  Quoted expression text and configuration values receive no such exemption.
   Quoted names used as conditional branches, such as environment variable
   labels in ternary expressions, are not treated as property assignments.
   Placeholder exemptions apply to each value, not the whole line. Provider
