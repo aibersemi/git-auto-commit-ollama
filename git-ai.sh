@@ -1371,13 +1371,37 @@ detect_staged_secret_lines() {
 }
 
 run_gitleaks_secret_scan() {
-  local report_file="$1" status=0
-  command -v gitleaks >/dev/null 2>&1 || return 2
+  local report_file="$1" status=0 repo_root caller_dir="$PWD" path_variable path_value gitleaks_command
+  gitleaks_command=$(type -P gitleaks) || return 2
+  [[ "$gitleaks_command" == /* ]] || gitleaks_command="$caller_dir/$gitleaks_command"
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 2
+  [[ "$report_file" == /* ]] || report_file="$caller_dir/$report_file"
+
+  if [[ -n "${GITLEAKS_CONFIG:-}" ]]; then
+    dbg "Gitleaks configuration source: GITLEAKS_CONFIG (file)"
+  elif [[ -n "${GITLEAKS_CONFIG_TOML:-}" ]]; then
+    dbg "Gitleaks configuration source: GITLEAKS_CONFIG_TOML (inline)"
+  elif [[ -f "$repo_root/.gitleaks.toml" ]]; then
+    dbg "Gitleaks configuration source: repository root .gitleaks.toml"
+  else
+    dbg "Gitleaks configuration source: built-in defaults"
+  fi
 
   dbg "Command: gitleaks git --pre-commit --staged --redact --no-banner --exit-code 10 --report-format json --report-path <private temporary file>"
-  # Never forward scanner logs: even failures may contain staged content.
-  gitleaks git --pre-commit --staged --redact --no-banner \
-    --exit-code 10 --report-format json --report-path "$report_file" >/dev/null 2>&1 || status=$?
+  (
+    # Preserve caller-relative overrides before resolving repo configuration,
+    # includes, and ignore files from the root. Do not change the caller's cwd.
+    for path_variable in GITLEAKS_CONFIG GIT_INDEX_FILE GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
+      path_value="${!path_variable:-}"
+      if [[ -n "$path_value" && "$path_value" != /* ]]; then
+        export "$path_variable=$caller_dir/$path_value"
+      fi
+    done
+    cd -- "$repo_root" || exit 2
+    # Never forward scanner logs: even failures may contain staged content.
+    "$gitleaks_command" git --pre-commit --staged --redact --no-banner \
+      --exit-code 10 --report-format json --report-path "$report_file" >/dev/null 2>&1
+  ) || status=$?
   dbg "Gitleaks exit status: ${status}"
   [[ "$status" -eq 0 || "$status" -eq 10 ]] || return 2
 

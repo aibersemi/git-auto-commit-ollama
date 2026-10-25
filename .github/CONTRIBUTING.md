@@ -117,6 +117,11 @@ If a change affects secret detection, test at least:
 - Run `bash tests/gitleaks-integration.sh` with the installed Gitleaks binary.
   This suite verifies actual staged scanning and isolated-index behavior
   without Ollama, commits, or pushes.
+- Verify configuration selection from both root and subdirectories, environment
+  precedence, relative config/index/report paths, root-relative includes and
+  ignore files, and invalid selected configurations. Debug output may identify
+  the source but must not include inline TOML contents. Follow the configuration
+  contract in [`README.md#security`](../README.md#security).
 - Gitleaks findings must block commits independently of built-in exemptions.
   Built-in-only matches must protect AI context without blocking commits.
 - Missing Gitleaks, execution errors, invalid configuration, and invalid or

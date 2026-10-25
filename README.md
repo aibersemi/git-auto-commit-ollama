@@ -489,12 +489,23 @@ Available protections:
   flags, invalid configuration, or missing/invalid reports stop the run before
   generation, commit, and push. `--dry-run`, `--allow-secret-commit`, and
   `--force-diff` cannot bypass a failed scan. `--force` explicitly skips scanning.
-- Gitleaks uses its standard configuration and ignore mechanisms, including
-  `.gitleaks.toml`, `GITLEAKS_CONFIG`, `GITLEAKS_CONFIG_TOML`, `.gitleaksignore`,
-  and `gitleaks:allow` comments. Review custom rules and exclusions because they
-  affect which findings can block commits. Gitleaks defaults may not detect
-  generic passwords that the former built-in commit guard detected; use
-  reviewed custom rules when those patterns must block commits.
+- Gitleaks runs from the root of the repository being scanned, including when
+  `git-ai` is invoked from a subdirectory. It reads that root's `.gitleaks.toml`
+  and `.gitleaksignore`; nested copies do not replace the root policy.
+  Configuration includes such as `[extend].path` resolve from the repo root.
+- Configuration priority is `GITLEAKS_CONFIG` (file), then
+  `GITLEAKS_CONFIG_TOML` (inline TOML), then the repo root's `.gitleaks.toml`,
+  then Gitleaks defaults. Relative `GITLEAKS_CONFIG` paths remain relative to
+  the directory where `git-ai` was invoked. Relative Git index overrides also
+  retain their original meaning. Configuration-source messages in `--debug`
+  identify the source without dumping file or inline TOML contents.
+- Scanner configuration and ignore files are read from the working tree,
+  including with `--no-stage`; staged changes remain the scan target. Review
+  rules, `.gitleaksignore`, and `gitleaks:allow` exclusions because they affect
+  commit blocking. Invalid selected configurations stop scanning without
+  falling back to another source. Gitleaks defaults may not detect generic
+  passwords that the former built-in commit guard detected; use reviewed
+  custom rules when those patterns must block commits.
 - The built-in path-aware matcher protects AI context and does not independently
   block commits. The matching rules below describe this safe-mode matcher;
   its exemptions do not suppress Gitleaks findings. Files flagged by Gitleaks
@@ -569,6 +580,18 @@ Available protections:
 - `--no-push`, `--no-stage`, and `--dry-run` each protect a different Git
   operation boundary and are not interchangeable.
 
+To customize a repository's scanner while retaining Gitleaks default rules,
+start its root `.gitleaks.toml` with:
+
+```toml
+[extend]
+useDefault = true
+```
+
+Add custom rules or narrow allowlists to that file. A custom configuration does
+not automatically inherit default rules. Scanner exclusions do not disable the
+independent built-in safe-mode matcher used to protect AI context.
+
 Secret detection is best effort and may produce false positives or false
 negatives. Do not stage credentials, private keys, tokens, or environment files
 that must remain private.
@@ -630,8 +653,9 @@ perform no pushes, and require no active Ollama endpoint. The secret scanning
 suite also mocks Gitleaks and verifies blocking, scanner failures, safe previews,
 expression/placeholder handling, and protection of removed/context lines. The
 Gitleaks integration suite requires the installed binary and verifies real
-staged scans, temporary indexes, redaction, overrides, and invalid configuration
-in an isolated repository without Ollama, commits, or pushes.
+staged scans, temporary indexes, redaction, configuration precedence from root
+and subdirectories, relative overrides, includes, ignore files, and invalid
+configuration in an isolated repository without Ollama, commits, or pushes.
 
 For a runtime smoke test, use a temporary repository and dry-run. This command
 still requires an active Ollama endpoint and an available model because

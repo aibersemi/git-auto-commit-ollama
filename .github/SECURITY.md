@@ -85,7 +85,12 @@ preview mode nor a finding override permits generation after a failed scan.
 Scanner reports are private temporary JSON files. Displayed findings include
 only file, line, and rule ID; scanner logs and credential fields are not emitted.
 Gitleaks configuration and ignore rules control commit-blocking coverage, and
-its default rules may differ from the former built-in guard. See
+its default rules may differ from the former built-in guard. Scanning resolves
+repository configuration, includes, and ignore files from the repo root even
+when invoked from a subdirectory. Environment overrides retain native priority;
+selected invalid configurations never fall back silently. Configuration and
+ignore files come from the working tree, while the scan targets staged changes.
+Scanner exclusions do not disable the independent built-in safe-mode matcher. See
 [`README.md#security`](../README.md#security) for scanner behavior, configuration
 boundaries, and overrides.
 
