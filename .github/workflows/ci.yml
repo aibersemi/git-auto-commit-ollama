@@ -6,23 +6,44 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   bash:
     name: Bash validation
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install validation dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y shellcheck jq
+
+      - name: Install validated actionlint release
+        run: |
+          archive_path="${RUNNER_TEMP}/actionlint_1.7.12_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location --output "$archive_path" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  %s\n' "$archive_path" | sha256sum --check
+          mkdir -p "${RUNNER_TEMP}/actionlint-bin"
+          tar -xzf "$archive_path" -C "${RUNNER_TEMP}/actionlint-bin" actionlint
+          echo "${RUNNER_TEMP}/actionlint-bin" >> "$GITHUB_PATH"
+
+      - name: Validate GitHub Actions workflows
+        run: actionlint
 
       - name: Install validated Gitleaks release
         run: |

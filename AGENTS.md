@@ -17,8 +17,8 @@ This project is a Bash CLI that generates Git commit messages with Ollama. Treat
 - `git-ai.sh`: Main CLI. Most behavioral changes belong here.
 - `git-ai.conf`: Default runtime configuration sourced as shell code. Never store secrets here.
 - `Makefile`: Installs or removes the `git-ai` and `git-ai.conf` symlinks in `$(PREFIX)/bin` with `sudo`.
-- `.github/workflows/ci.yml`: Bash validation CI.
-- `.github/workflows/release.yml`: Creates a GitHub Release for `v*` tags.
+- `.github/workflows/ci.yml`: Bash and workflow validation, reusable for releases.
+- `.github/workflows/release.yml`: Validates stable version tags and runs shared CI before creating a GitHub Release.
 - `README.md`, `.github/CONTRIBUTING.md`, `.github/SECURITY.md`: Public documentation.
 
 ## Documentation

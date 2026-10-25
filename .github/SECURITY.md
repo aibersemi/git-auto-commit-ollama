@@ -299,6 +299,9 @@ Preserve these principles when changing the project:
   network access and automatic model pulls may still occur.
 - Debug output must aid diagnosis without exposing credentials.
 - Keep required dependencies minimal and auditable.
+- Tagged releases must pass shared CI validation before publication. Grant
+  release write access only to the publication job; see the workflow policy in
+  [`README.md#development`](../README.md#development).
 - Discuss new network calls explicitly before accepting them.
 
 The contribution checklist is in

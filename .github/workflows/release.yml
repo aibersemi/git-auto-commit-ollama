@@ -3,21 +3,47 @@ name: Release
 on:
   push:
     tags:
-      - 'v*' # Runs when a tag beginning with "v" is pushed (for example: git tag v1.6.0 && git push origin v1.6.0)
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  validate-tag:
+    name: Validate release tag
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require a stable version tag
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf '%s\n' 'Release tags must use vMAJOR.MINOR.PATCH without leading zeros or suffixes.' >&2
+            exit 1
+          fi
+
+  validate:
+    name: Validate tagged commit
+    needs: validate-tag
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Publish release
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Create Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "Release ${{ github.ref_name }}" \
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Release $GITHUB_REF_NAME" \
             --generate-notes

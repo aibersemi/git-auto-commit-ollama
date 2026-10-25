@@ -76,8 +76,11 @@ Run the basic validation from
 request.
 
 For GitHub Actions changes, follow the runner and action pinning policy in
-[`README.md#development`](../README.md#development). Validate workflow files
-with `actionlint` if available and confirm that CI passes on GitHub.
+[`README.md#development`](../README.md#development). Run `actionlint` locally
+and confirm that CI passes on GitHub. Keep shared validation in `ci.yml` so
+pull requests and tagged releases use the same checks. Test release commands
+with a mocked `gh` executable; publishing a real release is not a validation
+step. Do not run Stale against live issues or pull requests for validation.
 
 For runtime changes involving staging, prompts, commits, or pushes, test in a
 temporary repository. Do not use a primary working repository for experiments

@@ -645,8 +645,9 @@ shellcheck tests/gitleaks-integration.sh
 bash tests/gitleaks-integration.sh
 ```
 
-The [CI workflow](.github/workflows/ci.yml) runs these checks on pushes to
-`main`, pull requests, and manual `workflow_dispatch` runs. The Markdown
+The [CI workflow](.github/workflows/ci.yml) runs these checks and `actionlint`
+on pushes to `main`, pull requests, and manual `workflow_dispatch` runs. It is
+also reusable through `workflow_call` for release validation. The Markdown
 reference and secret scanning regression suites use temporary local clones,
 isolated indexes, and mocked Ollama responses. They create no new commits,
 perform no pushes, and require no active Ollama endpoint. The secret scanning
@@ -658,11 +659,37 @@ and subdirectories, relative overrides, includes, ignore files, and invalid
 configuration in an isolated repository without Ollama, commits, or pushes.
 
 GitHub Actions workflows use `ubuntu-24.04` explicitly to avoid automatic
-operating-system migrations through `ubuntu-latest`. CI and Release use
+operating-system migrations through `ubuntu-latest`. Validation uses
 `actions/checkout` v7.0.1 with the Node.js 24 runtime, pinned to a full commit
-SHA. Keep action references pinned when upgrading, and validate a new runner
-version separately before changing the shared baseline. For workflow changes,
-run `actionlint` if available and verify the resulting CI run on GitHub.
+SHA, without persisting Git credentials. CI installs actionlint v1.7.12 and
+Gitleaks v8.30.1 with pinned SHA-256 checksums. Keep action references pinned
+when upgrading, and validate a new runner version separately before changing
+the shared baseline. For workflow changes, install
+[actionlint](https://github.com/rhysd/actionlint/blob/main/docs/install.md), run
+`actionlint` locally, and verify the resulting CI run on GitHub. It is a
+development tool and is not required to run `git-ai`.
+
+CI jobs have a 15-minute timeout. New branch or pull-request runs cancel older
+runs for the same workflow and ref; tag validation runs are not cancelled by
+this policy. Release runs use a separate concurrency group per tag with
+cancellation disabled.
+
+The [Release workflow](.github/workflows/release.yml) accepts stable tags in
+`vMAJOR.MINOR.PATCH` format, such as `v1.5.2`, without leading zeros or suffixes.
+Other `v*` tags trigger the workflow but fail tag validation. After validating
+the tag, Release calls the same CI workflow against the tagged commit and
+publishes only when every check passes. Validation receives read-only
+repository access; only the publication job receives `contents: write`.
+Publication uses the existing remote tag with `gh release create --verify-tag`.
+Tag validation and publication each have a 5-minute timeout.
+
+The [Stale workflow](.github/workflows/stale.yml) uses `actions/stale` v11.0.0
+with Node.js 24 and a pinned SHA. It runs daily, with a 10-minute timeout and
+overlapping runs serialized. Issues and pull requests are marked stale after
+60 days without activity. Issues may close after 7 additional days; pull
+requests remain open for maintainer review. The `bug`, `enhancement`, and
+`security` labels exempt both issues and pull requests, and draft pull requests
+are exempt. Label exemptions apply when the corresponding label is assigned.
 
 For a runtime smoke test, use a temporary repository and dry-run. This command
 still requires an active Ollama endpoint and an available model because
@@ -721,8 +748,8 @@ Do not run commit or push smoke tests in a primary working repository. See the
 |   |-- CONTRIBUTING.md       # contribution guide
 |   |-- SECURITY.md           # security policy and scope
 |   `-- workflows/
-|       |-- ci.yml            # syntax, ShellCheck, and help validation
-|       |-- release.yml       # GitHub Releases for v* tags
+|       |-- ci.yml            # reusable Bash, workflow, and regression validation
+|       |-- release.yml       # validated releases for stable version tags
 |       `-- stale.yml         # stale issue and pull request management
 |-- AGENTS.md                 # coding agent instructions
 |-- Makefile                  # install or remove two symlinks
