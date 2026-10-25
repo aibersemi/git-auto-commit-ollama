@@ -1127,7 +1127,9 @@ scan_sensitive_content() {
     BEGIN {
       path = ENVIRON["GIT_AI_SCAN_PATH"]
       old_path = ENVIRON["GIT_AI_SCAN_OLD_PATH"]
-      code_file = is_code_path(path) && (old_path == "" || is_code_path(old_path))
+      source_code_file = is_code_path(path) && (old_path == "" || is_code_path(old_path))
+      markdown_file = is_markdown_path(path) && (old_path == "" || is_markdown_path(old_path))
+      code_file = source_code_file
       test_file = code_file && is_test_path(path) && (old_path == "" || is_test_path(old_path))
       quote_chars = "\042\047"
       assignment_regex = "[a-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[a-z0-9_.-]*[" quote_chars "]?[[:space:]]*[:=][[:space:]]*"
@@ -1142,6 +1144,34 @@ scan_sensitive_content() {
     }
     function is_code_path(value) {
       return tolower(value) ~ /[.](py|pyi|js|jsx|mjs|cjs|ts|tsx|mts|cts)$/
+    }
+    function is_markdown_path(value) {
+      return tolower(value) ~ /[.](md|mdx)$/
+    }
+    function update_fence(content, side, text, marker, size, language) {
+      text = tolower(content)
+      sub(/^[[:space:]]*/, "", text)
+      if (!match(text, /^(```+|~~~+)/)) return
+      marker = substr(text, 1, 1)
+      size = RLENGTH
+      language = substr(text, size + 1)
+      if (fence_marker[side] != "") {
+        if (marker == fence_marker[side] && size >= fence_size[side] && language ~ /^[[:space:]]*$/) {
+          fence_marker[side] = ""
+          fence_code[side] = 0
+        }
+      } else {
+        fence_marker[side] = marker
+        fence_size[side] = size
+        sub(/^[[:space:]]*/, "", language)
+        sub(/[[:space:]].*$/, "", language)
+        fence_code[side] = language ~ /^(python|javascript|typescript)$/ || is_code_path("snippet." language)
+      }
+    }
+    function line_has_secret(content, side) {
+      if (markdown_file) update_fence(content, side)
+      code_file = source_code_file || (markdown_file && fence_code[side])
+      return has_secret(content)
     }
     function is_test_path(value) {
       value = tolower(value)
@@ -1228,11 +1258,22 @@ scan_sensitive_content() {
       return 0
     }
     scan_mode == "content" {
-      if (has_secret($0)) { found = 1; exit }
+      if (line_has_secret($0, "raw")) { found = 1; exit }
       next
     }
-    /^diff --git / { in_hunk = 0; next }
+    /^diff --git / {
+      in_hunk = 0
+      for (side in fence_marker) {
+        delete fence_marker[side]
+        delete fence_size[side]
+        delete fence_code[side]
+      }
+      next
+    }
     /^@@/ {
+      # Hunk labels are also sent to AI and can contain credential literals.
+      code_file = source_code_file
+      if (scan_mode == "diff" && has_secret($0)) { found = 1; exit }
       header = $0
       sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", header)
       split(header, parts, /[, ]/)
@@ -1241,25 +1282,44 @@ scan_sensitive_content() {
       next
     }
     in_hunk && substr($0, 1, 1) == "+" {
-      if (has_secret(substr($0, 2))) {
+      if (line_has_secret(substr($0, 2), "new")) {
+        if (scan_mode == "diff") { found = 1; exit }
         line_no = new_line > 0 ? new_line : "?"
         printf "%s:%s potential secret on added line\n", path, line_no
       }
       if (new_line > 0) new_line++
       next
     }
-    in_hunk && substr($0, 1, 1) == " " { if (new_line > 0) new_line++ }
-    END { if (scan_mode == "content") exit(found ? 0 : 1) }
+    in_hunk && substr($0, 1, 1) == "-" {
+      if (line_has_secret(substr($0, 2), "old") && scan_mode == "diff") { found = 1; exit }
+      next
+    }
+    in_hunk && substr($0, 1, 1) == " " {
+      new_sensitive = line_has_secret(substr($0, 2), "new")
+      old_sensitive = line_has_secret(substr($0, 2), "old")
+      if (scan_mode == "diff" && (new_sensitive || old_sensitive)) { found = 1; exit }
+      if (new_line > 0) new_line++
+    }
+    END { if (scan_mode != "added") exit(found ? 0 : 1) }
   '
 }
 
 has_sensitive_patterns() {
-  scan_sensitive_content "${2:-}" content "${3:-}" <<<"$1"
+  scan_sensitive_content "${2:-}" "${4:-content}" "${3:-}" <<<"$1"
+}
+
+staged_sensitive_diff() {
+  local path="$1" old_path="${2:-}" unified="${3:-3}"
+  local -a pathspecs=("$path")
+  [[ -z "$old_path" ]] || pathspecs+=("$old_path")
+  # Fences may be far outside an edited hunk. Scan complete Markdown context
+  # locally, keeping the old and new fence states separate across deletions.
+  case "${path,,}" in *.md|*.mdx) unified=2147483647 ;; esac
+  git --literal-pathspecs diff --cached --no-color --no-ext-diff --no-textconv -M -U"$unified" -- "${pathspecs[@]}"
 }
 
 scan_staged_sensitive_patterns() {
   local scan_mode="$1" additions deletions path old_path full_diff
-  local -a pathspecs
   local unified=3
   [[ "$scan_mode" != added ]] || unified=0
 
@@ -1269,13 +1329,11 @@ scan_staged_sensitive_patterns() {
       IFS= read -r -d '' old_path || break
       IFS= read -r -d '' path || break
     fi
-    pathspecs=("$path")
-    [[ -z "$old_path" ]] || pathspecs+=("$old_path")
-    full_diff=$(git --literal-pathspecs diff --cached --no-color --no-ext-diff --no-textconv -M -U"$unified" -- "${pathspecs[@]}" 2>/dev/null || true)
+    full_diff=$(staged_sensitive_diff "$path" "$old_path" "$unified" 2>/dev/null || true)
     if [[ "$scan_mode" == added ]]; then
       # Only the destination file syntax matters for newly added lines.
       scan_sensitive_content "$path" added <<<"$full_diff"
-    elif has_sensitive_patterns "$full_diff" "$path" "$old_path"; then
+    elif has_sensitive_patterns "$full_diff" "$path" "$old_path" diff; then
       return 0
     fi
   done < <(git diff --cached --numstat --no-ext-diff --no-textconv -M -z 2>/dev/null || true)
@@ -1508,7 +1566,7 @@ build_reference_excerpt() {
 
 select_commit_references() {
   local additions deletions path old_path blob_size full_diff chunk score index record category priority
-  local excerpt_limit label ranking_file group
+  local excerpt_limit label ranking_file group scan_diff
   local -a paths=() chunks=() scores=() groups=() pathspecs=()
   local -a source_indices=() markdown_indices=() supporting_indices=() ordered_indices=()
   REFERENCE_PATHS=()
@@ -1547,7 +1605,9 @@ select_commit_references() {
     pathspecs=("$path")
     [[ -z "$old_path" ]] || pathspecs+=("$old_path")
     full_diff=$(git --literal-pathspecs diff --cached --no-color --no-ext-diff --no-textconv -M -U3 -- "${pathspecs[@]}" 2>/dev/null || true)
-    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$full_diff" "$path" "$old_path"; then
+    scan_diff="$full_diff"
+    case "${path,,}" in *.md|*.mdx) scan_diff=$(staged_sensitive_diff "$path" "$old_path" 2>/dev/null || true) ;; esac
+    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$scan_diff" "$path" "$old_path" diff; then
       REFERENCE_SENSITIVE_SKIPPED=$((REFERENCE_SENSITIVE_SKIPPED + 1))
       continue
     fi
@@ -2331,13 +2391,20 @@ analyze_files_individually() {
   BATCH_ANALYSIS_FILE_NAMES=()
   BATCH_ANALYSIS_DIFF_CHUNKS=()
 
-  local selected_index truncated_chunk
+  local selected_index truncated_chunk scan_chunk scan_mode
   for selected_index in "${analysis_indices[@]}"; do
     file_name="${candidate_paths[$((selected_index - 1))]}"
     truncated_chunk="${REFERENCE_DIFFS[$((selected_index - 1))]}"
     [[ -n "$truncated_chunk" ]] || continue
 
-    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$truncated_chunk" "$file_name"; then
+    scan_chunk="$truncated_chunk"
+    scan_mode=content
+    # Markdown excerpts may omit their opening language fence. The complete
+    # diff already passed reference selection; retain that context for rechecks.
+    case "${file_name,,}" in
+      *.md|*.mdx) scan_chunk=$(staged_sensitive_diff "$file_name" 2>/dev/null || true); scan_mode="diff" ;;
+    esac
+    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$scan_chunk" "$file_name" "" "$scan_mode"; then
       sensitive_files_skipped=$((sensitive_files_skipped + 1))
       continue
     fi

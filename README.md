@@ -486,6 +486,15 @@ Available protections:
   labels in ternary expressions, are not treated as property assignments.
   Placeholder exemptions apply to each value, not the whole line. Provider
   token and private-key signatures take precedence over all exemptions.
+  Markdown (`.md`/`.mdx`) also applies source rules inside fenced code blocks
+  explicitly labeled Python, JavaScript, or TypeScript (including `py`, `js`,
+  `ts`, `jsx`, `tsx`, `mjs`, `cjs`, `mts`, and `cts`). Backtick and tilde fences
+  are supported. The scanner reads complete staged Markdown diff context
+  locally to recover fences outside edited hunks and tracks the old and new
+  versions separately. AI excerpts retain their existing size limits.
+  Prose, unlabeled fences, and configuration/shell fences remain conservative;
+  credential literals and provider/private-key signatures remain scanned
+  inside source examples. Test-only fixture exemptions do not apply to Markdown.
   Complete quoted source literals can also be placeholders when
   every hyphen/underscore-separated word belongs to a small placeholder
   vocabulary, includes a credential noun such as `key`, `token`, or

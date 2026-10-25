@@ -65,12 +65,12 @@ expect_safe() {
   pass "$label"
 }
 expect_sensitive() {
-  local path="$1" content="$2" label="$3" report
+  local path="$1" content="$2" label="$3" line_no="${4:-1}" report
   start_case
   stage_text "$path" "$content"
   if git --literal-pathspecs diff --cached --quiet -- "$path"; then fail "$label: fixture has no staged changes"; fi
   report=$(detect_staged_secret_lines)
-  assert_equal "$report" "$path:1 potential secret on added line" "$label: missing/redaction-invalid report"
+  assert_equal "$report" "$path:$line_no potential secret on added line" "$label: missing/redaction-invalid report"
   detect_sensitive_patterns || fail "$label: global safe mode did not activate"
   has_sensitive_patterns "$content" "$path" || fail "$label: per-file matcher missed content"
   select_commit_references 2> "$test_root/references.log"
@@ -177,6 +177,75 @@ done
 expect_safe src/runtime.ts "$(assignment api_key 'config.api_key,')" 'Member reference followed by punctuation'
 expect_safe 'tests/space name.py' "$(assignment self.secret 'secrets.token_urlsafe (16)')" 'Function call with whitespace and spaced path'
 expect_safe $'tests/tab\tnewline\nbackslash\\name.py' "$(assignment self.secret 'secrets.token_hex(32)')" 'NUL-delimited paths preserve expression exemptions'
+
+# Documentation receives source rules only inside explicitly typed fences.
+markdown_expression=$(assignment secret process.env.API_SECRET)
+markdown_literal=$(assignment password "\"$literal_value\"")
+markdown_content=$'```tsx\n'"$markdown_expression"$'\n```'
+for language in py python js javascript ts typescript jsx tsx mjs cjs mts cts; do
+  for fence in '```' '~~~'; do
+    expect_safe docs/example.md "$fence$language"$'\n'"$markdown_expression"$'\n'"$fence" "Markdown $language expression with $fence fence"
+  done
+done
+for path in docs/EXAMPLE.MD docs/example.mdx; do
+  expect_safe "$path" "$markdown_content" "Typed source fence in $path"
+done
+expect_safe docs/example.md $'  ```` TSX\n'"$markdown_expression"$'\n  `````' 'Indented case-insensitive source fence with longer closing marker'
+for language in '' env dotenv json yaml bash unknown; do
+  expect_sensitive docs/example.md '```'"$language"$'\n'"$markdown_expression"$'\n```' "Non-source Markdown fence remains literal: $language" 2
+done
+expect_sensitive docs/example.md "$markdown_expression" 'Markdown prose receives no expression exemption'
+expect_sensitive docs/example.md $'diff --git a/example b/example\n'"$markdown_literal" 'Diff-looking raw documentation cannot hide a credential' 2
+expect_sensitive docs/example.md "$markdown_content"$'\n'"$markdown_expression" 'Closing fence restores conservative Markdown matching' 4
+expect_sensitive docs/example.md $'```tsx\n'"$markdown_literal"$'\n```' 'Credential literal inside source fence remains protected' 2
+expect_sensitive docs/example.md $'```tsx\n'"$(assignment api_key "config.load(password=\"$literal_value\")")"$'\n```' 'Nested credential inside source fence remains protected' 2
+expect_sensitive docs/example.md $'```env\n```tsx\n'"$markdown_expression"$'\n```' 'Language-looking text cannot switch an open config fence' 3
+expect_sensitive docs/example.md $'````env\n```\n```tsx\n'"$markdown_expression"$'\n````' 'Short fence cannot close an outer config fence' 4
+expect_sensitive docs/example.md $'~~~env\n```\n```tsx\n'"$markdown_expression"$'\n~~~' 'Different fence character cannot close an outer config fence' 4
+for signature in "$provider_value" "$key_marker"; do
+  expect_sensitive docs/example.md $'```tsx\n'"$(printf 'const note = "%s"' "$signature")"$'\n```' 'Provider/key signatures override Markdown source syntax' 2
+done
+
+# The opening fence is deliberately outside the usual zero/three-line context.
+markdown_padding=$(printf '// Documentation context %s\n' {1..12})
+start_case
+stage_text docs/example.md $'```tsx\n'"$markdown_padding"$'\n'"$markdown_expression"$'\n```'
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+stage_text docs/example.md $'```tsx\n'"$markdown_padding"$'\n'"$(assignment secret process.env.OTHER_SECRET)"$'\n```'
+[[ -z "$(detect_staged_secret_lines)" ]] || fail 'Edited Markdown expression lost its distant opening fence'
+if detect_sensitive_patterns; then fail 'Full diff lost the old/new Markdown fence states'; fi
+select_commit_references 2> "$test_root/references.log"
+assert_equal "$REFERENCE_SENSITIVE_SKIPPED" 0 'Markdown reference lost its distant opening fence'
+assert_equal "${REFERENCE_PATHS[0]:-}" docs/example.md 'Safe Markdown reference not retained'
+pass 'Existing Markdown source block edits retain distant language context'
+
+for scenario in removed context; do
+  start_case
+  stage_text docs/example.md $'```tsx\n'"$markdown_padding"$'\n'"$markdown_literal"$'\n// Status: ready\n```'
+  export TEST_BASE_TREE
+  TEST_BASE_TREE=$(git write-tree)
+  if [[ "$scenario" == removed ]]; then
+    stage_text docs/example.md $'```tsx\n'"$markdown_padding"$'\n// Status: active\n```'
+  else
+    stage_text docs/example.md $'```tsx\n'"$markdown_padding"$'\n'"$markdown_literal"$'\n// Status: active\n```'
+  fi
+  [[ -z "$(detect_staged_secret_lines)" ]] || fail "$scenario: Markdown guard scanned non-added credentials"
+  detect_sensitive_patterns || fail "$scenario: Markdown safe mode missed full-diff credential"
+  select_commit_references 2> "$test_root/references.log"
+  assert_equal "$REFERENCE_SENSITIVE_SKIPPED" 1 "$scenario: sensitive Markdown reference retained"
+  pass "Markdown full-diff checks protect $scenario credentials"
+done
+
+start_case
+stage_text docs/example.md $'```env\n'"$markdown_expression"$'\n```'
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+stage_text docs/example.md "$markdown_content"
+detect_sensitive_patterns || fail 'New source fence exempted old config content'
+stage_text docs/example.md $'```tsx\n```env\n'"$markdown_expression"$'\n```'
+detect_sensitive_patterns || fail 'Deleted config fence changed old-side matching'
+pass 'Old and new Markdown fences are evaluated independently'
 
 otp_salt=$(assignment PASSWORD_RESET_OTP_SALT '"accounts.customer-password-reset-otp"')
 token_salt=$(assignment PASSWORD_RESET_TOKEN_SALT '"accounts.customer-password-reset-token"')
@@ -485,6 +554,18 @@ requests=$(cat "$test_root"/requests/request.*)
 assert_contains "$requests" 'secrets.token_urlsafe(16)' 'Benign expression missing from AI context'
 assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Benign preview changed the caller index'
 pass 'Benign CLI preview retains source context without Git mutations'
+
+start_case
+stage_text docs/example.md "$markdown_content"
+stage_text src/runtime.ts 'export const status = "ready";'
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Markdown source example preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'Markdown expression triggered the guard'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Markdown expression activated safe mode'
+assert_contains "$(cat "$test_root"/requests/request.*)" 'process.env.API_SECRET' 'Markdown example missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Markdown preview changed the caller index'
+pass 'Markdown source example preview retains useful context without Git mutations'
 
 start_case
 stage_text tests/test_workflow.py "$synthetic_content"
