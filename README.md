@@ -657,6 +657,13 @@ staged scans, temporary indexes, redaction, configuration precedence from root
 and subdirectories, relative overrides, includes, ignore files, and invalid
 configuration in an isolated repository without Ollama, commits, or pushes.
 
+GitHub Actions workflows use `ubuntu-24.04` explicitly to avoid automatic
+operating-system migrations through `ubuntu-latest`. CI and Release use
+`actions/checkout` v7.0.1 with the Node.js 24 runtime, pinned to a full commit
+SHA. Keep action references pinned when upgrading, and validate a new runner
+version separately before changing the shared baseline. For workflow changes,
+run `actionlint` if available and verify the resulting CI run on GitHub.
+
 For a runtime smoke test, use a temporary repository and dry-run. This command
 still requires an active Ollama endpoint and an available model because
 `--no-pull` is enabled:

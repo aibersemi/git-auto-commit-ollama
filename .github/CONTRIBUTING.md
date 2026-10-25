@@ -75,6 +75,10 @@ Run the basic validation from
 [`README.md#development`](../README.md#development) before opening a pull
 request.
 
+For GitHub Actions changes, follow the runner and action pinning policy in
+[`README.md#development`](../README.md#development). Validate workflow files
+with `actionlint` if available and confirm that CI passes on GitHub.
+
 For runtime changes involving staging, prompts, commits, or pushes, test in a
 temporary repository. Do not use a primary working repository for experiments
 that could create a commit.
