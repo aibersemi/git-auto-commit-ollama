@@ -517,7 +517,10 @@ Available protections:
   preceded by `access`, `auth`, or `refresh`; words use hyphens or underscores.
   Password labels start with `test` or `regression`, followed by `password`
   and the exact suffix `123`, with optional hyphens/underscores between words
-  and an optional final `!`. Matching is case-insensitive. These patterns
+  and an optional final `!`. Password lifecycle labels also qualify when they
+  consist of `existing`, `previous`, or `new`, an optional `private` word,
+  and `password`, separated by hyphens or underscores, such as
+  `existing-private-password`. Matching is case-insensitive. These patterns
   apply only to source under `test/`, `tests/`, or `__tests__/`, Python
   `test_*.py`/`*_test.py` files (including `.pyi`), and JavaScript/TypeScript
   `*.test.*`/`*.spec.*` files. Other values in test files remain scanned.

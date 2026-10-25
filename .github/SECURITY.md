@@ -71,7 +71,7 @@ operands after empty strings or placeholders. Configuration values and quoted
 expression text do not receive logical-expression exemptions.
 
 Conventional test source paths additionally recognize bounded, predictable
-provider-token and password fixture patterns. This exemption requires a
+provider-token, password, and password lifecycle fixture patterns. This exemption requires a
 complete quoted literal; it does not skip other credentials in tests,
 production source, configuration values, concatenations, or signatures.
 Full-diff checks also require the old path of a rename to qualify as test

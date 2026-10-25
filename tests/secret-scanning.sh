@@ -476,6 +476,67 @@ for candidate in "$fixture_password" TestPassword123 test-password-123! regressi
     expect_safe tests/runtime.py "$(assignment password "$quote$candidate$quote")" 'Complete predictable password fixture in tests'
   done
 done
+
+# Provisioning fixtures describe password lifecycle states, never arbitrary values.
+provision_password=$(printf '%s-%s-%s' existing private password)
+provision_content=$(printf 'self.previous = {"%s": "%s", "user_id": "fixture-user"}' SUPABASE_USER_PASSWORD "$provision_password")
+expect_safe tests/test_provision_workspaces.py "$provision_content" 'Provisioning password lifecycle fixture regression'
+for candidate in existing-private-password previous-private-password new-private-password existing-password previous-password new-password EXISTING_PRIVATE_PASSWORD; do
+  for quote in '"' "'"; do
+    expect_safe tests/test_provision.py "$(assignment password "$quote$candidate$quote")" 'Complete password lifecycle fixture label'
+  done
+done
+for path in tests/runtime.py test/runtime.py src/test_runtime.py src/runtime_test.py src/test_runtime.pyi src/__tests__/runtime.ts src/runtime.test.ts src/runtime.spec.js; do
+  expect_safe "$path" "$provision_content" "Password lifecycle fixture in conventional test source: $path"
+done
+for path in src/runtime.py src/runtime.ts src/contest.py src/test_runtime.py.bak tests/.env tests/settings.json tests/settings.yaml tests/unknown.data docs/example.md; do
+  expect_sensitive "$path" "$provision_content" "Password lifecycle label remains protected outside test source: $path"
+done
+for candidate in \
+  "$provision_password-$literal_value" \
+  "$literal_value-$provision_password" \
+  existing-private-password-production \
+  existing-private-password-123456789012 \
+  existing-production-password \
+  previous-private-key \
+  new-production-password; do
+  expect_sensitive tests/test_provision.py "$(assignment password "\"$candidate\"")" 'Lifecycle marker cannot exempt arbitrary credentials'
+done
+expect_sensitive tests/test_provision.py "$(assignment password "$provision_password")" 'Unquoted lifecycle fixture remains protected'
+expect_sensitive tests/test_provision.py "$(assignment password "\"$provision_password")" 'Unterminated lifecycle fixture remains protected'
+expect_sensitive tests/test_provision.py "$(assignment password "\"$provision_password\" + \"$literal_value\"")" 'Concatenated lifecycle fixture remains protected'
+for signature in "$provider_value" "$key_marker"; do
+  expect_sensitive tests/test_provision.py "$(assignment password "\"$provision_password-$signature\"")" 'Provider/key signature overrides password lifecycle fixture'
+done
+for order in first last; do
+  fixture_line=$(assignment password "\"$provision_password\"")
+  sensitive_line=$(assignment api_key "\"$literal_value\"")
+  if [[ "$order" == first ]]; then mixed_line="$fixture_line; $sensitive_line"; else mixed_line="$sensitive_line; $fixture_line"; fi
+  expect_sensitive tests/test_provision.py "$mixed_line" "Lifecycle fixture cannot hide another credential: $order"
+done
+if has_sensitive_patterns "$provision_content" tests/test_provision.py src/runtime.py; then
+  pass 'Source-to-test rename cannot grant a lifecycle fixture exemption'
+else
+  fail 'Source-to-test rename exempted a production password label'
+fi
+
+start_case
+stage_text tests/test_provision.py "$provision_content"
+export TEST_BASE_TREE
+TEST_BASE_TREE=$(git write-tree)
+for scenario in removed context; do
+  if [[ "$scenario" == removed ]]; then
+    stage_text tests/test_provision.py '# Verify provisioning preserves account configuration.'
+  else
+    stage_text tests/test_provision.py "$provision_content"$'\n# Verify provisioning preserves account configuration.'
+  fi
+  [[ -z "$(detect_staged_secret_lines)" ]] || fail "$scenario: lifecycle fixture triggered the guard"
+  if detect_sensitive_patterns; then fail "$scenario: lifecycle fixture activated safe mode"; fi
+  select_commit_references 2> "$test_root/references.log"
+  assert_equal "$REFERENCE_SENSITIVE_SKIPPED" 0 "$scenario: lifecycle fixture excluded from references"
+  pass "Full diff treats $scenario password lifecycle labels as test fixtures"
+done
+
 for path in src/runtime.py src/runtime.ts src/contest.py src/test_runtime.py.bak tests/.env tests/settings.json tests/settings.yaml tests/unknown.data; do
   expect_sensitive "$path" "$fixture_token_line" "Provider-labeled fixture remains protected outside test source: $path"
   expect_sensitive "$path" "$fixture_password_line" "Predictable password remains protected outside test source: $path"
@@ -688,6 +749,17 @@ assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Predictable
 pass 'Predictable test fixture CLI preview preserves source context and Git state'
 
 start_case
+stage_text tests/test_provision_workspaces.py "$provision_content"
+index_before=$(git hash-object "$GIT_INDEX_FILE")
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Password lifecycle fixture preview failed'
+assert_absent "$(cat "$test_root/cli.err")" 'Potential secrets detected' 'Password lifecycle fixture triggered the guard'
+assert_absent "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Password lifecycle fixture activated safe mode'
+assert_contains "$(cat "$test_root"/requests/request.*)" "$provision_password" 'Password lifecycle fixture missing from AI context'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" 'Password lifecycle fixture preview changed the caller index'
+pass 'Password lifecycle fixture CLI preview preserves source context and Git state'
+
+start_case
 stage_text src/runtime.ts "$ternary_content"
 stage_text tests/runtime.test.ts "$(printf 'const config = { %s: "%s" };' "$oauth_label" client-secret)"
 index_before=$(git hash-object "$GIT_INDEX_FILE")
@@ -766,6 +838,14 @@ run_cli
 assert_equal "$CLI_STATUS" 1 'External finding on a predictable test fixture did not block'
 assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External test fixture finding missing from policy report'
 pass 'External scanner findings remain independent of predictable test fixtures'
+
+start_case
+stage_text tests/test_provision_workspaces.py "$provision_content"
+MOCK_GITLEAKS_FINDING=1
+run_cli
+assert_equal "$CLI_STATUS" 1 'External finding on a password lifecycle fixture did not block'
+assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External password lifecycle finding missing from policy report'
+pass 'External scanner findings remain independent of password lifecycle fixtures'
 
 assert_equal "$(git hash-object .git/index)" "$original_index" 'Original clone index changed'
 assert_equal "$(git show-ref)" "$original_refs" 'Original refs changed'

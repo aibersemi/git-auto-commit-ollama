@@ -1210,7 +1210,8 @@ scan_sensitive_content() {
       # Only conventional test paths receive these complete, predictable fixture patterns.
       if (!test_file) return 0
       return value ~ /^(test|testing|tests)[-_](google|github|oauth)[-_](access[-_]|auth[-_]|refresh[-_])?token$/ ||
-        value ~ /^(test|regression)[-_]?password[-_]?123[!]?$/
+        value ~ /^(test|regression)[-_]?password[-_]?123[!]?$/ ||
+        value ~ /^(existing|previous|new)[-_](private[-_])?password$/
     }
     function is_namespace_salt(assignment, value, name, boundary) {
       # Public HMAC/signing namespaces must name the salt purpose, not just look dotted.
