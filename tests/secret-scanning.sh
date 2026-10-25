@@ -910,8 +910,8 @@ done
 start_case
 stage_text src/runtime.py 'status = "ready"'
 (
-  # Exported to the CLI subprocess to simulate a missing dependency.
-  # shellcheck disable=SC2329
+  # Called indirectly by the CLI subprocess to simulate a missing dependency.
+  # shellcheck disable=SC2317,SC2329
   command() {
     if [[ "$*" == '-v gitleaks' ]]; then return 1; fi
     builtin command "$@"
