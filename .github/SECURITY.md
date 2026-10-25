@@ -42,11 +42,12 @@ running the CLI.
 
 `git-ai` has two independent protections for potential secrets:
 
-- The secret guard scans staged additions and blocks a commit when content
-  resembles a token, password, private key, or other credential, unless
-  `--force` is explicitly selected.
+- Required Gitleaks scanning checks staged additions and determines whether
+  potential secrets block a commit, unless `--force` is explicitly selected.
+  The built-in matcher does not independently block commits.
 - Safe mode removes detailed diffs from the main prompt and skips sensitive
-  files during per-file analysis when built-in patterns match. Reference
+  files during per-file analysis when built-in patterns match or Gitleaks
+  reports a finding for the file. Reference
   excerpts and per-file analysis also exclude generated or ephemeral paths,
   binary diffs, and oversized staged blobs. Git metadata and safe per-file
   summaries may still be sent. Reference selection checks the complete file
@@ -54,7 +55,7 @@ running the CLI.
   excerpts. Missing safe runtime excerpts are reported as limited context;
   supporting documentation must not be treated as proof of implementation.
 
-Both built-in protections use the same path-aware matcher, with the guard checking additions and safe mode checking the entire diff, including removed and unchanged context lines. Expression and public namespace-salt exemptions apply to Python and JavaScript/TypeScript source files and explicitly labeled source fences in Markdown. Markdown checks recover language fences from complete staged diff context and evaluate the old and new versions independently. Prose, unlabeled or configuration fences, other quoted literals, configuration values, and unknown file types remain checked conservatively. Placeholders cannot exempt other values on the same line or provider/private-key signatures. There is no blanket exemption for test files or salt-named variables. See [`README.md#security`](../README.md#security) for matching behavior.
+The built-in path-aware matcher checks the entire diff for safe mode, including removed and unchanged context lines. Its exemptions affect AI context only; Gitleaks applies its own rules for commit blocking. Expression and public namespace-salt exemptions apply to Python and JavaScript/TypeScript source files and explicitly labeled source fences in Markdown. Markdown checks recover language fences from complete staged diff context and evaluate the old and new versions independently. Prose, unlabeled or configuration fences, other quoted literals, configuration values, and unknown file types remain checked conservatively. Placeholders cannot exempt other values on the same line or provider/private-key signatures. There is no blanket exemption for test files or salt-named variables. See [`README.md#security`](../README.md#security) for matching behavior.
 
 The source-placeholder exemption requires a complete quoted source literal
 composed entirely of approved placeholder words, a credential noun, and either
@@ -78,15 +79,15 @@ Full-diff checks also require the old path of a rename to qualify as test
 source. The exact patterns and path rules are documented in
 [`README.md#security`](../README.md#security).
 
-When `gitleaks` is available, the script also runs:
-
-```bash
-gitleaks protect --staged --redact --no-banner
-```
-
-The built-in scanner and `gitleaks` may run concurrently, but the tool waits
-for both results before applying the secret policy. Adaptive context and AI
-parallelism begins only after staging and secret-policy evaluation complete.
+Gitleaks runs before AI context collection and generation. Missing executables,
+scanner errors, incompatible flags, and invalid reports stop the run; neither
+preview mode nor a finding override permits generation after a failed scan.
+Scanner reports are private temporary JSON files. Displayed findings include
+only file, line, and rule ID; scanner logs and credential fields are not emitted.
+Gitleaks configuration and ignore rules control commit-blocking coverage, and
+its default rules may differ from the former built-in guard. See
+[`README.md#security`](../README.md#security) for scanner behavior, configuration
+boundaries, and overrides.
 
 Commit-message generation stops after three invalid responses or 10 total attempts. A generation failure exits before commit or push and preserves staged changes. All emitted messages pass format and quality validation; see [Commit References](../README.md#commit-references) for retry behavior. Bounded unchanged source conditions are included only after the complete diff passes the existing sensitive-content checks.
 
@@ -109,7 +110,7 @@ The overrides have distinct boundaries:
   active when a sensitive pattern is detected.
 - `--force-diff` permits detailed diff transmission but does not bypass the
   secret guard.
-- `--force` skips both the secret guard and `gitleaks`, disables safe mode, and
+- `--force` skips Gitleaks scanning, disables safe mode, and
   permits sensitive diff context to be sent. It is not equivalent to combining
   `--allow-secret-commit` and `--force-diff`, which still performs the scan.
 
@@ -196,7 +197,7 @@ The following reports are in scope:
 
 - Detailed diffs or sensitive data are sent to Ollama when safe mode should be
   active.
-- The secret guard fails to block a clear token, private key, password, or
+- The Gitleaks integration fails to block a reported token, private key, password, or
   credential in staged additions.
 - Options such as `--force`, `--force-diff`, or `--allow-secret-commit` become active
   without an explicit user action.

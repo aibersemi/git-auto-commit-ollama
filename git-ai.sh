@@ -9,7 +9,7 @@
 # - Optional per-file analysis (limited) for a more concise prompt
 # - Structured output (Ollama `format`/JSON Schema) for more consistent results
 #
-# Dependencies: git, curl, jq, flock
+# Dependencies: git, curl, jq, flock, gitleaks
 #
 # Quick usage:
 #   /opt/services/utils/bin/git-ai.sh                 # stage all, generate commit message, push
@@ -56,6 +56,7 @@ DEBUG=0
 FORCE_DIFF=0
 FORCE=0
 ALLOW_SECRET_COMMIT=0
+GITLEAKS_SENSITIVE_PATHS=()
 NO_BANNER=0
 NO_PULL=0
 NO_VERIFY=0
@@ -798,6 +799,7 @@ Usage: git-ai.sh [OPTIONS]
 
 Auto-stage → AI commit message (Ollama) → commit → push.
 Generation stops after 3 invalid responses or 10 attempts; failure never commits or pushes.
+Gitleaks is required for commit blocking; the built-in matcher protects AI context.
 Output commit message:
   - Line 1: <type>: <summary> (without a scope)
   - One staged file: no body; multiple files: 1-${MAX_BODY_BULLETS} relevant bullet(s)
@@ -952,10 +954,10 @@ cleanup_dry_run_index() {
 check_deps() {
   show_step "Checking dependencies"
 
-  for cmd in git curl jq flock; do
+  for cmd in git curl jq flock gitleaks; do
     command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' was not found. Install it first."
   done
-  step_ok "git, curl, jq, and flock are available"
+  step_ok "git, curl, jq, flock, and gitleaks are available"
 
   if [[ ! "$DO_PUSH" =~ ^[01]$ ]]; then
     die "DEFAULT_DO_PUSH must be 0 or 1."
@@ -1317,6 +1319,12 @@ scan_sensitive_content() {
 }
 
 has_sensitive_patterns() {
+  local sensitive_path
+  for sensitive_path in "${GITLEAKS_SENSITIVE_PATHS[@]}"; do
+    if [[ "$sensitive_path" == "${2:-}" || "$sensitive_path" == "${3:-}" ]]; then
+      return 0
+    fi
+  done
   scan_sensitive_content "${2:-}" "${4:-content}" "${3:-}" <<<"$1"
 }
 
@@ -1354,6 +1362,7 @@ scan_staged_sensitive_patterns() {
 }
 
 detect_sensitive_patterns() {
+  [[ "${#GITLEAKS_SENSITIVE_PATHS[@]}" -eq 0 ]] || return 0
   scan_staged_sensitive_patterns content
 }
 
@@ -1362,78 +1371,73 @@ detect_staged_secret_lines() {
 }
 
 run_gitleaks_secret_scan() {
-  command -v gitleaks >/dev/null 2>&1 || return 1
+  local report_file="$1" status=0
+  command -v gitleaks >/dev/null 2>&1 || return 2
 
-  local out status
-  dbg "Command: gitleaks protect --staged --redact --no-banner"
-  set +e
-  out=$(gitleaks protect --staged --redact --no-banner 2>&1)
-  status=$?
-  set -e
-  dbg "Command exit status: ${status}"
-  dbg_block "Command output: gitleaks protect --staged --redact --no-banner" "$out"
+  dbg "Command: gitleaks git --pre-commit --staged --redact --no-banner --exit-code 10 --report-format json --report-path <private temporary file>"
+  # Never forward scanner logs: even failures may contain staged content.
+  gitleaks git --pre-commit --staged --redact --no-banner \
+    --exit-code 10 --report-format json --report-path "$report_file" >/dev/null 2>&1 || status=$?
+  dbg "Gitleaks exit status: ${status}"
+  [[ "$status" -eq 0 || "$status" -eq 10 ]] || return 2
 
-  [[ "$status" -eq 0 ]] && return 1
-  if grep -Eiq '(leak|leaks|secret|finding|RuleID|Fingerprint)' <<<"$out"; then
-    printf 'gitleaks found a potential secret in staged changes\n'
-    return 0
+  # A successful scan must produce a complete, usable JSON report.
+  jq -se 'length == 1 and (.[0] | type == "array" and all(.[];
+    (.File | type == "string" and length > 0 and (contains("\u0000") | not)) and
+    (.RuleID | type == "string" and length > 0) and
+    (.StartLine | type == "number" and . >= 1 and floor == .)))' \
+    "$report_file" >/dev/null 2>&1 || return 2
+  if [[ "$status" -eq 0 ]]; then
+    jq -e 'length == 0' "$report_file" >/dev/null || return 2
+  else
+    jq -e 'length > 0' "$report_file" >/dev/null || return 2
   fi
-
-  dbg "gitleaks scan skipped/failed compatibility check: $(printf '%s' "$out" | head -c 300)"
-  return 1
+  return "$status"
 }
 
 enforce_staged_secret_policy() {
-  local report external_report builtin_report_file external_report_file
-  local builtin_pid="" external_pid="" scan_jobs=1 scan_parallelism
+  local report scan_dir sensitive_path status=0
+  GITLEAKS_SENSITIVE_PATHS=()
 
   if [[ "$FORCE" -eq 1 ]]; then
     warn "Secret scanning and safe mode bypassed by --force. Review staged changes carefully."
     return 0
   fi
 
-  command -v gitleaks >/dev/null 2>&1 && scan_jobs=2
-  scan_parallelism="${RESOLVED_NON_AI_PARALLELISM:-1}"
-  [[ "$scan_parallelism" -gt "$scan_jobs" ]] && scan_parallelism="$scan_jobs"
-
-  builtin_report_file=$(mktemp)
-  external_report_file=$(mktemp)
-  trap 'rm -f "$builtin_report_file" "$external_report_file"' RETURN
-
-  blocking_status_start "Scanning staged changes for potential secrets with ${scan_parallelism} worker(s)..."
-  if [[ "$scan_parallelism" -ge 2 ]]; then
-    { detect_staged_secret_lines || true; } > "$builtin_report_file" &
-    builtin_pid=$!
-    { run_gitleaks_secret_scan || true; } > "$external_report_file" &
-    external_pid=$!
-    wait "$builtin_pid" || true
-    wait "$external_pid" || true
-  else
-    detect_staged_secret_lines > "$builtin_report_file" || true
-    run_gitleaks_secret_scan > "$external_report_file" || true
-  fi
+  scan_dir=$(umask 077; mktemp -d) || die "Could not create a private Gitleaks report directory."
+  trap 'rm -rf -- "$scan_dir"' RETURN
+  blocking_status_start "Scanning staged changes for potential secrets with Gitleaks..."
+  run_gitleaks_secret_scan "$scan_dir/report.json" || status=$?
   blocking_status_stop
-  report=$(<"$builtin_report_file")
-  external_report=$(<"$external_report_file")
-  rm -f "$builtin_report_file" "$external_report_file"
-  trap - RETURN
-  dbg "Secret scan jobs: ${scan_jobs}; effective non-AI parallelism: ${scan_parallelism}"
 
-  if [[ -n "$external_report" ]]; then
-    [[ -n "$report" ]] && report+=$'\n'
-    report+="$external_report"
+  if [[ "$status" -ne 0 && "$status" -ne 10 ]]; then
+    rm -rf -- "$scan_dir"
+    trap - RETURN
+    die "Gitleaks scan failed or returned an invalid report. Check the installed version and scanner configuration. No commit or push was performed."
   fi
 
-  [[ -n "$report" ]] || return 0
+  if [[ "$status" -eq 0 ]]; then
+    rm -rf -- "$scan_dir"
+    trap - RETURN
+    return 0
+  fi
 
-  warn "Potential secrets detected in staged changes:"
+  # Keep findings available to safe mode, reference selection, and per-file analysis.
+  while IFS= read -r -d '' sensitive_path; do
+    GITLEAKS_SENSITIVE_PATHS+=("$sensitive_path")
+  done < <(jq -j '[.[].File] | unique[] | ., "\u0000"' "$scan_dir/report.json")
+  report=$(jq -r '.[] | "\(.File | @json):\(.StartLine) [\(.RuleID | @json)] potential secret"' "$scan_dir/report.json")
+  rm -rf -- "$scan_dir"
+  trap - RETURN
+
+  warn "Potential secrets detected in staged changes (Gitleaks):"
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    warn "  - $line"
+    printf '%b  - %s%b\n' "$YELLOW" "$line" "$NC" >&2
   done < <(printf '%s\n' "$report" | head -n 20)
 
   local total_lines
-  total_lines=$(printf '%s\n' "$report" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
+  total_lines=$(printf '%s\n' "$report" | wc -l | tr -d '[:space:]')
   if [[ "$total_lines" -gt 20 ]]; then
     warn "  ... $((total_lines - 20)) additional findings hidden"
   fi

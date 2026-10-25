@@ -907,7 +907,13 @@ esac
 if [[ -n "$output_file" ]]; then printf '%s\n' "$body" > "$output_file"; else printf '%s\n' "$body"; fi
 [[ "$http_output" -eq 0 ]] || printf '200'
 MOCK_CURL
-chmod +x "$test_root/bin/git" "$test_root/bin/curl"
+cat > "$test_root/bin/gitleaks" <<'MOCK_GITLEAKS'
+#!/usr/bin/env bash
+set -euo pipefail
+report_file="${!#}"
+printf '[]' > "$report_file"
+MOCK_GITLEAKS
+chmod +x "$test_root/bin/git" "$test_root/bin/curl" "$test_root/bin/gitleaks"
 
 start_case
 stage_source

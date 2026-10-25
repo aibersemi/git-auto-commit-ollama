@@ -45,14 +45,13 @@ endpoint, which may run locally or on another network host.
 - JSON Schema structured output with plain-text fallback and bounded corrective retries; generation failure stops before committing or pushing.
 - Per-file diff analysis with configurable file-count, blob-size, and adaptive
   Ollama concurrency limits, with incremental progress for each completed file.
-- Adaptive non-AI concurrency for independent read-only context jobs and the
-  built-in plus optional `gitleaks` secret scans.
+- Adaptive non-AI concurrency for independent read-only context jobs.
 - Prompt prioritization for capabilities, APIs, data integrity, security, and
   user flows; generated artifacts are treated as supporting context.
 - Combined runtime and informative Markdown references, with full-diff
   ranking and bounded excerpts of the most informative changed hunks.
-- A built-in secret guard for added staged lines, supplemented by `gitleaks`
-  when the command is available, unless `--force` is explicitly selected.
+- Required Gitleaks scanning of staged additions to block commits with potential
+  secrets, unless `--force` is explicitly selected.
 - Safe mode that withholds sensitive diff details from prompts unless the user
   explicitly selects `--force-diff` or `--force`.
 - Push to an existing upstream, or `git push -u` to `origin` or the first
@@ -202,6 +201,8 @@ checked explicitly at startup:
 - `curl`
 - `jq`
 - `flock` from the `util-linux` package
+- `gitleaks` with support for `git --pre-commit --staged`, JSON reports, and
+  `--exit-code` (validated with version `8.30.1`)
 
 The script also uses standard utilities such as `grep` with PCRE support,
 `sed`, `head`, `sort`, `mktemp`, `date`, and `wc`. An Ollama server must be
@@ -212,7 +213,6 @@ Optional dependencies:
 - `make` and `sudo`: Required by the `Makefile` install and uninstall targets.
 - `ollama`: Required only for automatic pulling when `DEFAULT_MODEL` is
   missing from the server.
-- `gitleaks`: Additional scanner for staged changes.
 - `shellcheck`: Bash linting during development and in CI.
 - `tput`: Terminal dimensions for animated loading rows; when unavailable,
   dimensions use `COLUMNS`/`LINES` or fall back to 80 columns and 24 rows.
@@ -223,6 +223,12 @@ Example runtime and development installation on Ubuntu or Debian:
 sudo apt-get update
 sudo apt-get install -y bash git curl jq util-linux coreutils grep sed make shellcheck
 ```
+
+Install Gitleaks from the [official releases](https://github.com/gitleaks/gitleaks/releases)
+or follow its [installation instructions](https://github.com/gitleaks/gitleaks#installing).
+Distribution packages may lag behind the supported command interface. Confirm
+`gitleaks version` and `gitleaks git --help` before running `git-ai`. Gitleaks
+is required at startup even when `--force` skips scanning.
 
 For a local Ollama instance, start the service and install the configured
 default model:
@@ -428,7 +434,7 @@ Available options:
 | `-d`, `--dry-run` | Use a temporary index and skip the commit and push. |
 | `--debug` | Display a detailed diagnostic trace, including runtime configuration, relevant commands and outputs, the full non-sensitive staged diff, complete prompts and request payloads, complete Ollama responses, HTTP metadata, and validation reasons. Safe mode omits sensitive diff content unless `--force-diff` or `--force` is explicitly selected. |
 | `--force-diff` | Send detailed diffs to Ollama even when sensitive patterns are detected. |
-| `-f`, `--force` | High-risk override: skip the built-in secret guard and `gitleaks`, disable safe mode, and allow sensitive diff context to reach Ollama. |
+| `-f`, `--force` | High-risk override: skip Gitleaks scanning, disable safe mode, and allow sensitive diff context to reach Ollama. |
 | `-a`, `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
 | `--no-file-analysis` | Disable per-file AI analysis. |
 | `--file-analysis-limit N` | Limit analyzed files; accepts a non-negative integer. |
@@ -473,19 +479,35 @@ network endpoint, and review `DEFAULT_OLLAMA_HOST` and
 
 Available protections:
 
-- The built-in secret guard checks added lines in the staged diff. When
-  `gitleaks` is available, its result is added to the scan unless `--force`
-  is explicitly selected.
-- The guard and safe mode share a path-aware matcher. In Python and
-  JavaScript/TypeScript files, unquoted function calls, environment lookups,
+- Gitleaks is the sole scanner that determines commit blocking. It scans
+  staged additions with `gitleaks git --pre-commit --staged --redact`, using
+  JSON reports and a dedicated findings exit code. Findings display only the
+  file, line number, and rule ID. Reports are held in a private temporary
+  directory and removed after processing; raw scanner logs are not printed,
+  including with `--debug`.
+- A missing Gitleaks executable stops startup. Scanner errors, unsupported
+  flags, invalid configuration, or missing/invalid reports stop the run before
+  generation, commit, and push. `--dry-run`, `--allow-secret-commit`, and
+  `--force-diff` cannot bypass a failed scan. `--force` explicitly skips scanning.
+- Gitleaks uses its standard configuration and ignore mechanisms, including
+  `.gitleaks.toml`, `GITLEAKS_CONFIG`, `GITLEAKS_CONFIG_TOML`, `.gitleaksignore`,
+  and `gitleaks:allow` comments. Review custom rules and exclusions because they
+  affect which findings can block commits. Gitleaks defaults may not detect
+  generic passwords that the former built-in commit guard detected; use
+  reviewed custom rules when those patterns must block commits.
+- The built-in path-aware matcher protects AI context and does not independently
+  block commits. The matching rules below describe this safe-mode matcher;
+  its exemptions do not suppress Gitleaks findings. Files flagged by Gitleaks
+  also activate safe mode and are excluded from references and per-file analysis.
+  In Python and JavaScript/TypeScript files, unquoted function calls, environment lookups,
   and variable/member references are treated as expressions rather than
   credential literals. Quoted literals and unquoted configuration values
   remain checked at the existing 12-character threshold. Unknown file types
   receive no expression exemptions.
   Logical reference chains using `||` or `&&`, such as
   `env.POSTGRES_PASSWORD || ''`, are also source expressions. Each remaining
-  operand is checked, so credential literals in fallbacks still trigger the
-  guard and safe mode, even after empty strings or placeholder operands.
+  operand is checked, so credential literals in fallbacks still trigger
+  safe mode, even after empty strings or placeholder operands.
   Quoted expression text and configuration values receive no such exemption.
   Quoted names used as conditional branches, such as environment variable
   labels in ternary expressions, are not treated as property assignments.
@@ -562,7 +584,8 @@ detailed scope.
 | `DEFAULT_MODEL ... was not found` | The model is missing from the active host. | Pull the model on the server, install the `ollama` CLI for automatic pulling, or change `DEFAULT_MODEL`. |
 | `Failed to load and verify model ...` | The model is listed, but the `/api/chat` readiness request failed or timed out. | Check Ollama logs, server resources, the model name, and connectivity to the active host. |
 | `--no-stage ... there are no staged changes` | The index contains no changes. | Run `git add` first or remove `--no-stage`. |
-| Commit canceled because of a potential secret | The built-in guard or `gitleaks` found a sensitive pattern. | Remove the credential; use `--allow-secret-commit` only to bypass a reviewed finding. `--force-diff` only affects AI context, while `--force` skips scanning entirely. |
+| Commit canceled because of a potential secret | Gitleaks found a sensitive pattern in staged additions. | Remove the credential; use `--allow-secret-commit` only to bypass a reviewed finding. `--force-diff` only affects AI context, while `--force` skips scanning entirely. |
+| Gitleaks missing or scan failed | Required executable unavailable, incompatible flags, invalid configuration, or an invalid/missing JSON report. | Install a compatible Gitleaks release and review scanner configuration. Finding overrides do not bypass scanner failures. |
 | Commit hook failed | `pre-commit` or `commit-msg` rejected the commit. | Fix the hook finding; use `--no-verify` only when intentionally bypassing those commit hooks. |
 | Pre-push hook failed | The hook was run by `git push`. | Fix the hook or use a separate push workflow; `git-ai --no-verify` is not forwarded to `git push`. |
 | No remote exists | The repository has no remote. | The script skips the push; add a remote when pushing is required. |
@@ -594,6 +617,9 @@ bash tests/markdown-references.sh
 bash -n tests/secret-scanning.sh
 shellcheck tests/secret-scanning.sh
 bash tests/secret-scanning.sh
+bash -n tests/gitleaks-integration.sh
+shellcheck tests/gitleaks-integration.sh
+bash tests/gitleaks-integration.sh
 ```
 
 The [CI workflow](.github/workflows/ci.yml) runs these checks on pushes to
@@ -601,8 +627,11 @@ The [CI workflow](.github/workflows/ci.yml) runs these checks on pushes to
 reference and secret scanning regression suites use temporary local clones,
 isolated indexes, and mocked Ollama responses. They create no new commits,
 perform no pushes, and require no active Ollama endpoint. The secret scanning
-suite also mocks external scanning and verifies blocking, safe previews,
-expression/placeholder handling, and protection of removed/context lines.
+suite also mocks Gitleaks and verifies blocking, scanner failures, safe previews,
+expression/placeholder handling, and protection of removed/context lines. The
+Gitleaks integration suite requires the installed binary and verifies real
+staged scans, temporary indexes, redaction, overrides, and invalid configuration
+in an isolated repository without Ollama, commits, or pushes.
 
 For a runtime smoke test, use a temporary repository and dry-run. This command
 still requires an active Ollama endpoint and an available model because

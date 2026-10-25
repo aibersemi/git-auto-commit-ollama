@@ -38,7 +38,9 @@ commit message format, or changing default push behavior.
 - Read the [`README.md`](../README.md) to understand the workflow and CLI
   options.
 - Follow the prerequisites and installation instructions in the README instead
-  of duplicating them here.
+  of duplicating them here. Gitleaks is a required runtime dependency; keep its
+  supported CLI interface and JSON reporting compatible with the validated
+  version in the README and CI.
 - Check existing issues and pull requests to avoid duplicate work.
 - Keep each change focused on one problem.
 - Follow the sensitive-data policy in [`SECURITY.md`](SECURITY.md).
@@ -112,6 +114,16 @@ If a change affects secret detection, test at least:
 - Run `bash tests/secret-scanning.sh` with the syntax and lint checks listed
   in [`README.md#development`](../README.md#development). This suite uses
   isolated Git indexes and mocked Ollama/Gitleaks responses.
+- Run `bash tests/gitleaks-integration.sh` with the installed Gitleaks binary.
+  This suite verifies actual staged scanning and isolated-index behavior
+  without Ollama, commits, or pushes.
+- Gitleaks findings must block commits independently of built-in exemptions.
+  Built-in-only matches must protect AI context without blocking commits.
+- Missing Gitleaks, execution errors, invalid configuration, and invalid or
+  inconsistent JSON reports must stop generation even with preview or finding
+  overrides. Reports and scanner logs must not expose credential values.
+- Gitleaks-only findings must be excluded from all AI context unless an
+  explicit diff override is active.
 - Generated values, environment lookups, and variable/member references in
   Python and JavaScript/TypeScript without enabling safe mode.
 - Quoted literals, unquoted configuration values, and unknown file types
@@ -150,8 +162,8 @@ both local and AI jobs. Cover local systemd detection, a remote Ollama capacity
 hint, conservative fallback, deterministic result ordering, and worker caps
 smaller and larger than the number of ready jobs. Measure overlapping analysis
 requests and verify worker limits and loading rows using the checks in
-[`README.md#development`](../README.md#development). Both secret scanners must
-finish before the secret-policy decision. Effective AI capacity `1` must call
+[`README.md#development`](../README.md#development). Gitleaks scanning must
+finish before applying the commit policy and collecting AI context. Effective AI capacity `1` must call
 the analysis function in the foreground; only the renderer may run in the
 background.
 

@@ -50,13 +50,16 @@ start_case() {
   ALLOW_SECRET_COMMIT=0
   RESOLVED_NON_AI_PARALLELISM=2
   MOCK_GITLEAKS_FINDING=0
+  MOCK_GITLEAKS_MODE=valid
+  GITLEAKS_SENSITIVE_PATHS=()
 }
 expect_safe() {
-  local path="$1" content="$2" label="$3"
+  local path="$1" content="$2" label="$3" report
   start_case
   stage_text "$path" "$content"
   if git --literal-pathspecs diff --cached --quiet -- "$path"; then fail "$label: fixture has no staged changes"; fi
-  [[ -z "$(detect_staged_secret_lines)" ]] || fail "$label: guard rejected expression/placeholder"
+  report=$(detect_staged_secret_lines)
+  [[ -z "$report" ]] || fail "$label: matcher rejected expression/placeholder: $report"
   if detect_sensitive_patterns; then fail "$label: global safe mode activated"; fi
   if has_sensitive_patterns "$content" "$path"; then fail "$label: per-file matcher rejected content"; fi
   select_commit_references 2> "$test_root/references.log"
@@ -89,7 +92,7 @@ TEST_REAL_GIT=$(command -v git)
 export TEST_REQUEST_DIR="$test_root/requests"
 export TEST_MUTATION_LOG="$test_root/mutations.log"
 export TEST_GITLEAKS_LOG="$test_root/gitleaks.log"
-export MOCK_GITLEAKS_FINDING=0
+export MOCK_GITLEAKS_FINDING=0 MOCK_GITLEAKS_MODE=valid
 cat > "$test_root/bin/git" <<'MOCK_GIT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -111,12 +114,24 @@ MOCK_GIT
 cat > "$test_root/bin/gitleaks" <<'MOCK_GITLEAKS'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$*" == 'protect --staged --redact --no-banner' ]] || exit 98
+[[ "$*" == 'git --pre-commit --staged --redact --no-banner --exit-code 10 --report-format json --report-path '* ]] || exit 98
+report_file="${!#}"
+[[ "$(stat -c %a "$(dirname "$report_file")")" == 700 ]] || exit 97
 printf 'scanned\n' >> "$TEST_GITLEAKS_LOG"
+case "${MOCK_GITLEAKS_MODE:-valid}" in
+  error) printf 'gitleaks secret scanner error: PRIVATE_SCANNER_LOG\n' >&2; exit 1 ;;
+  missing-report) exit 0 ;;
+  malformed) printf '{invalid\n' > "$report_file"; exit 10 ;;
+  invalid-fields) printf '[{"File":"sample.txt"}]' > "$report_file"; exit 10 ;;
+  empty-finding) printf '[]' > "$report_file"; exit 10 ;;
+  multiple-json) printf '[]\n[]' > "$report_file"; exit 0 ;;
+esac
 if [[ "${MOCK_GITLEAKS_FINDING:-0}" == 1 ]]; then
-  printf 'external scanner found a potential secret\n'
-  exit 1
+  jq -nc --arg value PRIVATE_REPORT_VALUE '[{File:"src/runtime.py",StartLine:1,RuleID:"synthetic-rule",Secret:$value,Match:"PRIVATE_REPORT_MATCH",Line:"PRIVATE_REPORT_LINE"}]' > "$report_file"
+  [[ "${MOCK_GITLEAKS_MODE:-valid}" != inconsistent-clean ]] || exit 0
+  exit 10
 fi
+printf '[]' > "$report_file"
 MOCK_GITLEAKS
 cat > "$test_root/bin/curl" <<'MOCK_CURL'
 #!/usr/bin/env bash
@@ -689,6 +704,7 @@ pass 'Removed logical reference CLI preview retains context without Git mutation
 
 start_case
 stage_text src/runtime.mjs "$(assignment password "env.key || \"$literal_value\";")"
+MOCK_GITLEAKS_FINDING=1
 run_cli
 assert_equal "$CLI_STATUS" 1 'Logical credential fallback was not blocked'
 assert_contains "$(cat "$test_root/cli.err")" 'Commit cancelled' 'Logical credential fallback missed guard cancellation'
@@ -788,6 +804,7 @@ pass 'Namespace salt CLI preview preserves source context and Git state'
 start_case
 stage_text src/runtime.py "$(assignment password "\"$literal_value\"")"
 staging_before=$(git ls-files --stage -z | git hash-object --stdin)
+MOCK_GITLEAKS_FINDING=1
 run_cli
 assert_equal "$CLI_STATUS" 1 'Normal invocation did not block a literal'
 assert_contains "$(cat "$test_root/cli.err")" 'Commit cancelled' 'Normal invocation missed guard cancellation'
@@ -819,16 +836,16 @@ stage_text tests/test_workflow.py "$synthetic_content"
 MOCK_GITLEAKS_FINDING=1
 run_cli
 assert_equal "$CLI_STATUS" 1 'External finding did not block'
-assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External finding missing from policy report'
+assert_contains "$(cat "$test_root/cli.err")" '["synthetic-rule"] potential secret' 'External finding missing from policy report'
 [[ -s "$TEST_GITLEAKS_LOG" ]] || fail 'External scanner was not called'
-pass 'External scanner still supplements the built-in guard'
+pass 'Gitleaks independently determines commit blocking'
 
 start_case
 stage_text tests/test_notifications.py "$notification_content"
 MOCK_GITLEAKS_FINDING=1
 run_cli
 assert_equal "$CLI_STATUS" 1 'External finding on a test-prefixed placeholder did not block'
-assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External test-prefixed finding missing from policy report'
+assert_contains "$(cat "$test_root/cli.err")" '["synthetic-rule"] potential secret' 'External test-prefixed finding missing from policy report'
 pass 'External scanner findings remain independent of test-prefixed placeholders'
 
 start_case
@@ -836,7 +853,7 @@ stage_text tests/runtime.py "$test_fixture_content"
 MOCK_GITLEAKS_FINDING=1
 run_cli
 assert_equal "$CLI_STATUS" 1 'External finding on a predictable test fixture did not block'
-assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External test fixture finding missing from policy report'
+assert_contains "$(cat "$test_root/cli.err")" '["synthetic-rule"] potential secret' 'External test fixture finding missing from policy report'
 pass 'External scanner findings remain independent of predictable test fixtures'
 
 start_case
@@ -844,8 +861,82 @@ stage_text tests/test_provision_workspaces.py "$provision_content"
 MOCK_GITLEAKS_FINDING=1
 run_cli
 assert_equal "$CLI_STATUS" 1 'External finding on a password lifecycle fixture did not block'
-assert_contains "$(cat "$test_root/cli.err")" 'gitleaks found a potential secret' 'External password lifecycle finding missing from policy report'
+assert_contains "$(cat "$test_root/cli.err")" '["synthetic-rule"] potential secret' 'External password lifecycle finding missing from policy report'
 pass 'External scanner findings remain independent of password lifecycle fixtures'
+
+# Built-in matches protect AI context but cannot independently block a commit.
+start_case
+stage_text src/runtime.py "$(assignment password "\"$literal_value\"")"
+(enforce_staged_secret_policy) 2> "$test_root/policy.err"
+assert_absent "$(cat "$test_root/policy.err")" 'Potential secrets detected' 'Built-in match still blocks independently'
+run_cli --dry-run
+assert_equal "$CLI_STATUS" 0 'Built-in-only sensitive preview failed'
+assert_contains "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Built-in-only match lost safe mode'
+assert_absent "$(cat "$test_root"/requests/request.*)" "$literal_value" 'Built-in-only match exposed AI context'
+pass 'Gitleaks clean result permits policy while built-in still protects AI context'
+
+# A rule unknown to the built-in matcher must also stay out of every AI prompt.
+start_case
+stage_text src/runtime.py 'status = "GITLEAKS_ONLY_MARKER"'
+stage_text src/ready.py 'status = "ready"'
+MOCK_GITLEAKS_FINDING=1
+cli_options=(--no-stage --no-push --no-pull --no-banner)
+run_cli --dry-run --debug --file-analysis-limit 6
+cli_options+=(--no-file-analysis)
+assert_equal "$CLI_STATUS" 0 'Gitleaks-only preview failed'
+assert_contains "$(cat "$test_root/cli.err")" 'Safe mode enabled' 'Gitleaks-only finding lost safe mode'
+assert_absent "$(cat "$test_root"/requests/request.*)" GITLEAKS_ONLY_MARKER 'Gitleaks-only finding exposed AI context'
+jq -se 'any(.[]; .format.properties.files != null)' "$test_root"/requests/request.* >/dev/null || fail 'Gitleaks-only test did not exercise per-file analysis'
+for private_field in PRIVATE_REPORT_VALUE PRIVATE_REPORT_MATCH PRIVATE_REPORT_LINE; do
+  assert_absent "$(cat "$test_root/cli.err")" "$private_field" 'Scanner report content leaked to debug output'
+done
+pass 'Gitleaks-only findings protect previews and redact debug reports'
+
+for mode in error missing-report malformed invalid-fields empty-finding inconsistent-clean multiple-json; do
+  start_case
+  stage_text src/runtime.py 'status = "ready"'
+  MOCK_GITLEAKS_MODE="$mode"
+  MOCK_GITLEAKS_FINDING=1
+  index_before=$(git hash-object "$GIT_INDEX_FILE")
+  run_cli --dry-run --allow-secret-commit --force-diff --debug
+  assert_equal "$CLI_STATUS" 1 "$mode: scanner failure was bypassed"
+  assert_contains "$(cat "$test_root/cli.err")" 'Gitleaks scan failed' "$mode: missing scanner error"
+  assert_absent "$(cat "$test_root/cli.err")" PRIVATE_SCANNER_LOG "$mode: scanner log leaked"
+  if compgen -G "$test_root/requests/request.*" >/dev/null; then fail "$mode: failure sent a generation prompt"; fi
+  assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$index_before" "$mode: failure changed caller index"
+  pass "Scanner failure stops safely: $mode"
+done
+
+start_case
+stage_text src/runtime.py 'status = "ready"'
+(
+  # Exported to the CLI subprocess to simulate a missing dependency.
+  # shellcheck disable=SC2329
+  command() {
+    if [[ "$*" == '-v gitleaks' ]]; then return 1; fi
+    builtin command "$@"
+  }
+  export -f command
+  run_cli --dry-run
+  assert_equal "$CLI_STATUS" 1 'Missing Gitleaks did not stop startup'
+  assert_contains "$(cat "$test_root/cli.err")" "'gitleaks' was not found" 'Missing dependency diagnostic absent'
+  if compgen -G "$test_root/requests/request.*" >/dev/null; then fail 'Missing dependency sent a generation prompt'; fi
+)
+pass 'Missing Gitleaks stops at dependency checking'
+
+start_case
+stage_text src/runtime.py 'status = "ready"'
+MOCK_GITLEAKS_FINDING=1
+run_cli --force-diff
+assert_equal "$CLI_STATUS" 1 'Force-diff bypassed Gitleaks blocking'
+assert_contains "$(cat "$test_root/cli.err")" 'Commit cancelled' 'Force-diff bypass missing cancellation'
+pass 'Force-diff does not bypass commit blocking'
+
+: > "$TEST_GITLEAKS_LOG"
+run_cli --dry-run --force
+assert_equal "$CLI_STATUS" 0 'Force preview failed'
+[[ ! -s "$TEST_GITLEAKS_LOG" ]] || fail 'Force did not skip Gitleaks'
+pass 'Explicit force skips scanning'
 
 assert_equal "$(git hash-object .git/index)" "$original_index" 'Original clone index changed'
 assert_equal "$(git show-ref)" "$original_refs" 'Original refs changed'
