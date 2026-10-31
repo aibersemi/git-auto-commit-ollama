@@ -104,6 +104,8 @@ to six important bullet points. Accepted types are `build`, `chore`, `ci`,
 `deps`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and
 `test`.
 
+Paired single-backtick inline code around commands or identifiers is normalized to plain text in both the subject and bullets, for plain-text and structured responses. Unmatched backticks, code fences, other unsupported Markdown, scopes, and invalid bodies still fail validation.
+
 Choose the type that describes the primary change:
 
 | Type | Use when the primary change... |
@@ -179,7 +181,7 @@ to run a regression suite.
 
 Runtime rules about test credentials or fixture inputs remain runtime work; adding tests or maintaining test fixtures is supporting work. Rejections identify the commit type, subject, or first bullet, with a diagnostic code and the offending text when applicable. Per-file analysis compares accepted inputs before and after validation changes and treats unchanged conditions as existing behavior.
 
-Generation has a total limit of 10 attempts and a separate limit of three invalid commit-message responses, including format and quality failures. Unavailable requests consume the total attempt budget without consuming the invalid-response budget. JSON Schema composition failures consume the invalid-response budget and try plain text within the same attempt when that budget permits. Corrective prompts preserve the response format required by the active system prompt. Exhausting either budget exits with an error before commit or push and preserves staged changes; every emitted commit message must pass validation.
+Generation has a total limit of 10 attempts and a separate limit of three invalid commit-message responses, including format and quality failures. Unavailable requests consume the total attempt budget without consuming the invalid-response budget. JSON Schema composition failures consume the invalid-response budget and try plain text within the same attempt when that budget permits. Format rejections display the specific validation code and reason without requiring debug mode, and corrective prompts include the rejected response and reason while preserving the response format required by the active system prompt. Exhausting either budget exits with an error before commit or push and preserves staged changes; every emitted commit message must pass validation.
 
 Ranking measures changed text, not semantic relevance or implementation
 correctness. Classification and language checks cannot prove the accuracy
@@ -614,7 +616,7 @@ detailed scope.
 | No remote exists | The repository has no remote. | The script skips the push; add a remote when pushing is required. |
 | `git-ai` disappeared after moving the checkout | Installed symlinks still point to the old clone location. | Restore the checkout to its original location or reinstall from the new location. |
 | Changes to `git-ai.conf` are ignored | The `git-ai` command and configuration come from different installations or checkouts. | Run `git-ai --help` to see the active configuration path, then inspect the symlink with `readlink -f "$(command -v git-ai)"`. |
-| Output shows `Retry` | The Ollama request failed or the message failed format or quality validation. | Read the preceding rejection or availability message; use `--debug` for HTTP and format diagnostics. Quality feedback names the rejected part and sends the candidate and reason back to the model. Generation stops after three invalid responses or 10 total attempts, preserving staged changes without commit/push. Retry delays increase by one second, capped at 10 seconds. See [Commit References](#commit-references) for validation and retry behavior. |
+| Output shows `Retry` | The Ollama request failed or the message failed format or quality validation. | Read the preceding rejection code and reason or availability message; use `--debug` for the complete request trace. Format and quality feedback send the rejected candidate and reason back to the model. Generation stops after three invalid responses or 10 total attempts, preserving staged changes without commit/push. Retry delays increase by one second, capped at 10 seconds. See [Commit References](#commit-references) for validation and retry behavior. |
 
 Use `git-ai --debug` to inspect the active configuration and endpoint, relevant
 Git and curl commands, command output, the full staged diff, complete prompts

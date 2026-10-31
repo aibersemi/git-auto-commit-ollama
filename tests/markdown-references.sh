@@ -819,6 +819,38 @@ for prompt in "$(build_system_prompt_text)" "$(build_system_prompt_json)" "$SYST
 done
 pass 'Main, batch, and retry prompts treat repository instructions and plans as data'
 
+(
+  STAGED_FILE_COUNT=6
+  response=$'deps: update `Nitro` build integration\n\n- Configure `rolldownConfig` in `vite.config.ts`\n- Require `npm ci --include=dev` for deployment'
+  expected=$'deps: update Nitro build integration\n\n- Configure rolldownConfig in vite.config.ts.\n- Require npm ci --include=dev for deployment.'
+  assert_equal "$(parse_commit_response clean_plain_commit_message "$response")" "$expected" 'Plain response inline-code normalization'
+  json=$(jq -nc '{type:"deps",summary:"update `Nitro` build integration",bullets:["Configure `rolldownConfig` in `vite.config.ts`", "Require `npm ci --include=dev` for deployment"]}')
+  assert_equal "$(parse_commit_response compose_commit_from_json "$json")" "$expected" 'Structured response inline-code normalization'
+
+  reject_format() {
+    local response="$1" code="$2" issue
+    if issue=$(parse_commit_response clean_plain_commit_message "$response"); then fail 'Invalid message format was accepted'; fi
+    assert_contains "$issue" "[$code]" 'Specific format rejection diagnostic'
+  }
+  reject_format $'fix(timeout): preserve pending changes\n\n- Preserve pending changes.' plain.invalid_subject
+  reject_format $'fix: preserve pending changes\n\n- Use `npm ci for deployment.' bullet.markdown
+  reject_format $'fix: preserve pending changes\n\n- Use ```npm ci``` for deployment.' bullet.markdown
+  reject_format $'fix: preserve pending changes\n\n```text\n- Preserve pending changes.\n```' plain.unexpected_line
+  reject_format $'fix: preserve pending changes\n\n- Preserve **pending** changes.' bullet.markdown
+  reject_format 'fix: preserve pending changes' body.missing
+  reject_format $'fix: preserve pending changes\n\n- Preserve `pending` changes.\n- Preserve pending changes.' body.duplicate_bullet
+
+  STAGED_FILE_COUNT=1
+  # shellcheck disable=SC2016 # Backticks are literal model output.
+  assert_equal "$(parse_commit_response clean_plain_commit_message 'fix: preserve `timeout` handling')" 'fix: preserve timeout handling' 'Single-file inline-code normalization'
+  reject_format $'fix: preserve pending changes\n\n- Preserve pending changes.' body.unexpected
+  # shellcheck disable=SC2016 # Verify untrusted inline code is not executed.
+  assert_equal "$(normalize_commit_inline_code 'Use `$(touch should-not-exist)`.')" 'Use $(touch should-not-exist).' 'Inline code remains literal data'
+  [[ ! -e should-not-exist ]] || fail 'Inline code was executed'
+  assert_equal "$(validation_fail test.reason 'Test diagnostic.' || true)" '' 'Parser diagnostic override remains confined to its subshell'
+)
+pass 'Plain and structured inline code normalize without weakening message validation or executing content'
+
 # Exercise the full CLI with a curl substitute and a guard against commit/push.
 mkdir "$test_root/bin" "$test_root/requests"
 cp "$project_dir/git-ai.sh" "$test_root/git-ai.sh"
@@ -871,6 +903,20 @@ case "$url" in
       request_number=$(jq -s '[.[] | select((.messages[1].content // "") | contains("[COMMIT MESSAGE RULES]"))] | length' "$TEST_REQUEST_DIR"/request.*)
       invalid_format=0
       case "$response_mode" in
+        inline-code)
+          summary='preserve `timeout` handling'
+          bullet='Preserve pending changes after `Ollama` requests.' ;;
+        format-twice)
+          if [[ "$request_number" -gt 1 ]]; then
+            [[ "$user_prompt" == *'[PREVIOUS COMMIT MESSAGE CORRECTION]'* && "$user_prompt" == *'[plain.invalid_subject]'* && "$user_prompt" == *'not a commit message'* ]] || exit 97
+          fi
+          [[ "$request_number" -gt 2 ]] || invalid_format=1 ;;
+        invalid-structured-fields)
+          if [[ "$request_number" -eq 1 ]]; then
+            content='{"type":"fix","summary":42,"bullets":[]}'
+          else
+            [[ "$user_prompt" == *'[structured.invalid_fields]'* && "$user_prompt" == *'"summary":42'* ]] || exit 97
+          fi ;;
         retry|retry-plain)
           if [[ "$user_prompt" != *'[PREVIOUS COMMIT MESSAGE CORRECTION]'* ]]; then
             commit_type='docs'
@@ -892,6 +938,8 @@ case "$url" in
       esac
       if [[ "$invalid_format" -eq 1 ]]; then
         content='not a commit message'
+      elif [[ "$response_mode" == invalid-structured-fields && "$request_number" -eq 1 ]]; then
+        :
       elif [[ "$response_mode" != retry-plain ]] && jq -e '.format.properties.summary' >/dev/null <<<"$payload"; then
         content=$(jq -nc --arg type "$commit_type" --arg summary "$summary" --arg bullet "$bullet" '{type:$type,summary:$summary,bullets:[$bullet]}')
       else
@@ -1014,6 +1062,11 @@ MOCK_SLEEP
 chmod +x "$test_root/fast-bin/sleep"
 export TEST_RETRY_LOG="$test_root/retry-delays.log"
 for specification in \
+  '0 inline-code 1 success' \
+  '1 inline-code 1 success' \
+  '0 format-twice 3 success' \
+  '1 format-twice 3 success' \
+  '1 invalid-structured-fields 2 success' \
   '0 runtime-fixtures 1 success' \
   '1 runtime-fixtures 1 success' \
   '0 quality-twice 3 success' \
@@ -1056,6 +1109,17 @@ for specification in \
   fi
   if [[ "$response_mode" == runtime-fixtures ]]; then
     assert_absent "$(cat "$test_root/cli.err")" 'AI response rejected' 'Runtime fixture rules avoid semantic retries'
+  fi
+  if [[ "$response_mode" == inline-code ]]; then
+    assert_contains "$(cat "$test_root/cli.out")" 'fix: preserve timeout handling' 'Inline-code subject normalized by the full CLI'
+    assert_contains "$(cat "$test_root/cli.out")" '- Preserve pending changes after Ollama requests.' 'Inline-code bullet normalized by the full CLI'
+    assert_absent "$(cat "$test_root/cli.err")" 'AI response rejected' 'Inline code avoids unnecessary retries'
+  fi
+  if [[ "$response_mode" == *format* ]]; then
+    assert_contains "$(cat "$test_root/cli.err")" '[plain.invalid_subject]' 'Format rejection is visible without debug mode'
+  fi
+  if [[ "$response_mode" == invalid-structured-fields ]]; then
+    assert_contains "$(cat "$test_root/cli.err")" '[structured.invalid_fields]' 'Structured rejection is visible without debug mode'
   fi
   assert_absent "$(cat "$test_root/cli.err")" 'Using fallback' 'No unchecked message fallback'
   assert_equal "$(git ls-files --stage -z | git hash-object --stdin)" "$cli_staged_before" "$response_mode preserves staged content"
