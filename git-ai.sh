@@ -437,8 +437,13 @@ warm_ollama_model() {
   local running_models
 
   if running_models=$(fetch_ollama_running_models) && is_ollama_model_loaded "$running_models"; then
-    dbg "Model ${OLLAMA_MODEL} is already loaded; sending a silent readiness ping."
-    ping_ollama_model || die "Model ${OLLAMA_MODEL} is already loaded, but the Ollama readiness ping failed."
+    dbg "Model ${OLLAMA_MODEL} is already loaded; checking readiness."
+    blocking_status_start "Checking readiness of model ${OLLAMA_MODEL}..."
+    if ! ping_ollama_model; then
+      blocking_status_stop
+      die "Model ${OLLAMA_MODEL} is already loaded, but the Ollama readiness ping failed."
+    fi
+    blocking_status_stop
     return 0
   fi
 
@@ -1134,7 +1139,8 @@ scan_sensitive_content() {
       code_file = source_code_file
       test_file = code_file && is_test_path(path) && (old_path == "" || is_test_path(old_path))
       quote_chars = "\042\047"
-      assignment_regex = "[a-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[a-z0-9_.-]*[" quote_chars "]?[[:space:]]*[:=][[:space:]]*"
+      # Match each identifier from its boundary, not every offset in long encoded values.
+      assignment_regex = "(^|[^a-z0-9_.-])[a-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[a-z0-9_.-]*[" quote_chars "]?[[:space:]]*[:=][[:space:]]*"
       # Fixed minima plus * keep multi-part token matching consistent across Awk implementations.
       strong_regex = "(begin [a-z]+ private key|akia[0-9a-z]{16}|gh[pous]_[a-z0-9_]{30,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{10,}|aiza[0-9a-z_-]{35}|sk-[a-z0-9]{20,}|eyj[a-z0-9_-]{10}[a-z0-9_-]*[.][a-z0-9_-]{10}[a-z0-9_-]*[.][a-z0-9_-]{10}[a-z0-9_-]*)"
       placeholder_regex = "(placeholder|changeme|change_me|change-me|dummy|sample|example|your[-_ ]?[a-z0-9_-]*|<[^>]+>|[$][{]|[{][{][[:space:]]*secrets[.])"
@@ -1231,15 +1237,18 @@ scan_sensitive_content() {
       return boundary > 0 && substr(value, boundary + 1) == name &&
         substr(value, boundary, 1) ~ /[.-]/
     }
-    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote, ternary_label, assignment, suffix) {
+    function has_secret(content, lower, rest, rhs, quote, candidate, end_quote, ternary_label, assignment, suffix, assignment_start) {
       lower = tolower(content)
       # Token/key signatures always take precedence over expression/placeholder exemptions.
       if (lower ~ strong_regex) return 1
       rest = lower
       while (match(rest, assignment_regex)) {
-        assignment = substr(rest, RSTART, RLENGTH)
+        # Restore the original assignment/prefix after consuming its optional boundary.
+        assignment_start = RSTART
+        if (substr(rest, assignment_start, 1) !~ /[a-z0-9_.-]/) assignment_start++
+        assignment = substr(rest, assignment_start, RSTART + RLENGTH - assignment_start)
         rhs = substr(rest, RSTART + RLENGTH)
-        ternary_label = is_ternary_label(substr(rest, 1, RSTART - 1), assignment)
+        ternary_label = is_ternary_label(substr(rest, 1, assignment_start - 1), assignment)
         rest = rhs
         if (ternary_label) continue
         # A logical reference is code, but its fallback can still be a literal
@@ -1620,6 +1629,7 @@ select_commit_references() {
   REFERENCE_SENSITIVE_SKIPPED=0
   REFERENCE_RUNTIME_TOTAL=0
 
+  blocking_status_start "Selecting safe staged commit references..."
   while IFS=$'\t' read -r -d '' additions deletions path; do
     old_path=""
     if [[ -z "$path" ]]; then
@@ -1718,6 +1728,7 @@ select_commit_references() {
     REFERENCE_DIFFS+=("${chunks[$index]}")
     REFERENCE_CATEGORIES+=("${groups[$index]}")
   done
+  blocking_status_stop
 
   if [[ "$REFERENCE_RUNTIME_TOTAL" -gt 0 && "${#source_indices[@]}" -eq 0 ]]; then
     step_info "Runtime changes have no eligible safe source excerpts; context is limited to supporting references or metadata. Do not infer unsupported behavior."
@@ -2112,6 +2123,7 @@ collect_context() {
   local -a context_jobs context_outputs wave_pids
 
   select_commit_references
+  blocking_status_start "Collecting staged Git context..."
   context_jobs=(staged_count name_status stat priority_changes summary)
   DIFF_TERMS=""
   TOP_HUNKS=""
@@ -2159,6 +2171,7 @@ collect_context() {
   done
   rm -rf -- "$context_tmpdir"
   trap - RETURN
+  blocking_status_stop
   dbg "Context collection jobs: ${#context_jobs[@]}; effective non-AI parallelism: ${effective_workers}"
 
   classify_change_context
@@ -3418,8 +3431,12 @@ generate_commit_message() {
   # Step headers are called from main() to avoid a subshell counter issue.
 
   local safe_mode=0
+  blocking_status_start "Checking staged diffs for sensitive patterns..."
   if [[ "$FORCE_DIFF" -eq 0 ]] && detect_sensitive_patterns; then
     safe_mode=1
+  fi
+  blocking_status_stop
+  if [[ "$safe_mode" -eq 1 ]]; then
     warn "Sensitive patterns detected. Safe mode enabled (detailed diffs are not sent)."
   fi
 

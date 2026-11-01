@@ -86,6 +86,33 @@ literal_value=$(printf 'a%.0s' {1..24})
 provider_value="gh""p_$(printf 'b%.0s' {1..32})"
 key_marker="BEGIN"" SAMPLE"" PRIVATE KEY"
 
+# Long generated lines must finish without skipping credentials beyond a size cap.
+export -f scan_sensitive_content
+encoded_value=$(printf '%100000s' '' | tr ' ' a)
+repeated_keywords=$(printf '%12500s' '' | sed 's/ /password/g')
+for scenario in encoded repeated-keywords long-identifier trailing-literal long-identifier-literal; do
+  expected_status=1
+  case "$scenario" in
+    encoded) long_content="const payload = \"$encoded_value\";" ;;
+    repeated-keywords) long_content="const payload = \"$repeated_keywords\";" ;;
+    long-identifier) long_content="const $(assignment "${encoded_value}password" config.value);" ;;
+    trailing-literal)
+      long_content="const payload = \"$encoded_value\"; $(assignment password "\"$literal_value\"");"
+      expected_status=0
+      ;;
+    long-identifier-literal)
+      long_content="const $(assignment "${encoded_value}password" "\"$literal_value\"");"
+      expected_status=0
+      ;;
+  esac
+  matcher_status=0
+  timeout 5s bash -c 'scan_sensitive_content src/runtime.ts content' \
+    <<<"$long_content" > "$test_root/long-line.log" || matcher_status=$?
+  assert_equal "$matcher_status" "$expected_status" "$scenario: long-line scan failed or exceeded five seconds"
+  [[ ! -s "$test_root/long-line.log" ]] || fail "$scenario: matcher exposed content"
+  pass "Bounded scan of 100,000-character generated content: $scenario"
+done
+
 mkdir "$test_root/bin" "$test_root/requests"
 export TEST_REAL_GIT
 TEST_REAL_GIT=$(command -v git)

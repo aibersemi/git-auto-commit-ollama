@@ -370,6 +370,8 @@ streamed, so the percentage improves visual feedback rather than measuring
 model completion. Non-TTY output prints phase statuses and numbered file
 results without animated frames or terminal control sequences.
 
+Model readiness checks, built-in sensitive-pattern scanning, safe reference selection, and Git context collection also display phase statuses, with animated spinners in a terminal. Sensitive assignments are matched from identifier boundaries so long encoded lines in generated files do not repeatedly rescan every character; the complete line remains checked, including credentials after long values.
+
 Additional environment variables:
 
 | Variable | Purpose |
@@ -654,8 +656,9 @@ reference and secret scanning regression suites use temporary local clones,
 isolated indexes, and mocked Ollama responses. They create no new commits,
 perform no pushes, and require no active Ollama endpoint. The secret scanning
 suite also mocks Gitleaks and verifies blocking, scanner failures, safe previews,
-expression/placeholder handling, and protection of removed/context lines. The
-Gitleaks integration suite requires the installed binary and verifies real
+expression/placeholder handling, and protection of removed/context lines.
+The suite also checks long generated lines under a five-second deadline, including credentials beyond 100,000 characters and long identifier names.
+The Gitleaks integration suite requires the installed binary and verifies real
 staged scans, temporary indexes, redaction, configuration precedence from root
 and subdirectories, relative overrides, includes, ignore files, and invalid
 configuration in an isolated repository without Ollama, commits, or pushes.
