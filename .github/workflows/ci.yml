@@ -59,7 +59,9 @@ jobs:
         run: bash -n git-ai.sh
 
       - name: Run ShellCheck
-        run: shellcheck git-ai.sh
+        run: |
+          shellcheck --version
+          shellcheck git-ai.sh
 
       - name: Check help output
         run: ./git-ai.sh --help >/tmp/git-ai-help.txt

@@ -3406,7 +3406,7 @@ compose_commit_from_json() {
 parse_commit_response() (
   # Return either the valid message or its diagnostic across command substitution.
   # The override is confined to this subshell and preserves the parser exit status.
-  # shellcheck disable=SC2329 # Invoked indirectly by the selected parser.
+  # shellcheck disable=SC2317,SC2329 # Invoked indirectly by the selected parser.
   validation_fail() {
     local code="$1"
     shift
