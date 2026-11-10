@@ -35,8 +35,8 @@ Update this table if official release tags or maintenance branches are added.
 ## Safe Usage
 
 `git-ai` sends change context to the active Ollama endpoint. Context may include
-file names and statuses, Git statistics and summaries, diff excerpts, and
-diffs used for per-file analysis. The endpoint may run locally or on another
+file names and statuses, Git statistics and summaries, complete eligible staged
+diffs, fallback excerpts, and diffs used for per-file analysis. The endpoint may run locally or on another
 network host; the tool does not guarantee that data stays on the machine
 running the CLI.
 
@@ -54,6 +54,14 @@ running the CLI.
   diff for sensitive patterns before scoring, ranking hunks, or truncating
   excerpts. Missing safe runtime excerpts are reported as limited context;
   supporting documentation must not be treated as proof of implementation.
+
+Complete-diff generation and chunked analysis use the same exclusions and
+complete-file sensitive-content checks as fallback excerpts. Safe mode never
+selects the complete-diff path. Chunking happens only after the entire file
+diff passes those checks, so a credential beyond a chunk boundary or in a
+removed/context line still protects the whole file. Prompt-size limits do not
+grant an exemption from scanning. See [Commit References](../README.md#commit-references)
+for context routing and budget behavior.
 
 The built-in path-aware matcher checks the entire diff for safe mode, including removed and unchanged context lines. Its exemptions affect AI context only; Gitleaks applies its own rules for commit blocking. Expression and public namespace-salt exemptions apply to Python and JavaScript/TypeScript source files and explicitly labeled source fences in Markdown. Markdown checks recover language fences from complete staged diff context and evaluate the old and new versions independently. Prose, unlabeled or configuration fences, other quoted literals, configuration values, and unknown file types remain checked conservatively. Placeholders cannot exempt other values on the same line or provider/private-key signatures. There is no blanket exemption for test files or salt-named variables. See [`README.md#security`](../README.md#security) for matching behavior.
 

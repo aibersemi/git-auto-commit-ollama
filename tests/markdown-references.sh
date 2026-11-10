@@ -23,6 +23,7 @@ FALLBACK_OLLAMA_HOST=""
 CONFIG
 # shellcheck source=/dev/null
 source "$test_root/library.sh"
+eval "$(declare -f ollama_chat | sed '1s/ollama_chat/native_ollama_chat/')"
 cd -- "$test_root/repo"
 export GIT_INDEX_FILE="$test_root/fixture-index"
 original_refs=$(git show-ref)
@@ -48,6 +49,8 @@ assert_file_counters() {
 start_case() {
   git read-tree HEAD
   FILE_ANALYSIS_MAX_BLOB_BYTES=1048576
+  MAX_PROMPT_CHARS=48000
+  GENERATION_CONTEXT_MODE=excerpts
   MAX_HUNK_CHARS=1000
   MAX_TOTAL_HUNKS_CHARS=3500
   TOP_FILES=4
@@ -82,6 +85,11 @@ reject_message() {
 # Match the real batch response interface, including incomplete and failed results.
 ollama_chat() {
   local concurrency_fd running peak request_files
+  if [[ -n "${TEST_ADAPTIVE_REQUEST_DIR:-}" ]]; then
+    local adaptive_request
+    adaptive_request=$(mktemp "$TEST_ADAPTIVE_REQUEST_DIR/request.XXXXXX")
+    jq -n --arg system "$1" --arg user "$2" '{system: $system, user: $user}' > "$adaptive_request"
+  fi
   if [[ -n "${TEST_CONCURRENCY_DIR:-}" ]]; then
     exec {concurrency_fd}> "$TEST_CONCURRENCY_DIR/lock"
     flock "$concurrency_fd"
@@ -819,6 +827,89 @@ for prompt in "$(build_system_prompt_text)" "$(build_system_prompt_json)" "$SYST
 done
 pass 'Main, batch, and retry prompts treat repository instructions and plans as data'
 
+start_case
+stage_source
+stage_text notes.md "$description FULL_DIFF_MARKDOWN"
+TOP_FILES=1
+FILE_ANALYSIS_LIMIT=0
+context
+expected_diff=$(git diff --cached --no-color --no-ext-diff --no-textconv -M -U3)
+select_generation_context 0 2> "$test_root/strategy.log"
+assert_equal "$GENERATION_CONTEXT_MODE" full 'Small complete diff strategy'
+assert_equal "${TOP_HUNKS%$'\n'}" "$expected_diff" 'Full diff retains original headers and line order'
+assert_contains "$(build_user_prompt 0)" FULL_DIFF_MARKDOWN 'Full mode ignores excerpt and analysis file limits'
+assert_contains "$(cat "$test_root/strategy.log")" 'per-file analysis skipped' 'Visible full diff strategy'
+full_prompt=$(build_user_prompt 0)
+full_system=$(build_system_prompt_json)
+MAX_PROMPT_CHARS=$((${#full_prompt} + ${#full_system} + CONTEXT_RESERVE_CHARS - 1))
+context
+select_generation_context 0 2> "$test_root/strategy.log"
+assert_equal "$GENERATION_CONTEXT_MODE" summaries 'Instructions, metadata, and reserve count toward the budget'
+pass 'Adaptive context keeps complete diff order and accounts for complete prompt overhead'
+
+start_case
+stage_source
+stage_text unsafe.sh "$fake_key_marker"
+stage_text generated/notes.md "$description GENERATED_DIFF_MARKER"
+context 1
+assert_absent "$FULL_REFERENCE_DIFF" "$fake_key_marker" 'Sensitive files excluded before full-diff routing'
+assert_absent "$FULL_REFERENCE_DIFF" GENERATED_DIFF_MARKER 'Generated files excluded from complete diff'
+select_generation_context 1 2> "$test_root/strategy.log"
+assert_equal "$GENERATION_CONTEXT_MODE" summaries 'Safe mode never selects complete diff generation'
+assert_equal "$TOP_HUNKS" '' 'Safe mode preserves primary diff omission'
+assert_absent "$(build_user_prompt 1)" SOURCE_ONLY_MARKER 'Safe mode omits safe raw diffs from the main prompt'
+pass 'Full diff routing retains sensitive-file exclusions and global safe mode'
+
+chunk_header=$'diff --git a/src/labels.ts b/src/labels.ts\n--- a/src/labels.ts\n+++ b/src/labels.ts\n'
+hunk_header=$'@@ -1,1 +1,120 @@\n'
+chunk_body=$(for ((row=1; row<=120; row++)); do printf '+row_%03d = "🙂 label";\n' "$row"; done)
+chunked_diff=$(printf '%s%s%s\n' "$chunk_header" "$hunk_header" "$chunk_body" | split_file_diff 256)
+jq -e --arg header "$chunk_header" 'length > 1 and all(.[]; length <= 256 and startswith($header))' \
+  >/dev/null <<<"$chunked_diff" || fail 'Diff chunks lost headers or exceeded their budget'
+reassembled=$(jq -r --argjson offset "$((${#chunk_header} + ${#hunk_header}))" '[.[] | .[$offset:]] | join("")' <<<"$chunked_diff")
+assert_equal "$reassembled" "$chunk_body" 'Chunking preserves every changed line in order'
+long_unicode_line=$(printf '🙂%.0s' {1..500})
+chunked_diff=$(printf '%s%s+%s\n' "$chunk_header" "$hunk_header" "$long_unicode_line" | split_file_diff 256)
+reassembled=$(jq -r --argjson offset "$((${#chunk_header} + ${#hunk_header}))" '[.[] | .[$offset:]] | join("")' <<<"$chunked_diff")
+assert_equal "$reassembled" "+$long_unicode_line" 'Oversized Unicode lines retain every code point'
+pass 'Oversized hunks and long Unicode lines split without lost or reordered content'
+
+start_case
+MAX_PROMPT_CHARS=16384
+FILE_ANALYSIS_LIMIT=1
+large_source=$(for ((row=1; row<=900; row++)); do printf 'printf "source_row_%04d preserves full evidence\\n"\n' "$row"; done)
+stage_text src/timeout.sh "$large_source"
+stage_text notes.md "$description"
+context
+select_generation_context 0 2> "$test_root/strategy.log"
+assert_equal "$GENERATION_CONTEXT_MODE" summaries 'Large diff selects per-file analysis'
+assert_equal "$FULL_REFERENCE_DIFF" '' 'Overflowed complete diff is released'
+TEST_ADAPTIVE_REQUEST_DIR="$test_root/adaptive-requests"
+mkdir "$TEST_ADAPTIVE_REQUEST_DIR"
+analyze_files_individually 2> "$test_root/analysis.log"
+adaptive_requests=$(jq -s 'length' "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)
+[[ "$adaptive_requests" -gt 2 ]] || fail 'Large file was not chunked and consolidated'
+jq -se --argjson limit "$MAX_PROMPT_CHARS" 'all(.[]; ((.system | length) + (.user | length)) <= $limit)' \
+  "$TEST_ADAPTIVE_REQUEST_DIR"/request.* >/dev/null || fail 'Analysis input exceeded the configured budget'
+assert_contains "$(cat "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)" source_row_0900 'Late source evidence reaches chunk analysis'
+assert_contains "$(cat "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)" 'Summaries of consecutive chunks' 'Multiple chunks receive one file-level consolidation'
+assert_contains "$(cat "$test_root/analysis.log")" "in ${adaptive_requests} request(s)" 'Actual chunk request count is reported'
+assert_file_counters "$test_root/analysis.log" 1
+assert_contains "$FILE_ANALYSES" 'completed timeout handling' 'Consolidated evidence reaches final synthesis'
+TEST_ANALYSIS_MODE=invalid
+analyze_files_individually 2> "$test_root/analysis.log"
+assert_equal "$FILE_ANALYSES" '' 'Failed chunk analysis adds no unsupported evidence'
+assert_contains "$TOP_HUNKS" source_row_ 'Analysis failure keeps safe fallback excerpts'
+unset TEST_ADAPTIVE_REQUEST_DIR
+pass 'Large-file analysis uses bounded complete chunks, consolidates once, and retains safe fallback excerpts'
+
+overlong_prompt=$(printf 'x%.0s' {1..17000})
+if native_ollama_chat '' "$overlong_prompt" '' > "$test_root/budget.out" 2> "$test_root/budget.err"; then
+  fail 'Oversized input reached the Ollama request path'
+fi
+assert_contains "$(cat "$test_root/budget.err")" 'request not sent' 'Oversized request has an explicit diagnostic'
+pass 'Prompt budget rejects oversized input before network access'
+
 (
   STAGED_FILE_COUNT=6
   response=$'deps: update `Nitro` build integration\n\n- Configure `rolldownConfig` in `vite.config.ts`\n- Require `npm ci --include=dev` for deployment'
@@ -875,7 +966,9 @@ http_output=0
 url=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -d) payload="$2"; shift 2 ;;
+    -d|--data-binary)
+      if [[ "$2" == @- ]]; then payload=$(cat); else payload="$2"; fi
+      shift 2 ;;
     -o) output_file="$2"; shift 2 ;;
     -w) http_output=1; shift 2 ;;
     --connect-timeout|--max-time|-H) shift 2 ;;
@@ -985,15 +1078,30 @@ PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no
 assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" 'Automatic-stage dry-run index isolation'
 assert_contains "$(cat "$test_root/cli.out")" 'fix: improve timeout handling' 'Structured CLI message'
 assert_contains "$(cat "$test_root/cli.err")" 'informative staged Markdown' 'Structured CLI reference mode'
-assert_contains "$(cat "$test_root/cli.err")" 'Sending ' 'Non-TTY analysis retains its plain status'
+assert_contains "$(cat "$test_root/cli.err")" 'per-file analysis skipped' 'Small structured input skips unnecessary analysis'
 assert_absent "$(cat "$test_root/cli.err")" $'\033[' 'Non-TTY output has no terminal control sequences'
 assert_absent "$(cat "$test_root/cli.err")" ' est.' 'Non-TTY output has no animated progress frames'
-assert_file_counters "$test_root/cli.err" 2
-pass 'Full structured CLI analyzes Markdown using an isolated dry-run index'
+analysis_requests=$(jq -s '[.[] | select(.format.properties.files)] | length' "$TEST_REQUEST_DIR"/request.*)
+assert_equal "$analysis_requests" 0 'Small plain and structured CLI inputs make no per-file requests'
+pass 'Full structured CLI uses complete Markdown and source diffs with an isolated dry-run index'
 
 start_case
-stage_source
+unicode_fixture=$(printf '🙂%.0s' {1..32000})
+stage_text src/timeout.sh "printf '%s\\n' '$unicode_fixture'"
 stage_text notes.md "$description"
+cli_index_before=$(git hash-object "$GIT_INDEX_FILE")
+PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no-pull --no-banner --no-stage > "$test_root/cli.out" 2> "$test_root/cli.err"
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" 'Large Unicode request preserves the caller index'
+assert_contains "$(cat "$test_root/cli.err")" 'per-file analysis skipped' 'Unicode input fits the character budget'
+jq -se 'any(.[]; ((.messages[1].content // "") | utf8bytelength) > 131072)' \
+  "$TEST_REQUEST_DIR"/request.* >/dev/null || fail 'Large Unicode payload was not transmitted intact'
+pass 'Complete Unicode diffs exceed OS argument limits safely through streamed JSON and HTTP input'
+
+start_case
+large_source=$(for ((row=1; row<=180; row++)); do printf 'printf "source_row_%04d preserves full evidence\\n"\n' "$row"; done)
+stage_text src/timeout.sh "$large_source"
+stage_text notes.md "$description"
+printf '\nMAX_PROMPT_CHARS="16384"\n' >> "$test_root/git-ai.conf"
 export TEST_REQUEST_DIR="$test_root/requests/legacy"
 mkdir "$TEST_REQUEST_DIR"
 cli_index_before=$(git hash-object "$GIT_INDEX_FILE")
@@ -1023,6 +1131,16 @@ assert_equal "$request_sizes" '[1,1]' 'Legacy configuration batch size still sen
 pass 'Fallback endpoint resolves conservative capacity before analysis'
 
 PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --help > "$test_root/help.out"
+assert_contains "$(cat "$test_root/help.out")" MAX_PROMPT_CHARS 'Help documents the input budget'
+for invalid_budget in invalid 16383 65537; do
+  printf '\nMAX_PROMPT_CHARS="%s"\n' "$invalid_budget" >> "$test_root/git-ai.conf"
+  if PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no-pull --no-banner > "$test_root/cli.out" 2> "$test_root/cli.err"; then
+    fail 'Invalid prompt budget was accepted'
+  fi
+  assert_contains "$(cat "$test_root/cli.err")" 'MAX_PROMPT_CHARS must be a number between 16384 and 65536' 'Prompt budget configuration is validated'
+done
+printf '\nMAX_PROMPT_CHARS="16384"\n' >> "$test_root/git-ai.conf"
+pass 'Prompt budget validation rejects non-numeric and unsupported capacities'
 assert_contains "$(cat "$test_root/help.out")" 'Compatibility option; requests always contain one file' 'Help explains legacy batch behavior'
 if PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --file-analysis-batch-size 0 > "$test_root/cli.out" 2> "$test_root/cli.err"; then
   fail 'Invalid legacy batch size was accepted'

@@ -43,8 +43,10 @@ endpoint, which may run locally or on another network host.
   fallback host, automatic model pulling, and model warm-up before staging.
 - Scope-free Conventional Commit messages through Ollama `/api/chat`.
 - JSON Schema structured output with plain-text fallback and bounded corrective retries; generation failure stops before committing or pushing.
-- Per-file diff analysis with configurable file-count, blob-size, and adaptive
-  Ollama concurrency limits, with incremental progress for each completed file.
+- Complete eligible staged diffs in one generation request when the prompt fits
+  the configured character budget, preserving hunk order and both diff sides.
+- On-demand per-file analysis for larger changes, with bounded file/hunk chunks,
+  configurable limits, adaptive concurrency, and one final message synthesis.
 - Adaptive non-AI concurrency for independent read-only context jobs.
 - Prompt prioritization for capabilities, APIs, data integrity, security, and
   user flows; generated artifacts are treated as supporting context.
@@ -80,10 +82,13 @@ flowchart TD
   H --> K{--force?}
   I --> K
   J --> K
-  K -->|yes| L[Select commit references, build context, and run per-file analysis]
+  K -->|yes| L[Select safe references and build context]
   K -->|no| M[Scan for secrets]
   M --> L
-  L --> N[Generate and validate the commit message]
+  L --> U{Complete eligible diff fits the prompt budget?}
+  U -->|yes| N[Generate and validate the commit message]
+  U -->|no| V[Analyze selected files in bounded chunks when enabled]
+  V --> N
   N --> O{Dry-run?}
   O -->|yes| P[Display message without commit or push]
   O -->|no| Q[git commit]
@@ -137,6 +142,26 @@ classified before runtime path keywords: `docs/security.md` and recovery
 tests do not imply a functional security change. Templates, stylesheets,
 source code, and runtime configuration can be primary runtime changes.
 
+The default strategy sends all complete eligible file diffs together when the
+system instructions, Git metadata, and user prompt fit `MAX_PROMPT_CHARS`, with
+4,096 characters reserved for corrective feedback. This path preserves file
+headers, hunk order, additions, removals, and unchanged context. It skips
+per-file AI requests and is not limited by `TOP_FILES`, `MAX_HUNK_CHARS`, or
+`FILE_ANALYSIS_LIMIT`. The budget counts characters, not model tokens; choose
+a value that leaves room for output within the selected model's context.
+
+When the complete input does not fit, or safe mode is active, generation uses
+the ranked excerpts described below and optional per-file analysis. Analysis
+reads complete eligible diffs from the same index. Each worker owns one file
+and splits it at hunk boundaries; oversized hunks split at line boundaries,
+with exceptionally long lines split at Unicode character boundaries. Each
+chunk repeats its file and hunk headers as needed. Chunk summaries are combined
+per file before the final commit-message synthesis. A failed or incomplete
+file analysis falls back to its safe excerpt. `--no-file-analysis` and
+`FILE_ANALYSIS_LIMIT=0` disable these fallback requests while preserving the
+complete-diff path and safe excerpts. Inputs exceeding the configured budget
+are rejected before contacting Ollama.
+
 The Markdown heuristic evaluates the complete eligible diff before excerpt
 truncation. It ignores Git headers, empty lines, Markdown headings and
 formatting markers, and lines containing only a URL or link. After case,
@@ -153,7 +178,7 @@ the same order within `FILE_ANALYSIS_LIMIT`. Documentation-only work still
 uses short edits, deletions, and renames when no Markdown qualifies. With
 no eligible excerpts, generation uses Git metadata.
 
-Within each file, complete hunks are ranked by Markdown text changes or
+For fallback excerpts, complete hunks are ranked by Markdown text changes or
 runtime changed-line count. Up to four hunks are compacted by placing additions before removals and retaining up to three unchanged source conditions or return statements. Other unchanged context is removed. Context lines keep their space prefix so existing alternatives remain distinguishable from new behavior. Long lines and
 excerpts are bounded without splitting Unicode characters. Paired prose
 removes shared prefixes/suffixes with a small context margin; long source
@@ -311,17 +336,18 @@ Current `git-ai.conf` values:
 | `AI_MAX_NUM_PREDICT` | `2048` | Upper `num_predict` limit for primary and per-file requests. |
 | `USE_STRUCTURED_OUTPUT` | `0` | Use JSON Schema (`1`) or plain text (`0`). Disabled by default because `gemma4:e4b` does not consistently follow structured output. |
 | `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Maximum length of the entire commit message. |
-| `FILE_ANALYSIS_LIMIT` | `6` | Maximum files selected for per-file analysis; `0` disables those requests. |
+| `FILE_ANALYSIS_LIMIT` | `6` | Maximum files selected for fallback analysis; `0` disables those requests. Complete-diff generation skips analysis automatically. |
 | `FILE_ANALYSIS_BATCH_SIZE` | `1` | Compatibility option accepting a positive integer; requests always contain one file, including when this value is larger than `1`. |
 | `FILE_ANALYSIS_PARALLELISM` | `auto` | Maximum concurrent per-file analysis requests. `auto` reads `OLLAMA_NUM_PARALLEL` from a local systemd service, then the local process environment, and uses capacity `1` when neither provides a valid value. |
 | `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `192` | Output-token budget allocated to each file analysis. |
 | `FILE_ANALYSIS_MAX_BLOB_BYTES` | `1048576` | Maximum staged blob size eligible for commit reference excerpts and per-file AI analysis. |
 | `NON_AI_PARALLELISM` | `auto` | Maximum workers for independent local read-only jobs. `auto` uses the logical CPU capacity available to the process. |
 | `OLLAMA_PARALLELISM_HINT` | empty | Optional positive-integer capacity hint when a remote, containerized, or custom Ollama service cannot be inspected. |
+| `MAX_PROMPT_CHARS` | `48000` | Combined system/user input budget, from `16384` to `65536` characters. Initial generation and chunk planning reserve `4096` characters for corrections. This is not a tokenizer or an automatic model context setting. |
 | `MAX_FILES_LIST` | `20` | Entry limit for file status and Git statistics context. |
-| `TOP_FILES` | `4` | Maximum primary reference files included in hunk summaries. |
-| `MAX_HUNK_CHARS` | `1000` | Per-file hunk character limit. |
-| `MAX_TOTAL_HUNKS_CHARS` | `3500` | Total hunk character limit in the primary prompt. |
+| `TOP_FILES` | `4` | Maximum reference files in fallback hunk excerpts. |
+| `MAX_HUNK_CHARS` | `1000` | Per-file fallback excerpt character limit. |
+| `MAX_TOTAL_HUNKS_CHARS` | `3500` | Total fallback excerpt character limit in the primary prompt. |
 
 Ollama host resolution follows this order:
 
@@ -338,9 +364,12 @@ Parallelism is a capacity, not a request target. Local non-AI jobs use at most
 `NON_AI_PARALLELISM` workers and never overlap staging, the secret-policy
 decision, commit creation, or pushing. Per-file AI analysis uses at most the
 resolved Ollama capacity and the number of selected files. Selected files are
-sent in separate requests. With capacity `4`, three files use three requests
-in parallel; six files start four requests and fill freed worker slots with
-the remaining files. With effective capacity `1`, each request runs in the
+sent in separate requests when fallback analysis is needed. With capacity `4`,
+three files use three workers in parallel; six files start four workers and
+fill freed worker slots with the remaining files. A worker processes its file's
+chunks in order, then consolidates multiple chunk summaries. File completion
+is reported once; the final request count includes chunk and consolidation
+requests. With effective capacity `1`, each request runs in the
 foreground and finishes before the next starts; only the loading renderer
 runs in the background. One request per file adds request overhead but allows
 incremental file progress. Terminal output shows the detected
@@ -440,7 +469,7 @@ Available options:
 | `--force-diff` | Send detailed diffs to Ollama even when sensitive patterns are detected. |
 | `-f`, `--force` | High-risk override: skip Gitleaks scanning, disable safe mode, and allow sensitive diff context to reach Ollama. |
 | `-a`, `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
-| `--no-file-analysis` | Disable per-file AI analysis. |
+| `--no-file-analysis` | Disable fallback per-file AI analysis; complete eligible diffs or safe excerpts remain available. |
 | `--file-analysis-limit N` | Limit analyzed files; accepts a non-negative integer. |
 | `--file-analysis-batch-size N` | Compatibility option; accepts integers of at least `1`, while effective request size remains one file. |
 | `--file-analysis-parallelism N\|auto` | Set concurrent file-analysis request capacity or detect it from a local Ollama service. |
@@ -722,11 +751,19 @@ fallback with absent or cosmetic Markdown and compare the original index and
 refs before and after each dry-run. Never create real commits or pushes for
 these checks.
 
-For per-file analysis performance changes, repeat the smoke test with six
-small text files. Confirm that each request contains one file, that capacity
+For adaptive context changes, verify that a small eligible diff uses one
+generation request without per-file analysis, including with
+`--no-file-analysis`. Exercise the fallback with changes that exceed the
+configured input budget. Keep the model and its settings fixed when comparing
+output accuracy, request counts, token usage, or elapsed time.
+
+For per-file analysis performance changes, use six eligible text files whose
+combined prompt exceeds the budget. Confirm that each request contains one file, that capacity
 `1` runs AI requests in the foreground, and that larger capacities overlap
 requests within the worker limit. Legacy batch-size values must still be
-accepted without combining files. Measure the
+accepted without combining files. Include an individual oversized hunk to
+verify bounded chunks, preserved line order, file-level consolidation, one
+completion per file, and fallback after a failed chunk. Measure the
 `Analyzed ...` and `Commit message received ...`
 durations with a warm model. Also test generated paths, binary files, and a
 text blob larger than `FILE_ANALYSIS_MAX_BLOB_BYTES` to confirm they are

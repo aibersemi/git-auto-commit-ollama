@@ -113,6 +113,7 @@ themes in the subject or first bullet. Cover visible quality-rejection reasons
 and corrective retries for
 plain text, structured JSON, and plain text returned to a structured request.
 Include runtime rules about test inputs alongside real test-fixture maintenance, exact rejection locations, and bounded unchanged source context. Verify success after two invalid responses, stopping after three invalid responses, mixed request/validation failures, and request exhaustion. Failure tests must assert a nonzero exit, bounded API calls, unchanged index/refs, released locks, and no attempted commit or push. Keep retry-delay mocks scoped to isolated CLI tests.
+For adaptive context changes, verify that complete eligible diffs retain both sides and hunk order, count instructions and metadata toward the prompt budget, and skip per-file requests when they fit. Cover bounded file/hunk chunks, long Unicode lines, consolidation, failed chunk fallback, and safe-mode exclusions using the primary validation workflow in the README.
 Cover inline-code normalization for plain-text and structured subjects and bullets while retaining rejection of scopes, unmatched backticks, code fences, unsupported Markdown, and invalid bodies. Format failures must expose the specific validation reason without debug mode and include the previous response and reason in corrective prompts, including structured-to-plain fallback.
 Follow the README runtime check when Ollama is available; do not use
 real commits or pushes for validation.
@@ -163,12 +164,12 @@ If a change affects Ollama integration, test:
 - A missing model with and without `--no-pull`.
 - `--no-structured` when structured-output logic changed.
 
-If a change affects per-file analysis performance, test one file, the default
+If a change affects per-file analysis performance, force the fallback with input exceeding the prompt budget, then test one file, the default
 selection of six files, a larger selection, and local-summary fallback for
 an invalid or incomplete response. Confirm that every request contains one file
 even when a legacy batch-size value exceeds `1`. Confirm that generated or
 ephemeral paths, binary files, and oversized staged blobs are excluded from
-per-file AI requests without changing dry-run Git state.
+per-file AI requests without changing dry-run Git state. A worker may make multiple chunk requests and consolidate them for its file; verify actual request counts and one completion per file.
 
 If a change affects adaptive parallelism, test `auto` and numeric overrides for
 both local and AI jobs. Cover local systemd detection, a remote Ollama capacity

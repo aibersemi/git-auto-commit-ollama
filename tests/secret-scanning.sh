@@ -169,7 +169,9 @@ http_output=0
 url=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -d) payload="$2"; shift 2 ;;
+    -d|--data-binary)
+      if [[ "$2" == @- ]]; then payload=$(cat); else payload="$2"; fi
+      shift 2 ;;
     -o) output_file="$2"; shift 2 ;;
     -w) http_output=1; shift 2 ;;
     --connect-timeout|--max-time|-H) shift 2 ;;
