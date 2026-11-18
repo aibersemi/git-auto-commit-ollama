@@ -12,22 +12,16 @@ This project is a Bash CLI that generates Git commit messages with Ollama. Treat
 - Use English for every repository artifact, including source code, code comments, help text, prompts, user-facing output, errors, debug messages, generated commit messages, configuration comments, documentation, templates, workflows, and agent instructions.
 - Keep technical terms, headings, API and library names, commands, file and branch names, and other established identifiers in their conventional English form.
 
-## Repository Map
-
-- `git-ai.sh`: Main CLI. Most behavioral changes belong here.
-- `git-ai.conf`: Default runtime configuration sourced as shell code. Never store secrets here.
-- `Makefile`: Installs or removes the `git-ai` and `git-ai.conf` symlinks in `$(PREFIX)/bin` with `sudo`.
-- `.github/workflows/ci.yml`: Bash and workflow validation, reusable for releases.
-- `.github/workflows/release.yml`: Validates stable version tags and runs shared CI before creating a GitHub Release.
-- `README.md`, `.github/CONTRIBUTING.md`, `.github/SECURITY.md`: Public documentation.
-
 ## Documentation
 
-- Update the README when user behavior, CLI options, configuration, dependencies, installation, troubleshooting, or basic validation commands change.
-- Update `.github/CONTRIBUTING.md` when the contribution workflow, pull request validation, or code standards change.
-- Update `.github/SECURITY.md` when vulnerability scope, reporting, disclosure, user safety, or security design notes change.
-- Avoid duplication across documents. The README is the primary source for usage and basic validation.
-- Link to the primary source instead of copying long sections into other documents.
+- In `AGENTS.md`, `README.md`, and all Markdown files under `docs/`, write each paragraph and list item text on a single line without hard wrapping. Avoid trailing whitespace and consecutive blank lines; preserve line breaks and indentation required by Markdown structures and code blocks.
+- Update the root `README.md` whenever the project overview, features, how it works, structure, modules, or documentation navigation changes.
+- Update the root `AGENTS.md` whenever core AI agent instructions, workflow rules, or repository policies change.
+- Update `.github/CONTRIBUTING.md` whenever the contribution workflow, pull request validation, or coding standards change.
+- Update `.github/SECURITY.md` whenever vulnerability scope, reporting procedures, disclosure policies, user safety, or security design notes change.
+- Create or update relevant documents under `docs/` to directly reflect the current state of the system without recording changelogs, change history, or past migrations. If a system component is removed, also remove its descriptions and references from the documentation; do not replace them with notes such as "removed", "no longer used", or "previously used". If a component is replaced, document the replacement as the current state without discussing the previous implementation.
+- Update documentation only when behavior, commands, architecture, operations, or data contracts change; cosmetic changes do not require documentation updates.
+- Place information in the document with the most relevant scope, avoid duplicating details across documents, and use relative links for cross-references between topics.
 
 ## Work Rules
 
@@ -36,7 +30,7 @@ This project is a Bash CLI that generates Git commit messages with Ollama. Treat
 - Do not run `make install`, `make uninstall`, or commands that modify the global system unless the user explicitly requests it.
 - Do not run `git-ai` to create a real commit unless the user explicitly requests it. Use `--dry-run` for runtime testing.
 - Do not change the default model, default push behavior, fallback host, or commit message format without a clear reason and corresponding documentation updates.
-- Do not add a required dependency without updating `check_deps`, the README, and the contribution guide.
+- Do not add a required dependency without updating `check_deps`, the README, the contribution guide, and the [installation prerequisites](docs/installation.md#prerequisites).
 
 ## Bash Style
 
@@ -46,8 +40,8 @@ This project is a Bash CLI that generates Git commit messages with Ollama. Treat
 - Quote variable expansions unless there is a clear Bash-specific reason not to.
 - Use `jq` for JSON instead of ad hoc string parsing.
 - Validate configuration values and CLI arguments as close as practical to the existing parsing and checking logic.
-- When adding a CLI option, update `parse_args`, `show_help`, the README, and relevant help validation.
-- When changing configuration, update `git-ai.conf`, fallback defaults, configuration validation, the README, and related documentation.
+- When adding a CLI option, update `parse_args`, `show_help`, the README, the [CLI reference](docs/usage.md#options), and relevant help validation.
+- When changing configuration, update `git-ai.conf`, fallback defaults, configuration validation, the README, and the [configuration reference](docs/configuration.md).
 
 ## Security
 
@@ -60,6 +54,8 @@ This project is a Bash CLI that generates Git commit messages with Ollama. Treat
 - Do not place secrets, tokens, sensitive internal hosts, or private logs in test fixtures, documentation, or debug output.
 
 ## Verification
+
+For documentation changes, follow [Documentation Verification](docs/verification.md#documentation-verification).
 
 Run the basic validation after changing `git-ai.sh` or related behavior:
 

@@ -57,11 +57,12 @@ FORCE_DIFF=0
 FORCE=0
 ALLOW_SECRET_COMMIT=0
 GITLEAKS_SENSITIVE_PATHS=()
+declare -A SOURCE_DOCUMENTATION_PATHS=()
 NO_BANNER=0
 NO_PULL=0
 NO_VERIFY=0
 INTERACTIVE=0
-DRY_RUN_INDEX_FILE=""
+DRY_RUN_DIR=""
 STAGED_FILE_COUNT=0
 MODEL_OVERRIDE=""
 
@@ -525,7 +526,8 @@ elapsed_since_millis() {
 estimated_ai_progress_percent() {
   local start_ms="$1"
   local now_ms="${2:-}"
-  local elapsed_ms percent
+  local file_count="${STAGED_FILE_COUNT:-0}"
+  local elapsed_ms interval_ms time_to_95_ms percent
 
   [[ -n "$now_ms" ]] || now_ms=$(clock_millis)
   if [[ ! "$start_ms" =~ ^[0-9]+$ || ! "$now_ms" =~ ^[0-9]+$ || "$now_ms" -lt "$start_ms" ]]; then
@@ -534,8 +536,15 @@ estimated_ai_progress_percent() {
   fi
 
   elapsed_ms=$((now_ms - start_ms))
-  percent=$((elapsed_ms / 100))
-  [[ "$percent" -le 95 ]] || percent=95
+  [[ "$file_count" =~ ^[1-9][0-9]*$ ]] || file_count=1
+  interval_ms=$((file_count * 10))
+  time_to_95_ms=$((95 * interval_ms))
+  if [[ "$elapsed_ms" -lt "$time_to_95_ms" ]]; then
+    percent=$((elapsed_ms / interval_ms))
+  else
+    percent=$((95 + (elapsed_ms - time_to_95_ms) / 2000))
+    [[ "$percent" -le 99 ]] || percent=99
+  fi
   printf '%d' "$percent"
 }
 
@@ -822,7 +831,7 @@ Options:
   -p, --patch                 Interactive staging (git add -p)
   -i, --interactive           Show the commit message and ask for confirmation before committing
       --no-stage              Do not stage changes automatically
-  -d, --dry-run               Only display the commit message (do not change Git state)
+  -d, --dry-run               Preview using a temporary index and object database
       --debug                 Show full commands, Git context, prompts, HTTP responses, and validation details
       --force-diff            Send the diff to AI even when sensitive patterns are detected
   -f, --force                 Skip secret scanning and allow sensitive diff context to reach AI (high risk)
@@ -937,28 +946,37 @@ check_git_repo() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not a Git repository"
 }
 
-setup_dry_run_index() {
+setup_dry_run() {
   [[ "$DRY_RUN" -eq 1 ]] || return 0
 
-  local real_index
+  local real_index real_objects
   real_index=$(git rev-parse --git-path index)
+  real_objects=$(git rev-parse --git-path objects)
+  [[ "$real_objects" == /* ]] || real_objects="$PWD/$real_objects"
 
-  DRY_RUN_INDEX_FILE=$(mktemp)
+  DRY_RUN_DIR=$(mktemp -d) || die "Could not create a temporary directory for dry-run."
+  [[ "$DRY_RUN_DIR" == /* ]] || DRY_RUN_DIR="$PWD/$DRY_RUN_DIR"
+  mkdir -- "$DRY_RUN_DIR/objects"
   if [[ -f "$real_index" ]]; then
-    cp "$real_index" "$DRY_RUN_INDEX_FILE"
-  else
-    rm -f "$DRY_RUN_INDEX_FILE"
+    cp -- "$real_index" "$DRY_RUN_DIR/index"
   fi
 
-  export GIT_INDEX_FILE="$DRY_RUN_INDEX_FILE"
-  dbg "Dry-run index enabled: $DRY_RUN_INDEX_FILE"
+  # Keep existing objects available while Git writes new blobs to the temporary store.
+  # Git uses C-style quoted paths for alternate directories that contain separators.
+  real_objects=${real_objects//\\/\\\\}
+  real_objects=${real_objects//\"/\\\"}
+  real_objects=${real_objects//$'\n'/\\n}
+  export GIT_ALTERNATE_OBJECT_DIRECTORIES="${GIT_ALTERNATE_OBJECT_DIRECTORIES:+$GIT_ALTERNATE_OBJECT_DIRECTORIES:}\"$real_objects\""
+  export GIT_OBJECT_DIRECTORY="$DRY_RUN_DIR/objects"
+  export GIT_INDEX_FILE="$DRY_RUN_DIR/index"
+  export GIT_OPTIONAL_LOCKS=0
+  dbg "Dry-run index and object database enabled: $DRY_RUN_DIR"
 }
 
-cleanup_dry_run_index() {
-  if [[ -n "${DRY_RUN_INDEX_FILE:-}" ]]; then
-    rm -f "$DRY_RUN_INDEX_FILE" || true
-    unset GIT_INDEX_FILE || true
-    DRY_RUN_INDEX_FILE=""
+cleanup_dry_run() {
+  if [[ -n "$DRY_RUN_DIR" ]]; then
+    rm -rf -- "$DRY_RUN_DIR" || true
+    DRY_RUN_DIR=""
   fi
 }
 
@@ -1108,13 +1126,16 @@ stage_changes() {
     return 0
   fi
 
+  local -a git_add=(git add)
+  # A split index can write shared index files into the original Git directory.
+  [[ "$DRY_RUN" -eq 0 ]] || git_add=(git -c core.splitIndex=false add)
   if [[ "$USE_PATCH" -eq 1 ]]; then
-    dbg "Command: git add -p"
-    git add -p
+    dbg "Command: ${git_add[*]} -p"
+    "${git_add[@]}" -p
   else
     blocking_status_start "Scanning, hashing, and staging working-tree changes..."
-    dbg "Command: git add -A"
-    if ! git add -A; then
+    dbg "Command: ${git_add[*]} -A"
+    if ! "${git_add[@]}" -A; then
       blocking_status_stop
       die "Failed to stage changes."
     fi
@@ -1503,6 +1524,49 @@ is_markdown_path() {
   [[ "${1,,}" == *.md ]]
 }
 
+normalize_module_doc_references() {
+  LC_ALL=C awk '
+    in_comment {
+      if ($0 !~ /\*\//) {
+        if ($0 !~ /^[[:blank:]]*\*([[:blank:]]|\r?$)/ || $0 ~ /@/) prose = 0
+        lines[++count] = $0
+        next
+      }
+
+      # Leave tagged JSDoc and comments with inline code untouched.
+      if ($0 !~ /^[[:blank:]]*\*\/[[:space:]]*$/) prose = 0
+      for (i = 1; i <= count; i++) {
+        if (prose) gsub(/([[:alnum:]_.-]+\/)*[[:alnum:]_.-]+[.][mM][dD](#[[:alnum:]_-]+)?/, "<Markdown path>", lines[i])
+        print lines[i]
+      }
+      in_comment = 0
+      past_preamble = 1
+    }
+
+    # Recognize only the first JSDoc block after a simple module preamble.
+    !past_preamble && /^[[:blank:]]*\/\*\*[[:space:]]*$/ { in_comment = prose = 1; print; next }
+    !past_preamble && /^[[:space:]]*$/ { print; next }
+    !past_preamble && /^[[:blank:]]*("use (client|server|strict)"|\047use (client|server|strict)\047)[[:blank:]]*;[[:space:]]*$/ { print; next }
+    !past_preamble && /^[[:blank:]]*import[[:blank:]]+(([[:alnum:]_$,{}*]+[[:blank:]]+)+from[[:blank:]]+)?("[^"\\]*"|\047[^\047\\]*\047)[[:blank:]]*;[[:space:]]*$/ { print; next }
+
+    { past_preamble = 1; print }
+    END { if (in_comment) for (i = 1; i <= count; i++) print lines[i] }
+  '
+}
+
+is_source_documentation_change() {
+  local path="$1" diff="$2" before after
+  case "${path,,}" in *.js|*.jsx|*.ts|*.tsx|*.mjs|*.cjs|*.mts|*.cts) ;; *) return 1 ;; esac
+  # An index line with a common regular-file mode excludes additions, removals,
+  # and mode changes. Keep missing final newlines outside this comparison.
+  [[ "$diff" != *$'\n\\ '* ]] || return 1
+  grep -Eq '^index [[:xdigit:]]+\.\.[[:xdigit:]]+ 100(644|755)$' <<<"$diff" || return 1
+  grep -Eiq '^\+[[:blank:]]*\*[[:blank:]].*\.md' <<<"$diff" || return 1
+  before=$(git cat-file blob "HEAD:$path" | normalize_module_doc_references | git hash-object --stdin) || return 1
+  after=$(git cat-file blob ":$path" | normalize_module_doc_references | git hash-object --stdin) || return 1
+  [[ "$before" == "$after" ]]
+}
+
 markdown_reference_score() {
   # Count added words and net-new word occurrences, ignoring cosmetic edits.
   LC_ALL=C awk '
@@ -1641,6 +1705,7 @@ select_commit_references() {
   REFERENCE_OVERSIZED_SKIPPED=0
   REFERENCE_SENSITIVE_SKIPPED=0
   REFERENCE_RUNTIME_TOTAL=0
+  SOURCE_DOCUMENTATION_PATHS=()
 
   blocking_status_start "Selecting safe staged commit references..."
   while IFS=$'\t' read -r -d '' additions deletions path; do
@@ -1668,6 +1733,11 @@ select_commit_references() {
     pathspecs=("$path")
     [[ -z "$old_path" ]] || pathspecs+=("$old_path")
     full_diff=$(git --literal-pathspecs diff --cached --no-color --no-ext-diff --no-textconv -M -U3 -- "${pathspecs[@]}" 2>/dev/null || true)
+    if [[ "$category" == source && -z "$old_path" ]] && is_source_documentation_change "$path" "$full_diff"; then
+      category="documentation"
+      SOURCE_DOCUMENTATION_PATHS["$path"]=1
+      REFERENCE_RUNTIME_TOTAL=$((REFERENCE_RUNTIME_TOTAL - 1))
+    fi
     scan_diff="$full_diff"
     case "${path,,}" in *.md|*.mdx) scan_diff=$(staged_sensitive_diff "$path" "$old_path" 2>/dev/null || true) ;; esac
     if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$scan_diff" "$path" "$old_path" diff; then
@@ -2011,8 +2081,11 @@ classify_change_context() {
   RENAME_FOCUS_LABEL=""
   CHANGE_FOCUS_TERMS=""
 
-  while IFS=$'\t' read -r status path1 path2; do
-    [[ -z "${status:-}" || -z "${path1:-}" ]] && continue
+  while IFS= read -r -d '' status && IFS= read -r -d '' path1; do
+    path2=""
+    if [[ "$status" == R* || "$status" == C* ]]; then
+      IFS= read -r -d '' path2 || break
+    fi
 
     case "$status" in
       R*)
@@ -2048,6 +2121,7 @@ classify_change_context() {
 
     # Classify supporting files before path keywords such as security or API.
     category=$(change_reference_category "$path")
+    [[ -z "${SOURCE_DOCUMENTATION_PATHS[$path]:-}" ]] || category="documentation"
     case "$category" in
       documentation) HAS_DOC_CHANGE=1; continue ;;
       test) HAS_TEST_CHANGE=1; continue ;;
@@ -2061,7 +2135,7 @@ classify_change_context() {
     is_frontend_path "$path" && HAS_FRONTEND_CHANGE=1
     HAS_FUNCTIONAL_CHANGE=1
     FUNCTIONAL_FILE_COUNT=$((FUNCTIONAL_FILE_COUNT + 1))
-  done < <(git diff --cached --name-status -M || true)
+  done < <(git diff --cached --name-status -M -z || true)
 
   if [[ "$HAS_FUNCTIONAL_CHANGE" -eq 1 ]]; then
     PRIMARY_CHANGE_KIND="runtime"
@@ -2835,6 +2909,8 @@ build_user_prompt() {
   change_focus='Choose the primary completed change from all selected references and staged metadata.'
   if [[ "${HAS_FUNCTIONAL_CHANGE:-0}" -eq 1 ]]; then
     change_focus='Runtime changes are staged. Lead the subject and first bullet with implemented behavior established by runtime source or safe source summaries, corroborated by informative Markdown. Contribution/security guidelines, tests, and CI support that behavior. If source excerpts are unavailable, acknowledge limited evidence in your reasoning and do not invent behavior absent from the supplied changes.'
+  elif [[ "${PRIMARY_CHANGE_KIND:-}" == documentation ]]; then
+    change_focus='Use the docs type. In the subject, name one or two concrete topics from the primary documentation references. If guides were consolidated, name the affected topics. Cover additional topics in the bullets. An umbrella subject such as "Update technical documentation guides" is too generic, even when many guides changed.'
   fi
   for reference_index in "${!REFERENCE_PATHS[@]}"; do
     reference_roles+="${REFERENCE_CATEGORIES[$reference_index]}: ${REFERENCE_PATHS[$reference_index]}"$'\n'
@@ -3007,7 +3083,7 @@ commit_message_quality_issue() {
     return 0
   fi
 
-  if [[ "${PRIMARY_CHANGE_KIND:-}" == documentation ]] && grep -Eiq '^(update|improve|revise|change) (the )?(documentation|docs|guides) (across|in|for) (multiple|several|various)|^(update|improve|revise|change) (various|multiple|several)( technical)? (documentation|docs|guides)( guides|files)?$' <<<"$summary"; then
+  if [[ "${PRIMARY_CHANGE_KIND:-}" == documentation ]] && grep -Eiq '^(update|improve|revise|change) (the )?(documentation|docs|guides) (across|in|for) (multiple|several|various)|^(update|improve|revise|change) (the )?((various|multiple|several) )?(technical )?(documentation|docs|guides)( guides| files)?$' <<<"$summary"; then
     printf 'Documentation subject is too generic; name the concrete guidance or operational topic that changed.'
     return 0
   fi
@@ -3832,8 +3908,8 @@ main() {
   show_banner
 
   acquire_lock
-  trap 'live_status_stop; spinner_stop; restore_cursor; cleanup_dry_run_index; release_lock; rm -f "${TOKEN_LOG_FILE:-}" "${commit_msg_file:-}"' EXIT
-  setup_dry_run_index
+  trap 'live_status_stop; spinner_stop; restore_cursor; cleanup_dry_run; release_lock; rm -f "${TOKEN_LOG_FILE:-}" "${commit_msg_file:-}"' EXIT
+  setup_dry_run
   resolve_runtime_parallelism
   debug_runtime_configuration
 

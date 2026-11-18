@@ -3,8 +3,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Have an idea for improving `git-auto-commit-ollama`?
-        We would love to hear it. Share your thoughts below.
+        Have an idea for improving `git-auto-commit-ollama`? We would love to hear it. Share your thoughts below.
   - type: textarea
     id: idea
     attributes:

@@ -1,10 +1,6 @@
 # Security Policy
 
-`git-auto-commit-ollama` is a Bash CLI that reads Git diffs, generates commit
-messages through a configured Ollama endpoint, and can run `git commit` and
-`git push`. Because the tool interacts with Git state, staged changes, secret
-scanning, and network endpoints, security reports are prioritized according to
-their impact on repository confidentiality, integrity, and user control.
+`git-auto-commit-ollama` is a Bash CLI that reads Git diffs, generates commit messages through a configured Ollama endpoint, and can run `git commit` and `git push`. Because the tool interacts with Git state, staged changes, secret scanning, and network endpoints, security reports are prioritized according to their impact on repository confidentiality, integrity, and user control.
 
 ## Table of Contents
 
@@ -19,14 +15,11 @@ their impact on repository confidentiality, integrity, and user control.
 
 ## Supported Versions
 
-Security support follows the `main` branch and the latest `git-ai.sh`
-revision. The `VERSION` value in the script identifies the CLI version; it does
-not guarantee security backports for every older minor release.
+Security support follows the `main` branch and the latest `git-ai.sh` revision. The `VERSION` value in the script identifies the CLI version; it does not guarantee security backports for every older minor release.
 
 | Version or branch | Supported | Notes |
 | --- | --- | --- |
 | `main` | Yes | Primary target for security patches. |
-| Current script version (`1.5.1`) | Yes | Supported when it matches the latest revision on `main`. |
 | Older commits or copies | Not guaranteed | Update to `main`; reports remain useful when the issue also affects the latest version. |
 | Modified local forks | Best effort | Include a non-sensitive diff when the issue occurs only in the fork. |
 
@@ -34,131 +27,7 @@ Update this table if official release tags or maintenance branches are added.
 
 ## Safe Usage
 
-`git-ai` sends change context to the active Ollama endpoint. Context may include
-file names and statuses, Git statistics and summaries, complete eligible staged
-diffs, fallback excerpts, and diffs used for per-file analysis. The endpoint may run locally or on another
-network host; the tool does not guarantee that data stays on the machine
-running the CLI.
-
-`git-ai` has two independent protections for potential secrets:
-
-- Required Gitleaks scanning checks staged additions and determines whether
-  potential secrets block a commit, unless `--force` is explicitly selected.
-  The built-in matcher does not independently block commits.
-- Safe mode removes detailed diffs from the main prompt and skips sensitive
-  files during per-file analysis when built-in patterns match or Gitleaks
-  reports a finding for the file. Reference
-  excerpts and per-file analysis also exclude generated or ephemeral paths,
-  binary diffs, and oversized staged blobs. Git metadata and safe per-file
-  summaries may still be sent. Reference selection checks the complete file
-  diff for sensitive patterns before scoring, ranking hunks, or truncating
-  excerpts. Missing safe runtime excerpts are reported as limited context;
-  supporting documentation must not be treated as proof of implementation.
-
-Complete-diff generation and chunked analysis use the same exclusions and
-complete-file sensitive-content checks as fallback excerpts. Safe mode never
-selects the complete-diff path. Chunking happens only after the entire file
-diff passes those checks, so a credential beyond a chunk boundary or in a
-removed/context line still protects the whole file. Prompt-size limits do not
-grant an exemption from scanning. See [Commit References](../README.md#commit-references)
-for context routing and budget behavior.
-
-The built-in path-aware matcher checks the entire diff for safe mode, including removed and unchanged context lines. Its exemptions affect AI context only; Gitleaks applies its own rules for commit blocking. Expression and public namespace-salt exemptions apply to Python and JavaScript/TypeScript source files and explicitly labeled source fences in Markdown. Markdown checks recover language fences from complete staged diff context and evaluate the old and new versions independently. Prose, unlabeled or configuration fences, other quoted literals, configuration values, and unknown file types remain checked conservatively. Placeholders cannot exempt other values on the same line or provider/private-key signatures. There is no blanket exemption for test files or salt-named variables. See [`README.md#security`](../README.md#security) for matching behavior.
-
-The source-placeholder exemption requires a complete quoted source literal
-composed entirely of approved placeholder words, a credential noun, and either
-an explicit synthetic marker or a leading `test`/`testing`/`tests` word. Test
-suffixes alone, arbitrary words, random or numeric suffixes, configuration
-values, and concatenated expressions do not receive this exemption. Provider
-and private-key signatures always take precedence, and Gitleaks findings
-remain independent of built-in exemptions.
-
-Logical source references using `||` or `&&` retain literal checks on their
-remaining operands. Empty fallbacks and variable/member references are not
-credentials; literal credential fallbacks remain protected, including later
-operands after empty strings or placeholders. Configuration values and quoted
-expression text do not receive logical-expression exemptions.
-
-Conventional test source paths additionally recognize bounded, predictable
-provider-token, password, and password lifecycle fixture patterns. This exemption requires a
-complete quoted literal; it does not skip other credentials in tests,
-production source, configuration values, concatenations, or signatures.
-Full-diff checks also require the old path of a rename to qualify as test
-source. The exact patterns and path rules are documented in
-[`README.md#security`](../README.md#security).
-
-Gitleaks runs before AI context collection and generation. Missing executables,
-scanner errors, incompatible flags, and invalid reports stop the run; neither
-preview mode nor a finding override permits generation after a failed scan.
-Scanner reports are private temporary JSON files. Displayed findings include
-only file, line, and rule ID; scanner logs and credential fields are not emitted.
-Gitleaks configuration and ignore rules control commit-blocking coverage, and
-its default rules may differ from the former built-in guard. Scanning resolves
-repository configuration, includes, and ignore files from the repo root even
-when invoked from a subdirectory. Environment overrides retain native priority;
-selected invalid configurations never fall back silently. Configuration and
-ignore files come from the working tree, while the scan targets staged changes.
-Scanner exclusions do not disable the independent built-in safe-mode matcher. See
-[`README.md#security`](../README.md#security) for scanner behavior, configuration
-boundaries, and overrides.
-
-Commit-message generation stops after three invalid responses or 10 total attempts. A generation failure exits before commit or push and preserves staged changes. All emitted messages pass format and quality validation; see [Commit References](../README.md#commit-references) for retry behavior. Bounded unchanged source conditions are included only after the complete diff passes the existing sensitive-content checks.
-
-Overrides are available only for intentional use:
-
-```bash
-# Allow a commit even when the secret scanner reports a finding
-git-ai --allow-secret-commit
-
-# Send detailed diffs to the AI even when sensitive patterns are detected
-git-ai --force-diff
-
-# Skip secret scanning and safe mode, then allow sensitive diff context to reach AI
-git-ai --force
-```
-
-The overrides have distinct boundaries:
-
-- `--allow-secret-commit` only bypasses commit blocking; safe mode remains
-  active when a sensitive pattern is detected.
-- `--force-diff` permits detailed diff transmission but does not bypass the
-  secret guard.
-- `--force` skips Gitleaks scanning, disables safe mode, and
-  permits sensitive diff context to be sent. It is not equivalent to combining
-  `--allow-secret-commit` and `--force-diff`, which still performs the scan.
-
-Important precautions:
-
-- Prefer running Ollama locally or on a trusted network. Review
-  `DEFAULT_OLLAMA_HOST` and clear `FALLBACK_OLLAMA_HOST` when no fallback
-  endpoint is needed.
-- `git-ai.conf` is sourced as shell code. Treat it as trusted code, restrict
-  who can modify it, and never run configuration from an untrusted source.
-- Review changes before committing, especially configuration and environment
-  files.
-- Add `.env` files, credentials, and other sensitive artifacts to `.gitignore`.
-- Use `--no-stage` to limit analysis to changes already reviewed,
-  `--interactive` to review the message, and `--no-push` to separate committing
-  from pushing.
-- `--dry-run` uses a temporary index and does not create a commit, push, or
-  permanent Git-state change. It still contacts Ollama, warms the model, and
-  may run `ollama pull`; add `--no-pull` when installing a model is not allowed.
-- If the secret guard finds a potential secret during dry-run, the script
-  warns the user and continues generating a preview without committing or
-  pushing.
-- `--debug` prints a detailed local trace that can include the full staged
-  diff, prompts, request payloads, complete Ollama responses, repository paths,
-  and command output. Safe mode omits detected sensitive diff content unless
-  `--force-diff` or `--force` is explicitly selected. Treat debug logs as sensitive,
-  sanitize them before sharing, and do not enable debug logging in an
-  untrusted terminal or log collector.
-- `--no-verify` is passed to `git commit --no-verify`, which bypasses
-  `pre-commit` and `commit-msg`; hooks such as `pre-push` still run at their
-  normal stage.
-
-Secret detection is best effort and can produce false positives or false
-negatives. Safe mode and `gitleaks` may also detect different patterns. Do not
-use scanners as a substitute for reviewing staged changes.
+Review the data sent to Ollama, the distinction between Gitleaks and safe mode, and the effects of each override in [Security Controls](../docs/security.md). The [CLI guide](../docs/usage.md) covers dry-run, staging, and hooks.
 
 ## Reporting a Vulnerability
 
@@ -168,14 +37,9 @@ Report vulnerabilities privately through GitHub Security Advisories:
 https://github.com/aibersemi/git-auto-commit-ollama/security/advisories/new
 ```
 
-If private vulnerability reporting is not available, do not open a public
-issue containing exploit details, secrets, or a full proof of concept. Open a
-minimal public issue requesting a private security contact, or contact the
-maintainer through an available private organization channel.
+If private vulnerability reporting is not available, do not open a public issue containing exploit details, secrets, or a full proof of concept. Open a minimal public issue requesting a private security contact, or contact the maintainer through an available private organization channel.
 
-Use public issues only for non-security bugs, such as documentation typos, help
-output errors, or usability problems without confidentiality, integrity, or
-unauthorized-access impact.
+Use public issues only for non-security bugs, such as documentation typos, help output errors, or usability problems without confidentiality, integrity, or unauthorized-access impact.
 
 ## What to Include
 
@@ -183,8 +47,7 @@ Include the following information to help triage:
 
 - The script version from `git-ai --version`.
 - The tested commit hash or branch.
-- The operating system, shell, and versions of `git`, `curl`, `jq`, and
-  `flock`.
+- The operating system, shell, and versions of `git`, `curl`, `jq`, and `flock`.
 - Whether the `gitleaks` and `ollama` CLIs are available.
 - Non-sensitive configuration from `git-ai.conf`.
 - The command that was run.
@@ -195,36 +58,25 @@ Include the following information to help triage:
 
 Do not include:
 
-- Valid secrets, tokens, passwords, private keys, cookies, sessions, or
-  internal credentials.
+- Valid secrets, tokens, passwords, private keys, cookies, sessions, or internal credentials.
 - Private repository diffs that must not be shared.
 - Sensitive internal URLs, hostnames, usernames, or production paths.
 - Payloads that destroy data or perform destructive actions.
 
-Use the temporary-repository smoke test pattern in
-[`CONTRIBUTING.md#testing`](CONTRIBUTING.md#testing).
+Use the [isolated runtime smoke test](../docs/verification.md#isolated-runtime-smoke-test) to prepare a safe reproduction.
 
 ## Scope
 
 The following reports are in scope:
 
-- Detailed diffs or sensitive data are sent to Ollama when safe mode should be
-  active.
-- The Gitleaks integration fails to block a reported token, private key, password, or
-  credential in staged additions.
-- Options such as `--force`, `--force-diff`, or `--allow-secret-commit` become active
-  without an explicit user action.
-- Command injection, argument injection, or unexpected shell evaluation is
-  triggered by a file name, diff, branch, remote, configuration value at use
-  time, or model output.
-- `--dry-run` permanently changes the original index or refs, creates a commit,
-  or pushes; `--no-stage` stages automatically; or `--no-push` pushes.
-- A race condition or lock bypass allows concurrent `git-ai` processes to
-  corrupt Git state in the same repository.
-- Temporary file, lock file, or cleanup handling can damage files outside the
-  intended area.
-- Ollama fallback-host resolution or service-environment reading sends data to
-  an endpoint that was not configured.
+- Detailed diffs or sensitive data are sent to Ollama when safe mode should be active.
+- The Gitleaks integration fails to block a reported token, private key, password, or credential in staged additions.
+- Options such as `--force`, `--force-diff`, or `--allow-secret-commit` become active without an explicit user action.
+- Command injection, argument injection, or unexpected shell evaluation is triggered by a file name, diff, branch, remote, configuration value at use time, or model output.
+- `--dry-run` permanently changes the original index contents, refs, or stored Git objects, creates a commit, or pushes. Automatic staging with `--no-stage` and pushing with `--no-push` are also in scope.
+- A race condition or lock bypass allows concurrent `git-ai` processes to corrupt Git state in the same repository.
+- Temporary file, lock file, or cleanup handling can damage files outside the intended area.
+- Ollama fallback-host resolution or service-environment reading sends data to an endpoint that was not configured.
 - Debug logs, errors, or summaries expose secrets from staged changes.
 - Configuration validation regressions silently change security behavior.
 
@@ -233,31 +85,17 @@ The following reports are in scope:
 The following are generally not treated as project vulnerabilities:
 
 - Commit message quality, model hallucinations, or inaccurate commit subjects.
-- Sensitive diff transmission and secret-scanner bypass explicitly authorized
-  with `--force`, sensitive diff transmission explicitly authorized with
-  `--force-diff`, commits explicitly authorized with `--allow-secret-commit`,
-  or commit-hook bypass explicitly requested with `--no-verify`. Behavior beyond each
-  override's documented boundary remains in scope.
-- Vulnerabilities in Git, Ollama, curl, jq, flock, gitleaks, the shell, the
-  operating system, or third-party AI models.
-- A workstation, repository, or user account already controlled by an attacker
-  before `git-ai` runs.
-- Commands explicitly written in `git-ai.conf`, because the file is
-  intentionally sourced as trusted shell code. Bypassing write permissions or
-  unexpectedly re-evaluating configuration values remains in scope.
-- A repository containing malicious Git hooks when the user chooses to run
-  hooks. `--no-verify` skips `pre-commit` and `commit-msg` but does not disable
-  `pre-push`.
-- Data leakage by a user-configured Ollama endpoint outside this project's
-  control.
-- Social engineering, phishing, spam, brute force, or attacks on maintainer
-  accounts.
-- Denial of service that only consumes local time on very large input without
-  confidentiality or integrity impact.
+- Sensitive diff transmission and secret-scanner bypass explicitly authorized with `--force`, sensitive diff transmission explicitly authorized with `--force-diff`, commits explicitly authorized with `--allow-secret-commit`, or commit-hook bypass explicitly requested with `--no-verify`. Behavior beyond each override's documented boundary remains in scope.
+- Vulnerabilities in Git, Ollama, curl, jq, flock, gitleaks, the shell, the operating system, or third-party AI models.
+- A workstation, repository, or user account already controlled by an attacker before `git-ai` runs.
+- Commands explicitly written in `git-ai.conf`, because the file is intentionally sourced as trusted shell code. Bypassing write permissions or unexpectedly re-evaluating configuration values remains in scope.
+- A repository containing malicious Git hooks when the user chooses to run hooks. `--no-verify` skips `pre-commit` and `commit-msg` but does not disable `pre-push`.
+- Data leakage by a user-configured Ollama endpoint outside this project's control.
+- Social engineering, phishing, spam, brute force, or attacks on maintainer accounts.
+- Denial of service that only consumes local time on very large input without confidentiality or integrity impact.
 - Bounty requests. This project does not currently run a bounty program.
 
-When uncertain, report privately. The maintainer will classify the report as a
-security issue, ordinary bug, or hardening request.
+When uncertain, report privately. The maintainer will classify the report as a security issue, ordinary bug, or hardening request.
 
 ## Disclosure Process
 
@@ -277,40 +115,14 @@ Handling process:
 3. The maintainer determines severity, scope, and affected versions.
 4. A patch is prepared in a private branch or fork when necessary.
 5. The reporter is asked to verify the fix when possible.
-6. After a fix is available, the maintainer publishes an advisory or release
-   note with enough detail to support mitigation.
+6. After a fix is available, the maintainer publishes an advisory or release note with enough detail to support mitigation.
 
-Do not disclose exploit details before a fix is available or before agreeing
-on disclosure timing with the maintainer.
+Do not disclose exploit details before a fix is available or before agreeing on disclosure timing with the maintainer.
 
 ## Security Design Notes
 
-Preserve these principles when changing the project:
+Preserve conservative defaults and explicit override boundaries when changing the [runtime security controls](../docs/security.md). Review endpoint selection, prompt input, and diagnostic output whenever a change touches repository data. Discuss new network calls explicitly before accepting them.
 
-- Do not weaken default protections without a strong technical reason.
-- Risky overrides must require an explicit user action.
-- Keep override boundaries independent: permission to commit must not
-  automatically permit diff transmission, and vice versa.
-- Document every primary or fallback endpoint and network call that can receive
-  repository context.
-- Treat sourced configuration as trusted code while still quoting and
-  validating its values when used.
-- Treat repository contents, including Markdown and `AGENTS.md`, as untrusted
-  change data in AI prompts. Instructions embedded in diffs or analysis
-  responses must not override message-generation rules. Prompt instructions
-  reduce this risk but do not guarantee model behavior. The local Markdown
-  heuristic does not establish semantic relevance or prove that documented
-  work was implemented. Runtime excerpts establish the available implementation
-  evidence; documentation corroborates it. Category checks and rejection
-  patterns reduce misleading themes but cannot establish semantic correctness.
-- Dry-run must isolate Git changes through a temporary index even though
-  network access and automatic model pulls may still occur.
-- Debug output must aid diagnosis without exposing credentials.
-- Keep required dependencies minimal and auditable.
-- Tagged releases must pass shared CI validation before publication. Grant
-  release write access only to the publication job; see the workflow policy in
-  [`README.md#development`](../README.md#development).
-- Discuss new network calls explicitly before accepting them.
+Keep tagged release validation read-only and grant release write access only to publication. See [Repository Automation](../docs/automation.md#releases) for the workflow and [Targeted Regression Checks](../docs/verification.md#targeted-regression-checks) for security verification.
 
-The contribution checklist is in
-[`CONTRIBUTING.md#checklist`](CONTRIBUTING.md#checklist).
+See the [contribution checklist](CONTRIBUTING.md#checklist) before submitting a change.

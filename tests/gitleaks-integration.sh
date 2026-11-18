@@ -152,6 +152,38 @@ GIT_DIR=../.git GIT_WORK_TREE=.. GIT_INDEX_FILE=../../isolated-index GITLEAKS_CO
 rm .gitleaks.toml
 assert_scan src 10 'built-in defaults' github-pat
 
+# Use the real scanner from a subdirectory with a custom object store and split index.
+(
+  unset GIT_INDEX_FILE
+  preview_repo="$test_root/preview repo"
+  git init --quiet "$preview_repo"
+  cd -- "$preview_repo"
+  mkdir -- sub "$test_root/caller:objects"
+  export GIT_OBJECT_DIRECTORY="$test_root/caller:objects"
+  git config core.splitIndex true
+  git config splitIndex.maxPercentChange 0
+  printf 'Already staged content.\n' > sub/base.txt
+  git add -- sub/base.txt
+  preview_index_before=$(git hash-object .git/index)
+  shared_indexes_before=$(sha256sum .git/sharedindex.*)
+  preview_objects_before=$(find "$GIT_OBJECT_DIRECTORY" -type f -print0 | sort -z | xargs -0 sha256sum)
+  printf '%s\n' "$marker" > sub/preview.txt
+  (
+    cd sub
+    DRY_RUN=1
+    trap cleanup_dry_run EXIT
+    setup_dry_run
+    stage_changes 2> "$test_root/isolated-preview.err"
+    [[ "$GIT_INDEX_FILE" != "$preview_repo/.git/index" ]] || fail 'Preview reused the original split index'
+    [[ "$(git show :sub/base.txt)" == 'Already staged content.' ]] || fail 'Preview could not read an existing blob'
+    [[ "${GITLEAKS_SENSITIVE_PATHS[0]:-}" == sub/preview.txt ]] || fail 'Gitleaks could not scan the temporary blob'
+  )
+  [[ "$(git hash-object .git/index)" == "$preview_index_before" ]] || fail 'Preview changed the original split index'
+  [[ "$(sha256sum .git/sharedindex.*)" == "$shared_indexes_before" ]] || fail 'Preview changed the shared index files'
+  [[ "$(find "$GIT_OBJECT_DIRECTORY" -type f -print0 | sort -z | xargs -0 sha256sum)" == "$preview_objects_before" ]] || fail 'Preview changed the caller object database'
+  [[ -z "$(git for-each-ref)" ]] || fail 'Preview changed refs'
+)
+
 [[ "$(git hash-object .git/index)" == "$original_index" ]] || fail 'Original index changed'
 if git rev-parse --verify HEAD >/dev/null 2>&1; then fail 'Test created a commit'; fi
 printf 'All real Gitleaks integration scenarios passed (version %s).\n' "$(gitleaks version)"

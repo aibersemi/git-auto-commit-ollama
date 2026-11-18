@@ -2,112 +2,75 @@
 
 # Git Auto Commit Ollama
 
-[![CI](https://github.com/aibersemi/git-auto-commit-ollama/actions/workflows/ci.yml/badge.svg)](https://github.com/aibersemi/git-auto-commit-ollama/actions/workflows/ci.yml)
-![Bash](https://img.shields.io/badge/Bash-CLI-4EAA25?logo=gnubash&logoColor=white)
-![Ollama](https://img.shields.io/badge/Ollama-local_AI-111827)
-[![Saweria](https://img.shields.io/badge/Support-Saweria-F97316)](https://saweria.co/aibersemi)
+[![CI](https://github.com/aibersemi/git-auto-commit-ollama/actions/workflows/ci.yml/badge.svg)](https://github.com/aibersemi/git-auto-commit-ollama/actions/workflows/ci.yml) ![Bash](https://img.shields.io/badge/Bash-CLI-4EAA25?logo=gnubash&logoColor=white) ![Ollama](https://img.shields.io/badge/Ollama-local_AI-111827) [![Saweria](https://img.shields.io/badge/Support-Saweria-F97316)](https://saweria.co/aibersemi)
 
 </div>
 
-A Bash CLI that generates Git commit messages with a model available on an
-Ollama server.
-
-By default, `git-ai` checks the Ollama endpoint and model, runs `git add -A`,
-scans staged changes, requests an English Conventional Commit message, creates
-the commit, and pushes it. Change context is sent to the configured Ollama
-endpoint, which may run locally or on another network host.
+`git-ai` is a Bash CLI that generates English, scope-free Conventional Commit messages using Ollama. By default it stages repository changes with `git add -A`, scans staged additions with Gitleaks, generates a message, creates the commit, and pushes. Eligible Git change context may reach a local or network Ollama endpoint.
 
 ## Table of Contents
 
 - [Features](#features)
 - [How It Works](#how-it-works)
-- [Commit References](#commit-references)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Dry Run](#dry-run)
-- [Security](#security)
-- [Troubleshooting](#troubleshooting)
-- [Development](#development)
-- [Repository Structure](#repository-structure)
-- [Contributing](#contributing)
+- [Quick Start](#quick-start)
+- [Documentation](#documentation)
+- [Contributing and Support](#contributing-and-support)
 - [Support](#support)
 - [License](#license)
 
 ## Features
 
-- Automatic staging with `git add -A`, interactive staging with `git add -p`,
-  or reuse of the existing index with `--no-stage`.
-- Ollama preflight through `/api/tags`, `/api/ps`, and `/api/chat`, including a
-  fallback host, automatic model pulling, and model warm-up before staging.
-- Scope-free Conventional Commit messages through Ollama `/api/chat`.
-- JSON Schema structured output with plain-text fallback and bounded corrective retries; generation failure stops before committing or pushing.
-- Complete eligible staged diffs in one generation request when the prompt fits
-  the configured character budget, preserving hunk order and both diff sides.
-- On-demand per-file analysis for larger changes, with bounded file/hunk chunks,
-  configurable limits, adaptive concurrency, and one final message synthesis.
-- Adaptive non-AI concurrency for independent read-only context jobs.
-- Prompt prioritization for capabilities, APIs, data integrity, security, and
-  user flows; generated artifacts are treated as supporting context.
-- Combined runtime and informative Markdown references, with full-diff
-  ranking and bounded excerpts of the most informative changed hunks.
-- Required Gitleaks scanning of staged additions to block commits with potential
-  secrets, unless `--force` is explicitly selected.
-- Safe mode that withholds sensitive diff details from prompts unless the user
-  explicitly selects `--force-diff` or `--force`.
-- Push to an existing upstream, or `git push -u` to `origin` or the first
-  remote when the branch has no upstream.
-- Dry-run with a temporary index so staging, commits, and pushes do not
-  permanently change Git state.
-- A per-repository lock that prevents concurrent `git-ai` processes.
-- Script messages, help text, prompts, and generated commit messages in
-  English. Output from Git, Ollama, or other tools uses each tool's own
-  language.
+- **Flexible staging.** Stage all changes, select hunks interactively, or reuse the existing index. [Staging and commit review](docs/usage.md#staging-and-commit-review)
+- **Context-aware generation.** Use complete eligible diffs when they fit the prompt budget, with ranked excerpts and optional per-file analysis for larger changes. [Prompt routing](docs/commit-generation.md#prompt-routing)
+- **Message validation.** Validate plain-text or structured responses against the commit format and request corrections when a response is rejected. [Fallbacks and retries](docs/commit-generation.md#fallbacks-and-retries)
+- **Secret protection.** Gitleaks can block commits with potential secrets, while safe mode limits the diff context sent to Ollama. [Security controls](docs/security.md)
+- **Isolated previews.** Use a temporary index and object database to preview a message while preserving the original index, refs, and stored Git objects. [Dry run](docs/usage.md#dry-run)
+- **Commit and push controls.** Review or edit the message before committing and use `--no-push` to keep the commit local. [CLI options](docs/usage.md#options)
 
 ## How It Works
 
 ```mermaid
 flowchart TD
-  A[Run inside a Git repository] --> B[Acquire repository lock]
-  B --> C{Dry-run?}
-  C -->|yes| D[Copy index to a temporary file]
-  C -->|no| E[Use the real index]
-  D --> F[Validate configuration, dependencies, endpoint, and Ollama model]
-  E --> F
-  F --> G{Staging mode}
-  G -->|default| H[git add -A]
-  G -->|--patch| I[git add -p]
-  G -->|--no-stage| J[Use existing staged changes]
-  H --> K{--force?}
-  I --> K
-  J --> K
-  K -->|yes| L[Select safe references and build context]
-  K -->|no| M[Scan for secrets]
-  M --> L
-  L --> U{Complete eligible diff fits the prompt budget?}
-  U -->|yes| N[Generate and validate the commit message]
-  U -->|no| V[Analyze selected files in bounded chunks when enabled]
-  V --> N
-  N --> O{Dry-run?}
-  O -->|yes| P[Display message without commit or push]
-  O -->|no| Q[git commit]
-  Q --> R{Push enabled?}
-  R -->|yes| S[git push]
-  R -->|no| T[Done]
+  start(["Acquire the lock in a Git working tree"]) --> prepare["Use a temporary index and object database for dry-run"]
+  prepare --> preflight["Check configuration, tools, and Ollama readiness"]
+  preflight --> stage["Stage changes or reuse the index"]
+  stage -->|Staged changes available| secretGuard["Apply the Gitleaks commit policy"]
+  stage -->|No staged changes| noChanges(["Exit before generation"])
+  secretGuard -->|Blocked or scan failed| scanStopped(["Stop before generation"])
+  secretGuard -->|Continue| context["Check safe mode and collect staged context"]
+  context --> fullDiff{"Safe mode off and a complete eligible diff fits?"}
+  fullDiff -->|Yes| complete["Use complete eligible diffs"]
+  fullDiff -->|No| fallback["Use Git metadata and any permitted excerpts or per-file summaries"]
+  complete --> generate["Generate and validate the commit message"]
+  fallback --> generate
+  generate -->|Message validated| preview{"Dry-run?"}
+  generate -->|Retries exhausted| generationFailed(["Stop before commit"])
+  preview -->|Yes| showMessage(["Display the preview"])
+  preview -->|No| review["Review the message if requested"]
+  review -->|Proceed| commit["Create the commit"]
+  review -->|Cancelled| cancelled(["Exit before commit"])
+  commit -->|Success| push{"Push enabled with an upstream or remote?"}
+  push -->|Yes| pushCommit(["Run git push or git push -u"])
+  push -->|No| localCommit(["Keep the commit local"])
 ```
 
-The message uses the scope-free Conventional Commit format:
+The default staging command is `git add -A`. Use `--patch` for `git add -p`. `--no-stage` takes precedence and reuses staged changes. In dry-run, the CLI copies the index if it exists and writes new Git objects to a temporary object database. [Staging](docs/usage.md#staging-and-commit-review) · [Dry run](docs/usage.md#dry-run)
+
+Gitleaks scans staged additions. Findings block regular commits by default. `--dry-run` and `--allow-secret-commit` can proceed after findings, while scan failures stop the run. `--force` skips the scan and disables safe mode. `--force-diff` disables safe mode and retains the Gitleaks guard. [Security overrides](docs/security.md#overrides)
+
+Gitleaks findings and the built-in diff matcher can activate safe mode, which limits the final prompt to Git metadata and any summaries from eligible per-file analyses. The full-diff path requires safe mode to be off and the complete prompt to fit the character budget, including the reserve for corrections. The fallback can analyze eligible files in bounded chunks. [Prompt routing](docs/commit-generation.md#prompt-routing)
+
+The terminal estimates AI progress using the number of staged files and shows 100% once the commit message passes validation. [Terminal output](docs/usage.md#terminal-output)
+
+Generation stops after three invalid responses or ten attempts. Use `--interactive` to accept the generated message, edit it, or cancel the commit. With push enabled, a branch with an upstream uses plain `git push`. A branch without an upstream uses `git push -u` with `origin` or the first listed remote, if available. [Generation retries](docs/commit-generation.md#fallbacks-and-retries) · [Push behavior](docs/usage.md#push-behavior-and-hooks)
+
+The generated message starts with a scope-free Conventional Commit subject.
 
 ```text
 <type>: <summary>
 ```
 
-For exactly one staged file, the message contains only the subject. For more
-than one staged file, the message must contain one blank line followed by one
-to six important bullet points. Accepted types are `build`, `chore`, `ci`,
-`deps`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and
-`test`.
+For exactly one staged file, the message contains only the subject. For more than one staged file, the message must contain one blank line followed by one to six important bullet points. Accepted types are `build`, `chore`, `ci`, `deps`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and `test`.
 
 Paired single-backtick inline code around commands or identifiers is normalized to plain text in both the subject and bullets, for plain-text and structured responses. Unmatched backticks, code fences, other unsupported Markdown, scopes, and invalid bodies still fail validation.
 
@@ -128,692 +91,42 @@ Choose the type that describes the primary change:
 | `style` | Changes code formatting, whitespace, or other non-behavioral style details only. |
 | `test` | Adds, corrects, or improves tests without changing production behavior. |
 
-If dependency, test, documentation, generated artifact, or configuration
-changes only support a more important feature or fix, use `feat` or `fix` for
-the primary change instead of the supporting type.
+If dependency, test, documentation, generated artifact, or configuration changes only support a more important feature or fix, use `feat` or `fix` for the primary change instead of the supporting type.
 
-### Commit References
+## Quick Start
 
-Runtime source establishes implemented behavior, corroborated by informative
-staged `.md` changes. The tool reads the index, including its temporary
-dry-run index; `--no-stage` ignores unstaged changes. Extension matching is
-case-insensitive. Documentation, tests, CI, and generated artifacts are
-classified before runtime path keywords: `docs/security.md` and recovery
-tests do not imply a functional security change. Templates, stylesheets,
-source code, and runtime configuration can be primary runtime changes.
-
-The default strategy sends all complete eligible file diffs together when the
-system instructions, Git metadata, and user prompt fit `MAX_PROMPT_CHARS`, with
-4,096 characters reserved for corrective feedback. This path preserves file
-headers, hunk order, additions, removals, and unchanged context. It skips
-per-file AI requests and is not limited by `TOP_FILES`, `MAX_HUNK_CHARS`, or
-`FILE_ANALYSIS_LIMIT`. The budget counts characters, not model tokens; choose
-a value that leaves room for output within the selected model's context.
-
-When the complete input does not fit, or safe mode is active, generation uses
-the ranked excerpts described below and optional per-file analysis. Analysis
-reads complete eligible diffs from the same index. Each worker owns one file
-and splits it at hunk boundaries; oversized hunks split at line boundaries,
-with exceptionally long lines split at Unicode character boundaries. Each
-chunk repeats its file and hunk headers as needed. Chunk summaries are combined
-per file before the final commit-message synthesis. A failed or incomplete
-file analysis falls back to its safe excerpt. `--no-file-analysis` and
-`FILE_ANALYSIS_LIMIT=0` disable these fallback requests while preserving the
-complete-diff path and safe excerpts. Inputs exceeding the configured budget
-are rejected before contacting Ollama.
-
-The Markdown heuristic evaluates the complete eligible diff before excerpt
-truncation. It ignores Git headers, empty lines, Markdown headings and
-formatting markers, and lines containing only a URL or link. After case,
-punctuation, and whitespace normalization, Markdown qualifies with at least
-12 added words and 8 net-new word occurrences. Net-new occurrences subtract
-removed occurrences per word. Qualified Markdown is ordered by net-new
-count; runtime files use changed-line count. Path breaks score ties.
-
-When both runtime and informative Markdown are available, the first two
-references are one runtime file and one Markdown file (`mixed` mode).
-Remaining runtime files follow, then remaining informative Markdown, then
-supporting files. `TOP_FILES=1` selects runtime. Per-file analysis follows
-the same order within `FILE_ANALYSIS_LIMIT`. Documentation-only work still
-uses short edits, deletions, and renames when no Markdown qualifies. With
-no eligible excerpts, generation uses Git metadata.
-
-For fallback excerpts, complete hunks are ranked by Markdown text changes or
-runtime changed-line count. Up to four hunks are compacted by placing additions before removals and retaining up to three unchanged source conditions or return statements. Other unchanged context is removed. Context lines keep their space prefix so existing alternatives remain distinguishable from new behavior. Long lines and
-excerpts are bounded without splitting Unicode characters. Paired prose
-removes shared prefixes/suffixes with a small context margin; long source
-hunks sample changed lines across their beginning, middle, and end. Primary context
-shares the existing total budget across selected files, including labels,
-so supporting content cannot consume the space reserved for runtime.
-
-Generated or ephemeral paths, binary diffs, oversized staged blobs, and
-detected sensitive files are excluded. The complete diff is checked for
-sensitive patterns before any ranking or truncation. Safe mode withholds
-primary diffs and permits only eligible safe per-file summaries. If runtime
-changes have no eligible source excerpts, output reports limited context;
-the prompt must not infer unsupported behavior from supporting documents.
-`--no-file-analysis` preserves direct excerpts, which also remain available
-when analysis fails or returns a generic summary.
-
-All staged files remain in classification and metadata, subject to display
-limits. Documentation-only work uses `docs`; tests without runtime changes
-use `test`; CI without runtime changes uses `ci` and takes priority over
-supporting tests. With runtime changes, the head and first bullet must explain
-implemented behavior, with documentation, tests, and CI afterward. Category
-checks and language patterns reject supporting themes and request a
-corrective retry, including contribution/security guidelines or requirements
-to run a regression suite.
-
-Runtime rules about test credentials or fixture inputs remain runtime work; adding tests or maintaining test fixtures is supporting work. Rejections identify the commit type, subject, or first bullet, with a diagnostic code and the offending text when applicable. Per-file analysis compares accepted inputs before and after validation changes and treats unchanged conditions as existing behavior.
-
-Generation has a total limit of 10 attempts and a separate limit of three invalid commit-message responses, including format and quality failures. Unavailable requests consume the total attempt budget without consuming the invalid-response budget. JSON Schema composition failures consume the invalid-response budget and try plain text within the same attempt when that budget permits. Format rejections display the specific validation code and reason without requiring debug mode, and corrective prompts include the rejected response and reason while preserving the response format required by the active system prompt. Exhausting either budget exits with an error before commit or push and preserves staged changes; every emitted commit message must pass validation.
-
-Ranking measures changed text, not semantic relevance or implementation
-correctness. Classification and language checks cannot prove the accuracy
-of a generated message. Prompts treat repository contents, including
-`AGENTS.md`, as change data rather than instructions and describe completed
-work only. Review the message against the actual changes. Reference selection
-does not require an additional AI request.
-
-The default limit for the entire message is 65,536 characters and can be
-changed with `MAX_COMMIT_MESSAGE_LENGTH`. The script does not enforce a
-72-character or 120-character subject limit.
-
-## Prerequisites
-
-The runtime targets Linux with Bash and GNU userland. These commands are
-checked explicitly at startup:
-
-- `git`
-- `curl`
-- `jq`
-- `flock` from the `util-linux` package
-- `gitleaks` with support for `git --pre-commit --staged`, JSON reports, and
-  `--exit-code` (validated with version `8.30.1`)
-
-The script also uses standard utilities such as `grep` with PCRE support,
-`sed`, `head`, `sort`, `mktemp`, `date`, and `wc`. An Ollama server must be
-reachable from the host running the CLI.
-
-Optional dependencies:
-
-- `make` and `sudo`: Required by the `Makefile` install and uninstall targets.
-- `ollama`: Required only for automatic pulling when `DEFAULT_MODEL` is
-  missing from the server.
-- `shellcheck`: Bash linting during development and in CI.
-- `tput`: Terminal dimensions for animated loading rows; when unavailable,
-  dimensions use `COLUMNS`/`LINES` or fall back to 80 columns and 24 rows.
-
-Example runtime and development installation on Ubuntu or Debian:
+Install the [runtime prerequisites](docs/installation.md#prerequisites) and make the configured model available on a [trusted Ollama endpoint](docs/configuration.md#ollama-host-resolution). Clone this project, then change to the Git repository whose changes you want to preview.
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y bash git curl jq util-linux coreutils grep sed make shellcheck
+/path/to/git-auto-commit-ollama/git-ai.sh --dry-run --no-pull
 ```
 
-Install Gitleaks from the [official releases](https://github.com/gitleaks/gitleaks/releases)
-or follow its [installation instructions](https://github.com/gitleaks/gitleaks#installing).
-Distribution packages may lag behind the supported command interface. Confirm
-`gitleaks version` and `gitleaks git --help` before running `git-ai`. Gitleaks
-is required at startup even when `--force` skips scanning.
+The preview preserves the original index, refs, and stored Git objects, skips commit and push, and still contacts Ollama. See [Dry Run](docs/usage.md#dry-run) for details. Once the command is [installed](docs/installation.md#install-the-git-ai-command), use `git-ai --interactive --no-push` to review the message before committing locally.
 
-For a local Ollama instance, start the service and install the configured
-default model:
+## Documentation
 
-```bash
-ollama serve
-ollama pull gemma4:e4b
-```
-
-If Ollama runs on another host and the model is already available there, the
-`ollama` CLI does not need to be installed locally.
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone https://github.com/aibersemi/git-auto-commit-ollama.git
-cd git-auto-commit-ollama
-```
-
-Run the script directly without installing it:
-
-```bash
-./git-ai.sh --version
-./git-ai.sh --help
-```
-
-To create a `git-ai` command in `/usr/local/bin`:
-
-```bash
-make install
-```
-
-The `install` target uses `sudo` and creates `git-ai` and `git-ai.conf`
-symlinks in `$(PREFIX)/bin`. Both symlinks point to the current repository
-checkout, so the cloned directory must remain in the same location.
-
-Use `PREFIX` to install elsewhere:
-
-```bash
-make install PREFIX="/opt/git-ai"
-```
-
-Uninstall with the same `PREFIX` used during installation:
-
-```bash
-# Default installation
-make uninstall
-
-# Installation with a custom PREFIX
-make uninstall PREFIX="/opt/git-ai"
-```
-
-## Configuration
-
-The primary configuration is in [`git-ai.conf`](git-ai.conf). The script first
-looks for `git-ai.conf` next to the executable path that was invoked. If the
-executable is a symlink and no adjacent configuration exists, it looks next to
-the resolved script target. Changes to the checkout configuration therefore
-remain effective when only the `git-ai` symlink is invoked. `make install`
-still creates both symlinks in the same destination directory.
-
-The configuration file is sourced as shell code rather than parsed as a data
-format. Treat it as trusted code and do not store secrets in it.
-
-Current `git-ai.conf` values:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `DEFAULT_MODEL` | `gemma4:e4b` | Ollama model used unless `-m/--model` temporarily overrides it. |
-| `DEFAULT_OLLAMA_HOST` | `http://127.0.0.1:11434` | Primary Ollama host. |
-| `FALLBACK_OLLAMA_HOST` | `http://10.50.0.2:11434` | Fallback host when the primary `/api/tags` request fails. Clear it when unused. |
-| `DEFAULT_DO_PUSH` | `1` | Push automatically after committing. |
-| `AI_TEMPERATURE` | `0.2` | Model request temperature. |
-| `AI_THINK` | `false` | `think` value: `false`, `true`, `low`, `medium`, or `high`. |
-| `AI_NUM_PREDICT` | `512` | Output token limit for the primary request. |
-| `AI_MAX_NUM_PREDICT` | `2048` | Upper `num_predict` limit for primary and per-file requests. |
-| `USE_STRUCTURED_OUTPUT` | `0` | Use JSON Schema (`1`) or plain text (`0`). Disabled by default because `gemma4:e4b` does not consistently follow structured output. |
-| `MAX_COMMIT_MESSAGE_LENGTH` | `65536` | Maximum length of the entire commit message. |
-| `FILE_ANALYSIS_LIMIT` | `6` | Maximum files selected for fallback analysis; `0` disables those requests. Complete-diff generation skips analysis automatically. |
-| `FILE_ANALYSIS_BATCH_SIZE` | `1` | Compatibility option accepting a positive integer; requests always contain one file, including when this value is larger than `1`. |
-| `FILE_ANALYSIS_PARALLELISM` | `auto` | Maximum concurrent per-file analysis requests. `auto` reads `OLLAMA_NUM_PARALLEL` from a local systemd service, then the local process environment, and uses capacity `1` when neither provides a valid value. |
-| `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `192` | Output-token budget allocated to each file analysis. |
-| `FILE_ANALYSIS_MAX_BLOB_BYTES` | `1048576` | Maximum staged blob size eligible for commit reference excerpts and per-file AI analysis. |
-| `NON_AI_PARALLELISM` | `auto` | Maximum workers for independent local read-only jobs. `auto` uses the logical CPU capacity available to the process. |
-| `OLLAMA_PARALLELISM_HINT` | empty | Optional positive-integer capacity hint when a remote, containerized, or custom Ollama service cannot be inspected. |
-| `MAX_PROMPT_CHARS` | `48000` | Combined system/user input budget, from `16384` to `65536` characters. Initial generation and chunk planning reserve `4096` characters for corrections. This is not a tokenizer or an automatic model context setting. |
-| `MAX_FILES_LIST` | `20` | Entry limit for file status and Git statistics context. |
-| `TOP_FILES` | `4` | Maximum reference files in fallback hunk excerpts. |
-| `MAX_HUNK_CHARS` | `1000` | Per-file fallback excerpt character limit. |
-| `MAX_TOTAL_HUNKS_CHARS` | `3500` | Total fallback excerpt character limit in the primary prompt. |
-
-Ollama host resolution follows this order:
-
-1. Use `DEFAULT_OLLAMA_HOST` when it is not empty.
-2. Otherwise, read `OLLAMA_HOST` from the active `ollama.service` environment,
-   with `/etc/systemd/system/ollama.service` as a fallback.
-3. Fall back to `http://localhost:11434`.
-
-`FALLBACK_OLLAMA_HOST` is attempted only when the primary `/api/tags` check
-fails. The active host is then used for model checks, warm-up, diff analysis,
-and commit message generation.
-
-Parallelism is a capacity, not a request target. Local non-AI jobs use at most
-`NON_AI_PARALLELISM` workers and never overlap staging, the secret-policy
-decision, commit creation, or pushing. Per-file AI analysis uses at most the
-resolved Ollama capacity and the number of selected files. Selected files are
-sent in separate requests when fallback analysis is needed. With capacity `4`,
-three files use three workers in parallel; six files start four workers and
-fill freed worker slots with the remaining files. A worker processes its file's
-chunks in order, then consolidates multiple chunk summaries. File completion
-is reported once; the final request count includes chunk and consolidation
-requests. With effective capacity `1`, each request runs in the
-foreground and finishes before the next starts; only the loading renderer
-runs in the background. One request per file adds request overhead but allows
-incremental file progress. Terminal output shows the detected
-capacity and its source, active workers, and a separate animated row for each
-active file. Capacity is resolved after the active endpoint is selected.
-A numeric `FILE_ANALYSIS_PARALLELISM` takes precedence over
-`OLLAMA_PARALLELISM_HINT`, local service detection, the local process
-environment, and the conservative fallback, in that order. Completed results
-retain reference order in the final prompt.
-Ollama does not expose its parallelism setting through its public API, so
-remote endpoints should set `OLLAMA_PARALLELISM_HINT` or use a numeric
-`FILE_ANALYSIS_PARALLELISM`.
-
-The terminal progress bar is a simulated estimate, marked `est.` while AI work
-is running. It starts at `0%`, advances by one point every 100 milliseconds,
-and stops at `95%` while waiting. Starting or completing a request does not jump
-the percentage. The same clock continues from per-file analysis into final
-commit-message generation and across retries, so changing phases never resets
-the bar. The file counter advances once for each completed file, from `0/6`
-through `1/6`, `2/6`, and finally `6/6` for six selected files. Result lines
-retain `[n/total]` counters even when responses finish together or out of order.
-Failed or incomplete responses also advance the counter once and are marked
-`(local fallback)`. Active files retain separate animated rows. Progress reaches
-`100%` only after the final commit message is available. The spinner and
-elapsed time continue updating at the waiting limit. Ollama responses are not
-streamed, so the percentage improves visual feedback rather than measuring
-model completion. Non-TTY output prints phase statuses and numbered file
-results without animated frames or terminal control sequences.
-
-Model readiness checks, built-in sensitive-pattern scanning, safe reference selection, and Git context collection also display phase statuses, with animated spinners in a terminal. Sensitive assignments are matched from identifier boundaries so long encoded lines in generated files do not repeatedly rescan every character; the complete line remains checked, including credentials after long values.
-
-Additional environment variables:
-
-| Variable | Purpose |
+| Guide | Contents |
 | --- | --- |
-| `NO_COLOR` | Disable color when non-empty; the TTY spinner remains active. |
-| `EDITOR` | Editor for the `e` choice in `--interactive`; defaults to `vi`. |
+| [Installation](docs/installation.md) | Linux prerequisites, Ollama setup, direct execution, install, and uninstall. |
+| [CLI Usage](docs/usage.md) | Commands, flags, staging, dry-run, message review, and push behavior. |
+| [Configuration](docs/configuration.md) | Config file precedence, defaults, Ollama endpoints, and worker capacity. |
+| [Commit Message Generation](docs/commit-generation.md) | Reference selection, prompt budgets, file analysis, message format, and retries. |
+| [Security](docs/security.md) | Data sent to Ollama, Gitleaks, safe mode, overrides, and debug output. |
+| [Troubleshooting](docs/troubleshooting.md) | Diagnose installation, Ollama, staging, scanner, generation, and Git failures. |
+| [Architecture](docs/architecture.md) | Runtime flow, components, integration boundaries, and documentation ownership. |
+| [Verification](docs/verification.md) | Documentation checks, Bash regression suites, and isolated smoke tests. |
+| [Repository Automation](docs/automation.md) | CI, release validation, workflow permissions, and stale issue handling. |
 
-## Usage
+## Contributing and Support
 
-Run the command inside a Git repository with changes:
-
-```bash
-git-ai
-```
-
-The default workflow:
-
-1. Validate the repository, configuration, dependencies, Ollama endpoint, and
-   model.
-2. Run `git add -A`.
-3. Scan staged changes for potential secrets.
-4. Generate and validate a commit message.
-5. Run `git commit`.
-6. Run `git push` when `DEFAULT_DO_PUSH=1`.
-
-Example workflows:
-
-```bash
-# Commit without pushing
-git-ai --no-push
-
-# Stage interactively
-git-ai --patch
-
-# Confirm or edit the message before committing
-git-ai --interactive
-
-# Use changes that are already staged
-git add git-ai.sh git-ai.conf
-git-ai --no-stage
-
-# Preview without permanent Git changes
-git-ai --dry-run --no-push
-
-# Preview with a temporary model override
-git-ai --model gemma4:e4b --dry-run
-
-# Display Git status without the Ollama preflight
-git-ai --status
-```
-
-Available options:
-
-| Option | Behavior |
-| --- | --- |
-| `-h`, `--help` | Display help. |
-| `-v`, `--version` | Display the script version. |
-| `-s`, `--status` | Run `git status` and exit. |
-| `-n`, `--no-push` | Do not push after committing. |
-| `-m MODEL`, `--model MODEL` | Temporarily use the selected Ollama model for this invocation without changing `git-ai.conf`. `--model=MODEL` is also supported. |
-| `-p`, `--patch` | Use `git add -p` unless `--no-stage` is also selected. |
-| `-i`, `--interactive` | Display the message and offer to continue, cancel, or edit before committing. |
-| `--no-stage` | Use existing staged changes without automatic staging. |
-| `-d`, `--dry-run` | Use a temporary index and skip the commit and push. |
-| `--debug` | Display a detailed diagnostic trace, including runtime configuration, relevant commands and outputs, the full non-sensitive staged diff, complete prompts and request payloads, complete Ollama responses, HTTP metadata, and validation reasons. Safe mode omits sensitive diff content unless `--force-diff` or `--force` is explicitly selected. |
-| `--force-diff` | Send detailed diffs to Ollama even when sensitive patterns are detected. |
-| `-f`, `--force` | High-risk override: skip Gitleaks scanning, disable safe mode, and allow sensitive diff context to reach Ollama. |
-| `-a`, `--allow-secret-commit` | Allow a commit when the secret guard finds a potential secret. |
-| `--no-file-analysis` | Disable fallback per-file AI analysis; complete eligible diffs or safe excerpts remain available. |
-| `--file-analysis-limit N` | Limit analyzed files; accepts a non-negative integer. |
-| `--file-analysis-batch-size N` | Compatibility option; accepts integers of at least `1`, while effective request size remains one file. |
-| `--file-analysis-parallelism N\|auto` | Set concurrent file-analysis request capacity or detect it from a local Ollama service. |
-| `--non-ai-parallelism N\|auto` | Set local worker capacity or use the available logical CPU count. |
-| `--no-structured` | Skip JSON Schema and use plain text, including when `USE_STRUCTURED_OUTPUT=1`. Without this option, a structured response containing plain commit text is retried as plain text; if still invalid, the request falls back to plain text within the same attempt. |
-| `--no-pull` | Fail when the model is unavailable without running `ollama pull`. |
-| `--no-banner` | Hide the startup banner. |
-| `--no-verify` | Run `git commit --no-verify`; pre-push hooks still run during push. |
-
-Use `DEFAULT_MODEL` in `git-ai.conf` for the persistent default. A command-line
-`-m/--model` value has priority only for the current invocation and is used for
-model availability checks, optional pulling, warm-up, analysis, and commit
-message generation.
-
-## Dry Run
-
-`--dry-run` copies the Git index to a temporary file and performs staging and
-analysis against that copy. It does not change the original index, create a
-commit, or push. The temporary index file and repository lock are removed when
-the process exits.
-
-Dry-run is not an offline mode. Preflight and generation requests still contact
-Ollama, model warm-up still runs, and a missing model may be pulled when the
-`ollama` CLI is available. Add `--no-pull` when a preview must not install a
-new model:
-
-```bash
-git-ai --dry-run --no-push --no-pull
-```
-
-If the secret guard finds a potential secret during dry-run, the script warns
-the user and continues generating a preview without committing or pushing.
-
-## Security
-
-Context sent to Ollama may include file names, statuses, statistics, Git
-summaries, diff excerpts, and per-file analysis requests. Use a local or trusted
-network endpoint, and review `DEFAULT_OLLAMA_HOST` and
-`FALLBACK_OLLAMA_HOST` before running the tool on a sensitive repository.
-
-Available protections:
-
-- Gitleaks is the sole scanner that determines commit blocking. It scans
-  staged additions with `gitleaks git --pre-commit --staged --redact`, using
-  JSON reports and a dedicated findings exit code. Findings display only the
-  file, line number, and rule ID. Reports are held in a private temporary
-  directory and removed after processing; raw scanner logs are not printed,
-  including with `--debug`.
-- A missing Gitleaks executable stops startup. Scanner errors, unsupported
-  flags, invalid configuration, or missing/invalid reports stop the run before
-  generation, commit, and push. `--dry-run`, `--allow-secret-commit`, and
-  `--force-diff` cannot bypass a failed scan. `--force` explicitly skips scanning.
-- Gitleaks runs from the root of the repository being scanned, including when
-  `git-ai` is invoked from a subdirectory. It reads that root's `.gitleaks.toml`
-  and `.gitleaksignore`; nested copies do not replace the root policy.
-  Configuration includes such as `[extend].path` resolve from the repo root.
-- Configuration priority is `GITLEAKS_CONFIG` (file), then
-  `GITLEAKS_CONFIG_TOML` (inline TOML), then the repo root's `.gitleaks.toml`,
-  then Gitleaks defaults. Relative `GITLEAKS_CONFIG` paths remain relative to
-  the directory where `git-ai` was invoked. Relative Git index overrides also
-  retain their original meaning. Configuration-source messages in `--debug`
-  identify the source without dumping file or inline TOML contents.
-- Scanner configuration and ignore files are read from the working tree,
-  including with `--no-stage`; staged changes remain the scan target. Review
-  rules, `.gitleaksignore`, and `gitleaks:allow` exclusions because they affect
-  commit blocking. Invalid selected configurations stop scanning without
-  falling back to another source. Gitleaks defaults may not detect generic
-  passwords that the former built-in commit guard detected; use reviewed
-  custom rules when those patterns must block commits.
-- The built-in path-aware matcher protects AI context and does not independently
-  block commits. The matching rules below describe this safe-mode matcher;
-  its exemptions do not suppress Gitleaks findings. Files flagged by Gitleaks
-  also activate safe mode and are excluded from references and per-file analysis.
-  In Python and JavaScript/TypeScript files, unquoted function calls, environment lookups,
-  and variable/member references are treated as expressions rather than
-  credential literals. Quoted literals and unquoted configuration values
-  remain checked at the existing 12-character threshold. Unknown file types
-  receive no expression exemptions.
-  Logical reference chains using `||` or `&&`, such as
-  `env.POSTGRES_PASSWORD || ''`, are also source expressions. Each remaining
-  operand is checked, so credential literals in fallbacks still trigger
-  safe mode, even after empty strings or placeholder operands.
-  Quoted expression text and configuration values receive no such exemption.
-  Quoted names used as conditional branches, such as environment variable
-  labels in ternary expressions, are not treated as property assignments.
-  Placeholder exemptions apply to each value, not the whole line. Provider
-  token and private-key signatures take precedence over all exemptions.
-  Markdown (`.md`/`.mdx`) also applies source rules inside fenced code blocks
-  explicitly labeled Python, JavaScript, or TypeScript (including `py`, `js`,
-  `ts`, `jsx`, `tsx`, `mjs`, `cjs`, `mts`, and `cts`). Backtick and tilde fences
-  are supported. The scanner reads complete staged Markdown diff context
-  locally to recover fences outside edited hunks and tracks the old and new
-  versions separately. AI excerpts retain their existing size limits.
-  Prose, unlabeled fences, and configuration/shell fences remain conservative;
-  credential literals and provider/private-key signatures remain scanned
-  inside source examples. Test-only fixture exemptions do not apply to Markdown.
-  Complete quoted source literals can also be placeholders when
-  every hyphen/underscore-separated word belongs to a small placeholder
-  vocabulary, includes a credential noun such as `key`, `token`, or
-  `credential`, and either contains `synthetic`/`sintetis` or starts with
-  `test`/`testing`/`tests`. The vocabulary includes `private`, `public`, and
-  `auth`, covering labels such as `test-private-key`, `test-auth-key`, and
-  `synthetic-api-key-for-tests`. A test suffix alone, arbitrary words, and
-  random or numeric suffixes do not qualify. The exact OAuth example label
-  `client-secret` is also a source placeholder. These exemptions do not apply to configuration values,
-  unknown file types, unterminated strings, or concatenated expressions.
-- Conventional Python and JavaScript/TypeScript test paths also recognize
-  complete quoted fixture labels such as `test-google-token` and
-  `RegressionPassword123!`. Token labels start with `test`, `testing`, or
-  `tests`, followed by `google`, `github`, or `oauth` and `token`, optionally
-  preceded by `access`, `auth`, or `refresh`; words use hyphens or underscores.
-  Password labels start with `test` or `regression`, followed by `password`
-  and the exact suffix `123`, with optional hyphens/underscores between words
-  and an optional final `!`. Password lifecycle labels also qualify when they
-  consist of `existing`, `previous`, or `new`, an optional `private` word,
-  and `password`, separated by hyphens or underscores, such as
-  `existing-private-password`. Matching is case-insensitive. These patterns
-  apply only to source under `test/`, `tests/`, or `__tests__/`, Python
-  `test_*.py`/`*_test.py` files (including `.pyi`), and JavaScript/TypeScript
-  `*.test.*`/`*.spec.*` files. Other values in test files remain scanned.
-  Production source, configuration files, arbitrary suffixes, unterminated
-  strings, and concatenations remain protected. Full-diff checks require
-  both paths of a rename to qualify. Provider/private-key signatures and
-  independent `gitleaks` findings still take precedence.
-- Complete quoted `*_SALT` literals in Python and JavaScript/TypeScript can represent public HMAC/signing namespaces, such as `PASSWORD_RESET_OTP_SALT` with the value `accounts.customer-password-reset-otp`. The value must be a dotted namespace of alphabetic words separated by hyphens or underscores, ending with the variable name without `_SALT` at a dot/hyphen/underscore boundary; hyphens and underscores are equivalent for this comparison. Arbitrary salt values, other credential names, configuration files, unterminated strings, and concatenations do not receive this exemption. Lint suppression comments do not affect scanning. Provider and private-key signatures still take precedence, and `gitleaks` findings remain independent.
-- During a normal run, a secret finding cancels the commit.
-  `--allow-secret-commit` only bypasses that cancellation.
-- Safe mode removes detailed diffs from the primary prompt and skips sensitive
-  files during per-file analysis. Git metadata and diffs from other files not
-  detected as sensitive may still be sent.
-- Commit reference excerpts and per-file AI analysis exclude generated and
-  ephemeral paths, binary diffs, and staged blobs larger than
-  `FILE_ANALYSIS_MAX_BLOB_BYTES`. The primary prompt still contains bounded
-  Git metadata for the overall change.
-- `--allow-secret-commit` does not disable safe mode. Use `--force-diff`
-  separately only when sending a sensitive diff is intentional.
-- `--force-diff` does not allow a commit blocked by the secret guard.
-- `--force` skips secret scanning, disables safe mode, and permits sensitive
-  diff context to be sent to Ollama. It is not equivalent to combining
-  `--allow-secret-commit` and `--force-diff`, which still performs the scan.
-- `--no-push`, `--no-stage`, and `--dry-run` each protect a different Git
-  operation boundary and are not interchangeable.
-
-To customize a repository's scanner while retaining Gitleaks default rules,
-start its root `.gitleaks.toml` with:
-
-```toml
-[extend]
-useDefault = true
-```
-
-Add custom rules or narrow allowlists to that file. A custom configuration does
-not automatically inherit default rules. Scanner exclusions do not disable the
-independent built-in safe-mode matcher used to protect AI context.
-
-Secret detection is best effort and may produce false positives or false
-negatives. Do not stage credentials, private keys, tokens, or environment files
-that must remain private.
-
-See the [Security Policy](.github/SECURITY.md) for vulnerability reporting and
-detailed scope.
-
-## Troubleshooting
-
-| Problem | Common cause | Solution |
-| --- | --- | --- |
-| `Ollama is unavailable ...` | The service is stopped, the host is wrong, or neither host is reachable. | Start or check Ollama and review `DEFAULT_OLLAMA_HOST` and `FALLBACK_OLLAMA_HOST`. |
-| `DEFAULT_MODEL ... was not found` | The model is missing from the active host. | Pull the model on the server, install the `ollama` CLI for automatic pulling, or change `DEFAULT_MODEL`. |
-| `Failed to load and verify model ...` | The model is listed, but the `/api/chat` readiness request failed or timed out. | Check Ollama logs, server resources, the model name, and connectivity to the active host. |
-| `--no-stage ... there are no staged changes` | The index contains no changes. | Run `git add` first or remove `--no-stage`. |
-| Commit canceled because of a potential secret | Gitleaks found a sensitive pattern in staged additions. | Remove the credential; use `--allow-secret-commit` only to bypass a reviewed finding. `--force-diff` only affects AI context, while `--force` skips scanning entirely. |
-| Gitleaks missing or scan failed | Required executable unavailable, incompatible flags, invalid configuration, or an invalid/missing JSON report. | Install a compatible Gitleaks release and review scanner configuration. Finding overrides do not bypass scanner failures. |
-| Commit hook failed | `pre-commit` or `commit-msg` rejected the commit. | Fix the hook finding; use `--no-verify` only when intentionally bypassing those commit hooks. |
-| Pre-push hook failed | The hook was run by `git push`. | Fix the hook or use a separate push workflow; `git-ai --no-verify` is not forwarded to `git push`. |
-| No remote exists | The repository has no remote. | The script skips the push; add a remote when pushing is required. |
-| `git-ai` disappeared after moving the checkout | Installed symlinks still point to the old clone location. | Restore the checkout to its original location or reinstall from the new location. |
-| Changes to `git-ai.conf` are ignored | The `git-ai` command and configuration come from different installations or checkouts. | Run `git-ai --help` to see the active configuration path, then inspect the symlink with `readlink -f "$(command -v git-ai)"`. |
-| Output shows `Retry` | The Ollama request failed or the message failed format or quality validation. | Read the preceding rejection code and reason or availability message; use `--debug` for the complete request trace. Format and quality feedback send the rejected candidate and reason back to the model. Generation stops after three invalid responses or 10 total attempts, preserving staged changes without commit/push. Retry delays increase by one second, capped at 10 seconds. See [Commit References](#commit-references) for validation and retry behavior. |
-
-Use `git-ai --debug` to inspect the active configuration and endpoint, relevant
-Git and curl commands, command output, the full staged diff, complete prompts
-and Ollama responses, HTTP timing, retries, validation reasons, and token
-usage. Debug output can contain private source code, paths, repository metadata,
-and model-generated text. Safe mode omits detected sensitive diff content, but
-secret detection is best effort. Treat debug logs as sensitive and sanitize
-them before storing or sharing. `--force-diff` explicitly permits the full diff
-to appear in both prompts and debug output; `--force` does the same while also
-skipping secret scanning.
-
-## Development
-
-Basic validation:
-
-```bash
-bash -n git-ai.sh
-shellcheck git-ai.sh
-./git-ai.sh --help >/tmp/git-ai-help.txt
-bash -n tests/markdown-references.sh
-shellcheck tests/markdown-references.sh
-bash tests/markdown-references.sh
-bash -n tests/secret-scanning.sh
-shellcheck tests/secret-scanning.sh
-bash tests/secret-scanning.sh
-bash -n tests/gitleaks-integration.sh
-shellcheck tests/gitleaks-integration.sh
-bash tests/gitleaks-integration.sh
-```
-
-The [CI workflow](.github/workflows/ci.yml) runs these checks and `actionlint`
-on pushes to `main`, pull requests, and manual `workflow_dispatch` runs. It is
-also reusable through `workflow_call` for release validation. The Markdown
-reference and secret scanning regression suites use temporary local clones,
-isolated indexes, and mocked Ollama responses. They create no new commits,
-perform no pushes, and require no active Ollama endpoint. The secret scanning
-suite also mocks Gitleaks and verifies blocking, scanner failures, safe previews,
-expression/placeholder handling, and protection of removed/context lines.
-The suite also checks long generated lines under a five-second deadline, including credentials beyond 100,000 characters and long identifier names.
-The Gitleaks integration suite requires the installed binary and verifies real
-staged scans, temporary indexes, redaction, configuration precedence from root
-and subdirectories, relative overrides, includes, ignore files, and invalid
-configuration in an isolated repository without Ollama, commits, or pushes.
-
-GitHub Actions workflows use `ubuntu-24.04` explicitly to avoid automatic
-operating-system migrations through `ubuntu-latest`. Validation uses
-`actions/checkout` v7.0.1 with the Node.js 24 runtime, pinned to a full commit
-SHA, without persisting Git credentials. CI installs actionlint v1.7.12 and
-Gitleaks v8.30.1 with pinned SHA-256 checksums. Keep action references pinned
-when upgrading, and validate a new runner version separately before changing
-the shared baseline. For workflow changes, install
-[actionlint](https://github.com/rhysd/actionlint/blob/main/docs/install.md), run
-`actionlint` locally, and verify the resulting CI run on GitHub. It is a
-development tool and is not required to run `git-ai`.
-
-CI jobs have a 15-minute timeout. New branch or pull-request runs cancel older
-runs for the same workflow and ref; tag validation runs are not cancelled by
-this policy. Release runs use a separate concurrency group per tag with
-cancellation disabled.
-
-The [Release workflow](.github/workflows/release.yml) accepts stable tags in
-`vMAJOR.MINOR.PATCH` format, such as `v1.5.2`, without leading zeros or suffixes.
-Other `v*` tags trigger the workflow but fail tag validation. After validating
-the tag, Release calls the same CI workflow against the tagged commit and
-publishes only when every check passes. Validation receives read-only
-repository access; only the publication job receives `contents: write`.
-Publication uses the existing remote tag with `gh release create --verify-tag`.
-Tag validation and publication each have a 5-minute timeout.
-
-The [Stale workflow](.github/workflows/stale.yml) uses `actions/stale` v11.0.0
-with Node.js 24 and a pinned SHA. It runs daily, with a 10-minute timeout and
-overlapping runs serialized. Issues and pull requests are marked stale after
-60 days without activity. Issues may close after 7 additional days; pull
-requests remain open for maintainer review. The `bug`, `enhancement`, and
-`security` labels exempt both issues and pull requests, and draft pull requests
-are exempt. Label exemptions apply when the corresponding label is assigned.
-
-For a runtime smoke test, use a temporary repository and dry-run. This command
-still requires an active Ollama endpoint and an available model because
-`--no-pull` is enabled:
-
-```bash
-project_dir=$(pwd -P)
-test_repo=$(mktemp -d)
-git init "$test_repo"
-cd "$test_repo"
-git config user.name "git-ai test"
-git config user.email "git-ai-test@example.invalid"
-printf 'hello\n' > sample.txt
-"$project_dir/git-ai.sh" --dry-run --no-push --no-banner --no-pull
-```
-
-For a combined-reference runtime check, add a temporary `.md` file describing a
-completed change in at least 12 words alongside a changed source file. Run
-the same dry-run command and confirm that it reports runtime source and
-informative staged Markdown, includes both in context, and leads the message
-with the implemented behavior.
-Use `--debug` to inspect the prompt if necessary, keeping logs private and
-sanitized. Remove the temporary document afterward. Also verify non-Markdown
-fallback with absent or cosmetic Markdown and compare the original index and
-refs before and after each dry-run. Never create real commits or pushes for
-these checks.
-
-For adaptive context changes, verify that a small eligible diff uses one
-generation request without per-file analysis, including with
-`--no-file-analysis`. Exercise the fallback with changes that exceed the
-configured input budget. Keep the model and its settings fixed when comparing
-output accuracy, request counts, token usage, or elapsed time.
-
-For per-file analysis performance changes, use six eligible text files whose
-combined prompt exceeds the budget. Confirm that each request contains one file, that capacity
-`1` runs AI requests in the foreground, and that larger capacities overlap
-requests within the worker limit. Legacy batch-size values must still be
-accepted without combining files. Include an individual oversized hunk to
-verify bounded chunks, preserved line order, file-level consolidation, one
-completion per file, and fallback after a failed chunk. Measure the
-`Analyzed ...` and `Commit message received ...`
-durations with a warm model. Also test generated paths, binary files, and a
-text blob larger than `FILE_ANALYSIS_MAX_BLOB_BYTES` to confirm they are
-excluded from per-file requests.
-
-For adaptive parallelism changes, also test numeric and `auto` values, a local
-systemd Ollama service, a remote endpoint with `OLLAMA_PARALLELISM_HINT`, and
-the conservative fallback. Confirm that result order is deterministic and
-that effective concurrency never exceeds the number of ready jobs or files.
-The regression suite measures overlapping requests and checks loading-row
-refresh, estimated progress before results arrive, the 95% waiting limit,
-completed-worker removal, every counter from `1/6` through `6/6`, and cursor
-restoration. Also run a dry-run
-in a terminal to inspect the animations and result output.
-
-Do not run commit or push smoke tests in a primary working repository. See the
-[Contributing Guide](.github/CONTRIBUTING.md) for the full workflow.
-
-## Repository Structure
-
-```text
-.
-|-- .github/
-|   |-- CONTRIBUTING.md       # contribution guide
-|   |-- SECURITY.md           # security policy and scope
-|   `-- workflows/
-|       |-- ci.yml            # reusable Bash, workflow, and regression validation
-|       |-- release.yml       # validated releases for stable version tags
-|       `-- stale.yml         # stale issue and pull request management
-|-- AGENTS.md                 # coding agent instructions
-|-- Makefile                  # install or remove two symlinks
-|-- README.md                 # primary usage documentation
-|-- git-ai.conf               # default runtime configuration
-`-- git-ai.sh                 # main CLI
-```
-
-## Contributing
-
-Read the [Contributing Guide](.github/CONTRIBUTING.md) before opening a pull
-request. For vulnerability reports, follow the
-[Security Policy](.github/SECURITY.md) and do not send sensitive details
-through a public issue.
+- Follow the [Contributing Guide](.github/CONTRIBUTING.md) and [repository instructions](AGENTS.md) when changing the project.
+- Use the [Support Guide](.github/SUPPORT.md) for usage questions, bug reports, and feature requests.
+- Report vulnerabilities privately through the [Security Policy](.github/SECURITY.md).
 
 ## Support
 
-If this project helps your workflow, you can support it through
-[Saweria](https://saweria.co/aibersemi). For general usage questions, follow
-the [Support Guide](.github/SUPPORT.md).
+If this project helps your workflow, you can support it through [Saweria](https://saweria.co/aibersemi). For general usage questions, follow the [Support Guide](.github/SUPPORT.md).
 
 ## License
 
-This project uses the MIT License. See [`LICENSE`](LICENSE) for the complete
-license text.
+This project uses the [MIT License](LICENSE).

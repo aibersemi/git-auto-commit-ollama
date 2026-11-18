@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression tests use isolated indexes and mocked Ollama responses, never new commits.
+# Regression tests use isolated repositories and indexes with mocked Ollama responses.
 # Runtime configuration variables are consumed by the dynamically loaded library.
 # shellcheck disable=SC2034
 set -euo pipefail
@@ -173,7 +173,51 @@ accept_message $'docs: clarify JNE credential cleanup guidance\n\n- Update docum
 reject_message 'feat: implement JNE credential cleanup' 'docs commit type'
 reject_message 'docs: Update documentation across multiple guides' 'too generic'
 reject_message 'docs: Update various technical documentation guides' 'too generic'
+reject_message 'docs: Update technical documentation guides' 'too generic'
+assert_contains "$(build_user_prompt 0)" 'name one or two concrete topics from the primary documentation references' 'Documentation prompt asks for a specific subject before generation'
 pass 'Saqqina documentation is accepted without a false functional classification'
+
+(
+  unset GIT_INDEX_FILE
+  git init --quiet "$test_root/module-docs"
+  cd -- "$test_root/module-docs"
+  module='use-cart.ts'
+  previous=$'"use client";\n\nimport { format } from "./format";\n\n/**\n * See docs/old-cart.md for the cart guide.\n */\nexport const cart = format(`\n/**\n * See docs/old-template.md\n */\n`);'
+  printf '%s\n' "$previous" > "$module"
+  git add -- "$module"
+  git -c user.name='Fixture' -c user.email='fixture@example.invalid' -c core.hooksPath=/dev/null \
+    commit --quiet --no-gpg-sign -m 'Seed module documentation fixture'
+
+  start_case
+  revised=${previous/docs\/old-cart.md/docs\/cart.md#currency}
+  stage_text "$module" "$revised"
+  context
+  assert_equal "$REFERENCE_MODE" documentation 'A Markdown path edit in module JSDoc is a documentation reference'
+  assert_equal "$PRIMARY_CHANGE_KIND" documentation 'A Markdown path edit in module JSDoc is documentation work'
+  accept_message 'docs: update the cart guide reference'
+
+  stage_text docs/cart.md "$description"
+  context
+  assert_equal "$REFERENCE_MODE" markdown 'Informative Markdown takes priority over module doc references'
+  assert_equal "${REFERENCE_CATEGORIES[*]}" 'markdown documentation' 'Module doc references remain available as supporting context'
+  accept_message $'docs: consolidate cart guidance\n\n- Point the module comment to the new cart guide.'
+
+  stage_text "$module" "${revised/docs\/old-template.md/docs\/template.md}"
+  context
+  assert_equal "$REFERENCE_MODE" mixed 'Runtime strings still take priority over Markdown'
+  assert_equal "$PRIMARY_CHANGE_KIND" runtime 'A Markdown path edit inside a template remains a runtime change'
+  reject_message 'docs: update the cart guide reference' '[quality.supporting.type]'
+
+  stage_text "$module" "${revised/format(\`/newFormat(\`}"
+  context
+  assert_equal "$PRIMARY_CHANGE_KIND" runtime 'A code edit alongside a JSDoc edit remains a runtime change'
+
+  stage_text "$module" "$revised"
+  git update-index --chmod=+x -- "$module"
+  context
+  assert_equal "$PRIMARY_CHANGE_KIND" runtime 'A mode change alongside a JSDoc edit remains a runtime change'
+)
+pass 'Markdown links in module docs are classified separately from runtime edits'
 
 for specification in 'test:tests/security/test_recovery.py' 'test:test_auth.py' 'ci:.github/workflows/test.yml' 'runtime:app/templates/recovery.html' 'runtime:app/static/css/recovery.css' 'runtime:git-ai.conf'; do
   start_case
@@ -524,22 +568,37 @@ for specification in '1 4 6 1' '3 4 6 3' '6 4 6 4' '8 2 3 2' '6 1 6 1' '6 1 1 1'
 done
 eval "$(declare -f concurrency_original_batch | sed '1s/concurrency_original_batch/run_file_analysis_batch/')"
 
-(
-  AI_PROGRESS_START_MS=1000
-  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 1000)" 0 'Progress starts at zero'
-  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 1099)" 0 'Progress holds through 99ms'
-  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 1100)" 1 'Progress advances after 100ms'
-  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 10499)" 94 'Progress remains below the waiting cap through 9499ms'
-  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 10500)" 95 'Progress reaches the waiting cap after 9500ms'
-  assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 121000)" 95 'Progress remains capped while waiting'
+test_ai_progress_intervals() {
+  local AI_PROGRESS_START_MS=1000 STAGED_FILE_COUNT
+  local specification interval_ms time_to_95_ms first_tick_ms waiting_start_ms label percent tick_ms
+  local analysis_status final_status retry_status
+  for specification in '0 10 950' '1 10 950' '10 100 9500' '20 200 19000'; do
+    read -r STAGED_FILE_COUNT interval_ms time_to_95_ms <<< "$specification"
+    first_tick_ms=$((AI_PROGRESS_START_MS + interval_ms))
+    waiting_start_ms=$((AI_PROGRESS_START_MS + time_to_95_ms))
+    label="$STAGED_FILE_COUNT staged file(s)"
+    assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$AI_PROGRESS_START_MS")" 0 "$label: Progress starts at zero"
+    assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$((first_tick_ms - 1))")" 0 "$label: Progress holds before the first tick"
+    assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$first_tick_ms")" 1 "$label: First tick after ${interval_ms}ms"
+    assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$((waiting_start_ms - 1))")" 94 "$label: Progress before the waiting phase"
+    assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$waiting_start_ms")" 95 "$label: Waiting phase starts at 95%"
+    for percent in 96 97 98 99; do
+      tick_ms=$((waiting_start_ms + (percent - 95) * 2000))
+      assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$((tick_ms - 1))")" "$((percent - 1))" "$label: Progress holds until the ${percent}% tick"
+      assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" "$tick_ms")" "$percent" "$label: Waiting phase advances every 2000ms"
+    done
+    assert_equal "$(estimated_ai_progress_percent "$AI_PROGRESS_START_MS" 121000)" 99 "$label: Progress remains at 99% while waiting"
+  done
+  STAGED_FILE_COUNT=10
   analysis_status=$(ai_progress_status_text 'Analyzing files with AI' 0 6 1 6000)
-  final_status=$(ai_progress_status_text 'Creating commit message with AI' 0 0 0 6500)
-  retry_status=$(ai_progress_status_text 'Retrying commit message with AI' 0 0 0 7000)
-  assert_contains "$analysis_status" '0/6 50% est.' 'Analysis phase uses the shared elapsed clock'
-  assert_contains "$final_status" '55% est.' 'Final generation continues without resetting progress'
-  assert_contains "$retry_status" '60% est.' 'Retry continues without resetting progress'
-)
-pass 'Continuous AI progress uses 100ms ticks across analysis, generation, and retry phases'
+  final_status=$(ai_progress_status_text 'Creating commit message with AI' 0 0 0 10500)
+  retry_status=$(ai_progress_status_text 'Retrying commit message with AI' 0 0 0 12500)
+  assert_contains "$analysis_status" '0/6 50% est.' 'Analysis phase uses the staged count and shared elapsed clock'
+  assert_contains "$final_status" '95% est.' 'Final generation continues without resetting progress'
+  assert_contains "$retry_status" '96% est.' 'Retry continues through the waiting phase'
+}
+test_ai_progress_intervals
+pass 'Continuous AI progress uses staged-file intervals and two-second waiting ticks'
 
 for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 partial' '6 4 6 generic' '6 2 2 complete'; do
   read -r file_total capacity batch_limit response_mode <<< "$specification"
@@ -597,7 +656,7 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
       active="${BASH_REMATCH[1]}"
       assert_equal "$(( $# - 1 ))" "$active" 'One loading row per active file'
       printf '%s %s\n' "$files" "$percent" >> "$progress_dir/frames"
-      [[ "$percent" -ge 0 && "$percent" -le 95 ]] || fail 'Active progress outside 0-95%'
+      [[ "$percent" -ge 0 && "$percent" -le 99 ]] || fail 'Active progress outside 0-99%'
       assert_contains "$message" 'est.' 'AI work remains estimated until the commit message is ready'
       case "$progress_phase" in
         0)
@@ -605,26 +664,26 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
           assert_equal "$percent" 0 'Starting workers do not advance progress'
           if [[ "$active" -eq "$expected_peak" ]]; then
             progress_phase=1
-            TEST_CLOCK_MS=99
+            TEST_CLOCK_MS=59
           fi ;;
         1)
           assert_equal "$files" 0 'Waiting progress does not complete files'
-          assert_equal "$percent" 0 'Progress holds through 99ms'
+          assert_equal "$percent" 0 'Progress for six staged files holds through 59ms'
           progress_phase=2
-          TEST_CLOCK_MS=100 ;;
+          TEST_CLOCK_MS=60 ;;
         2)
           assert_equal "$files" 0 'Timed progress precedes all results'
-          assert_equal "$percent" 1 'Progress advances by one point after 100ms'
+          assert_equal "$percent" 1 'Progress for six staged files advances after 60ms'
           progress_phase=3
-          TEST_CLOCK_MS=9500 ;;
+          TEST_CLOCK_MS=5700 ;;
         3)
           assert_equal "$files" 0 'Held AI responses keep the file counter at zero'
-          assert_equal "$percent" 95 'Progress reaches the waiting cap'
+          assert_equal "$percent" 95 'Progress reaches the waiting phase'
           progress_phase=4
           TEST_CLOCK_MS=120000 ;;
         4)
           assert_equal "$files" 0 'Long waits do not complete files'
-          assert_equal "$percent" 95 'Long waits cannot inflate progress'
+          assert_equal "$percent" 99 'Long waits cannot advance beyond 99%'
           progress_phase=5 ;;
       esac
       if [[ "$progress_phase" -eq 5 && "$files" -eq "$release_after_files" && "$released_jobs" -lt "${#completion_order[@]}" ]]; then
@@ -638,7 +697,7 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
     analyze_files_individually 2> "$progress_dir/terminal.log"
     assert_equal "$progress_phase" 5 'All waiting phases were observed'
     assert_equal "$released_jobs" "${#completion_order[@]}" 'Every held request was released'
-    assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 95" 'File analysis cannot complete the overall AI progress'
+    assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 99" 'File analysis cannot complete the overall AI progress'
     awk 'NR > 1 && $2 < previous {exit 1} {previous = $2}' "$progress_dir/frames" || fail 'Progress decreased'
     assert_equal "$LIVE_STATUS_ROWS" 0 'Loading rows cleared after analysis'
     assert_equal "$LIVE_STATUS_ACTIVE" 0 'Live status stopped after analysis'
@@ -671,6 +730,8 @@ for specification in '6 1 complete' '6 1 failed' '1 4 complete'; do
     FILE_ANALYSIS_LIMIT="$file_total"
     RESOLVED_FILE_ANALYSIS_PARALLELISM="$capacity"
     TEST_ANALYSIS_MODE="$response_mode"
+    interval_ms=$((file_total * 10))
+    time_to_95_ms=$((file_total * 950))
     progress_dir="$test_root/foreground-${file_total}-${capacity}-${response_mode}"
     mkdir "$progress_dir"
     printf '0\n' > "$progress_dir/clock"
@@ -688,7 +749,7 @@ for specification in '6 1 complete' '6 1 failed' '1 4 complete'; do
       [[ -n "$SPINNER_PID" ]] || fail 'Foreground loading renderer was not started'
       printf '%s\n' "$SPINNER_PID" >> "$progress_dir/renderers"
       if [[ "$1" -eq 1 ]]; then
-        for tick in 99 100 9500 120000; do
+        for tick in "$((interval_ms - 1))" "$interval_ms" "$time_to_95_ms" 120000; do
           printf '%s\n' "$tick" > "$progress_dir/next-clock"
           mv "$progress_dir/next-clock" "$progress_dir/clock"
           sleep 0.2
@@ -710,8 +771,9 @@ for specification in '6 1 complete' '6 1 failed' '1 4 complete'; do
     analyze_files_individually 2> "$progress_dir/terminal.log"
     assert_file_counters "$progress_dir/terminal.log" "$file_total"
     assert_contains "$(cat "$progress_dir/frames")" '0 1' 'Foreground progress advances while the request is blocked'
-    assert_contains "$(cat "$progress_dir/frames")" '0 95' 'Foreground renderer reaches the waiting limit before a result'
-    assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 95" 'Foreground file completion preserves the estimated percentage'
+    assert_contains "$(cat "$progress_dir/frames")" '0 95' 'Foreground renderer reaches the waiting phase before a result'
+    assert_contains "$(cat "$progress_dir/frames")" '0 99' 'Foreground renderer caps progress at 99% before a result'
+    assert_equal "$(tail -n 1 "$progress_dir/frames")" "$file_total 99" 'Foreground file completion preserves the estimated percentage'
     awk 'NR > 1 && $2 < previous {exit 1} {previous = $2}' "$progress_dir/frames" || fail 'Foreground progress decreased'
     assert_equal "$SPINNER_PID" '' 'Foreground renderer state cleared'
     while IFS= read -r renderer_pid; do
@@ -1051,6 +1113,7 @@ MOCK_CURL
 cat > "$test_root/bin/gitleaks" <<'MOCK_GITLEAKS'
 #!/usr/bin/env bash
 set -euo pipefail
+[[ "${TEST_SCANNER_FAILURE:-0}" -eq 0 ]] || exit 2
 report_file="${!#}"
 printf '[]' > "$report_file"
 MOCK_GITLEAKS
@@ -1072,10 +1135,21 @@ printf '\nUSE_STRUCTURED_OUTPUT="1"\n' >> "$test_root/git-ai.conf"
 git read-tree HEAD
 mkdir -p src
 printf '%s\n' "$description" > notes.md
-printf 'printf "hello\\n"\n' > src/timeout.sh
+printf 'printf "dry_run_isolated_blob\\n"\n' > src/timeout.sh
 cli_index_before=$(git hash-object "$GIT_INDEX_FILE")
-PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no-pull --no-banner > "$test_root/cli.out" 2> "$test_root/cli.err"
-assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" 'Automatic-stage dry-run index isolation'
+cli_refs_before=$(git show-ref --head)
+cli_objects_before=$(git cat-file --batch-all-objects --batch-check='%(objectname)' | git hash-object --stdin)
+dry_run_blob=$(git hash-object src/timeout.sh)
+if git cat-file -e "$dry_run_blob"; then fail 'Preview fixture blob already exists'; fi
+dry_run_scratch="$test_root/dry run scratch"
+mkdir "$dry_run_scratch"
+TMPDIR="$dry_run_scratch" PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no-pull --no-banner > "$test_root/cli.out" 2> "$test_root/cli.err"
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" 'Automatic-stage dry-run preserves the caller index'
+assert_equal "$(git show-ref --head)" "$cli_refs_before" 'Automatic-stage dry-run preserves refs'
+assert_equal "$(git cat-file --batch-all-objects --batch-check='%(objectname)' | git hash-object --stdin)" "$cli_objects_before" 'Automatic-stage dry-run preserves the original object database'
+if git cat-file -e "$dry_run_blob"; then fail 'Preview blob remains in the original object database'; fi
+if compgen -G "$dry_run_scratch/*" >/dev/null; then fail 'Successful dry-run leaked temporary files'; fi
+assert_contains "$(cat "$test_root"/requests/request.*)" dry_run_isolated_blob 'Preview uses the newly staged blob'
 assert_contains "$(cat "$test_root/cli.out")" 'fix: improve timeout handling' 'Structured CLI message'
 assert_contains "$(cat "$test_root/cli.err")" 'informative staged Markdown' 'Structured CLI reference mode'
 assert_contains "$(cat "$test_root/cli.err")" 'per-file analysis skipped' 'Small structured input skips unnecessary analysis'
@@ -1083,7 +1157,17 @@ assert_absent "$(cat "$test_root/cli.err")" $'\033[' 'Non-TTY output has no term
 assert_absent "$(cat "$test_root/cli.err")" ' est.' 'Non-TTY output has no animated progress frames'
 analysis_requests=$(jq -s '[.[] | select(.format.properties.files)] | length' "$TEST_REQUEST_DIR"/request.*)
 assert_equal "$analysis_requests" 0 'Small plain and structured CLI inputs make no per-file requests'
-pass 'Full structured CLI uses complete Markdown and source diffs with an isolated dry-run index'
+pass 'Automatic-stage dry-run uses temporary blobs and preserves the index, refs, and object database'
+
+if TMPDIR="$dry_run_scratch" TEST_SCANNER_FAILURE=1 PATH="$test_root/bin:$PATH" bash "$test_root/git-ai.sh" --dry-run --no-push --no-pull --no-banner > "$test_root/cli.out" 2> "$test_root/cli.err"; then
+  fail 'Dry-run continued after a scanner failure'
+fi
+assert_contains "$(cat "$test_root/cli.err")" 'Gitleaks scan failed' 'Scanner failure occurs after staging'
+assert_equal "$(git hash-object "$GIT_INDEX_FILE")" "$cli_index_before" 'Failed dry-run preserves the caller index'
+assert_equal "$(git show-ref --head)" "$cli_refs_before" 'Failed dry-run preserves refs'
+assert_equal "$(git cat-file --batch-all-objects --batch-check='%(objectname)' | git hash-object --stdin)" "$cli_objects_before" 'Failed dry-run preserves the original object database'
+if compgen -G "$dry_run_scratch/*" >/dev/null; then fail 'Failed dry-run leaked temporary files'; fi
+pass 'Scanner failure after staging preserves the index, refs, and object database'
 
 start_case
 unicode_fixture=$(printf '🙂%.0s' {1..32000})
