@@ -29,7 +29,7 @@ Help and version work outside a Git repository. Status requires a working tree. 
 ## Integration Boundaries
 
 - **Git.** Context and staged-change policy read the selected index. Ordinary staging, committing, and pushing run sequentially. Independent context reads can run concurrently after the policy decision. See [CLI Usage](usage.md) for the operation boundaries.
-- **Gitleaks.** An external process scans staged additions and produces a private JSON report. The CLI validates its result before collecting AI context. See [Security](security.md#gitleaks-commit-guard) for report handling and failure behavior.
+- **Gitleaks.** An external process scans staged additions and produces a private JSON report. The CLI validates its result before collecting AI context. See [Gitleaks Commit Guard](../.github/SECURITY.md#gitleaks-commit-guard) for report handling and failure behavior.
 - **Ollama.** The CLI is an HTTP client for `/api/tags`, `/api/ps`, and `/api/chat`. Requests run against the [active endpoint](configuration.md#ollama-host-resolution), with readiness checked before staging and analysis and generation performed afterward. See [Commit Message Generation](commit-generation.md#ollama-request-contract) for request and response handling.
 - **GitHub Actions.** Repository CI and release publication run separately from the CLI. See [Repository Automation](automation.md) for triggers, permissions, and release validation.
 
@@ -54,8 +54,8 @@ There are no application routes, application accounts, or database. References t
 | CLI arguments and Git operation boundaries | [CLI Usage](usage.md) |
 | Configuration, endpoint selection, and concurrency settings | [Configuration](configuration.md) |
 | Change classification, prompt routing, and message validation | [Commit Message Generation](commit-generation.md) |
-| Runtime security controls and exposure limits | [Security](security.md) |
+| Runtime security controls, exposure limits, and vulnerability reporting | [Security Policy](../.github/SECURITY.md) |
 | Symptom-based diagnosis | [Troubleshooting](troubleshooting.md) |
 | Local verification and test coverage | [Verification](verification.md) |
 | CI, workflow permissions, and release operations | [Repository Automation](automation.md) |
-| Contribution process and vulnerability reporting | [Contributing Guide](../.github/CONTRIBUTING.md) and [Security Policy](../.github/SECURITY.md) |
+| Contribution process | [Contributing Guide](../.github/CONTRIBUTING.md) |

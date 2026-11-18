@@ -33,7 +33,7 @@ Unset or empty `AI_TEMPERATURE`, `AI_THINK`, `AI_NUM_PREDICT`, and `AI_MAX_NUM_P
 
 The CLI does not consult the caller's `OLLAMA_HOST` for primary endpoint selection. Host normalization defaults to HTTP, preserves explicit HTTPS, strips a trailing slash, and maps wildcard listeners `0.0.0.0` and `[::]` to `127.0.0.1`.
 
-A nonempty, distinct `FALLBACK_OLLAMA_HOST` is tried only when the primary `/api/tags` request fails. The endpoint selected by that check stays active for the rest of the run. A successful tags request with a missing model, a readiness error, or a generation error does not switch hosts. An automatic pull invokes `ollama pull` with `OLLAMA_HOST` set to the active endpoint. Review both host settings before running against sensitive repositories. See [Data Sent to Ollama](security.md#data-sent-to-ollama).
+A nonempty, distinct `FALLBACK_OLLAMA_HOST` is tried only when the primary `/api/tags` request fails. The endpoint selected by that check stays active for the rest of the run. A successful tags request with a missing model, a readiness error, or a generation error does not switch hosts. An automatic pull invokes `ollama pull` with `OLLAMA_HOST` set to the active endpoint. See [Data Sent to Ollama](../.github/SECURITY.md#data-sent-to-ollama).
 
 ## Context and Analysis Limits
 

@@ -4,7 +4,7 @@
 
 ## Prompt Routing
 
-Generation reads staged changes from the selected index, including the temporary index in dry-run. The CLI collects Git status entries, statistics, summaries, and change classifications. Detailed references exclude generated or ephemeral paths, binary diffs, oversized staged blobs, and sensitive file diffs subject to the [security policy](security.md). Excluded files can still affect metadata and classification. The prompt lists selected reference paths separately from the Git entries capped by `MAX_FILES_LIST`.
+Generation reads staged changes from the selected index, including the temporary index in dry-run. The CLI collects Git status entries, statistics, summaries, and change classifications. Detailed references exclude generated or ephemeral paths, binary diffs, oversized staged blobs, and sensitive file diffs subject to the [security policy](../.github/SECURITY.md#security-controls). Excluded files can still affect metadata and classification. The prompt lists selected reference paths separately from the Git entries capped by `MAX_FILES_LIST`.
 
 | Condition | Context sent to final generation |
 | --- | --- |

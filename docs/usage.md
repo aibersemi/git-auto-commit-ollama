@@ -22,7 +22,7 @@ Use `git-ai --dry-run --no-pull` to preview a message. The CLI copies the curren
 
 Dry-run preserves the original index contents, refs, working files, and stored Git objects. Git can refresh timestamps on existing objects or shared index files it reuses. Dry-run skips interactive commit review, commit hooks, commits, and pushes. The CLI removes its temporary directory on process exit, including after a scan or generation failure.
 
-Ollama preflight, model warm-up, and generation still run. Without `--no-pull`, a missing model can be pulled when the local `ollama` executable is available. The [Gitleaks policy](security.md#overrides) describes how dry-run handles findings and scan failures.
+Ollama preflight, model warm-up, and generation still run. Without `--no-pull`, a missing model can be pulled when the local `ollama` executable is available. The [Gitleaks policy](../.github/SECURITY.md#overrides) describes how dry-run handles findings and scan failures.
 
 ## Push Behavior and Hooks
 
@@ -45,10 +45,10 @@ With push enabled, a branch with an upstream runs plain `git push`, which follow
 | `-i`, `--interactive` | Review or edit the generated message before committing. |
 | `--no-stage` | Use existing staged changes. |
 | `-d`, `--dry-run` | Generate a preview using a temporary index and object database. |
-| `--debug` | Print diagnostics. See [Debug Output](security.md#debug-output) for exposure limits. |
-| `--force-diff` | Override safe mode for diff transmission. See [Overrides](security.md#overrides). |
-| `-f`, `--force` | Skip the scan and override safe mode. See [Overrides](security.md#overrides). |
-| `-a`, `--allow-secret-commit` | Allow a commit despite a successful scan with findings. See [Overrides](security.md#overrides). |
+| `--debug` | Print diagnostics. See [Debug Output](../.github/SECURITY.md#debug-output) for exposure limits. |
+| `--force-diff` | Override safe mode for diff transmission. See [Overrides](../.github/SECURITY.md#overrides). |
+| `-f`, `--force` | Skip the scan and override safe mode. See [Overrides](../.github/SECURITY.md#overrides). |
+| `-a`, `--allow-secret-commit` | Allow a commit despite a successful scan with findings. See [Overrides](../.github/SECURITY.md#overrides). |
 | `--no-file-analysis` | Disable fallback per-file requests. |
 | `--file-analysis-limit N` | Override the file analysis limit with a non-negative integer. |
 | `--file-analysis-batch-size N` | Accept a positive integer for compatibility. Each request still covers one file. |

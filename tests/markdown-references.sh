@@ -161,7 +161,7 @@ assert_contains "$TOP_HUNKS" API_ONLY_MARKER 'API runtime evidence retained'
 pass 'Concrete Markdown vocabulary satisfies API theme validation'
 
 start_case
-stage_text docs/security.md 'Audit legacy JNE fields without exposing values and rotate provider credentials after validating the runtime secret store.'
+stage_text docs/fixtures/jne-security.md 'Audit legacy JNE fields without exposing values and rotate provider credentials after validating the runtime secret store.'
 stage_text docs/api.md 'Clarify which unavailable routes return HTTP 404 without redirects and how the routing suite verifies POST requests.'
 stage_text docs/runtime.md 'Remove obsolete virtual environment and proxy cache references from the current operational guidance.'
 context
@@ -237,22 +237,24 @@ for specification in 'test:tests/security/test_recovery.py' 'test:test_auth.py' 
 done
 
 start_case
+recovery_doc='docs/fixtures/recovery-security.md'
 stage_text app/anggota/recovery_views.py $'def recovery_feedback(request):\n    return redirect_to_get(request, status=303)'
 stage_text app/static/js/member-recovery.js 'window.addEventListener("beforeunload", confirm_recovery_navigation);'
 stage_text app/templates/recovery.html '<form data-recovery-guard="true"></form>'
 stage_text app/anggota/tests/test_recovery.py "$(printf 'assert recovery_feedback_is_safe\n%.0s' {1..80})"
-stage_text docs/security.md "$(printf 'Context describing unrelated deployment details. %.0s' {1..100})"$'\n\n''Native recovery feedback redirects POST requests to GET without retaining submitted OTP or passwords, while active forms confirm navigation away.'
+stage_text "$recovery_doc" "$(printf 'Context describing unrelated deployment details. %.0s' {1..100})"$'\n\n''Native recovery feedback redirects POST requests to GET without retaining submitted OTP or passwords, while active forms confirm navigation away.'
 context
+assert_contains "$NAME_STATUS" $'A\t'"$recovery_doc" 'Long Markdown fixture is an addition'
 assert_equal "$REFERENCE_MODE" mixed 'LDTQN source and long Markdown'
 assert_equal "${REFERENCE_PATHS[0]}" app/anggota/recovery_views.py 'Runtime before the larger test file'
-assert_equal "${REFERENCE_PATHS[1]}" docs/security.md 'Markdown receives the second reference slot'
+assert_equal "${REFERENCE_PATHS[1]}" "$recovery_doc" 'Markdown receives the second reference slot'
 assert_contains "$TOP_HUNKS" redirect_to_get 'Native recovery behavior in primary context'
 assert_contains "$TOP_HUNKS" 'Native recovery feedback' 'Long Markdown changed line remains visible'
 reject_message $'fix: preserve account recovery across refreshes\n\n- Update test case to follow POST request responses.' 'first bullet'
 accept_message $'fix: preserve account recovery across refreshes\n\n- Redirect native recovery feedback to GET without retaining submitted values.'
 TOP_FILES=1
 assert_contains "$(collect_top_hunks)" redirect_to_get 'One reference slot selects runtime'
-assert_absent "$(collect_top_hunks)" '### File: docs/security.md' 'One slot does not displace source'
+assert_absent "$(collect_top_hunks)" "### File: $recovery_doc" 'One slot does not displace source'
 FILE_ANALYSIS_LIMIT=1
 analyze_files_individually 2> "$test_root/analysis.log"
 assert_equal "${BATCH_ANALYSIS_FILE_NAMES[*]}" app/anggota/recovery_views.py 'One analysis request selects runtime'

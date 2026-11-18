@@ -23,7 +23,7 @@
 - **Flexible staging.** Stage all changes, select hunks interactively, or reuse the existing index. [Staging and commit review](docs/usage.md#staging-and-commit-review)
 - **Context-aware generation.** Use complete eligible diffs when they fit the prompt budget, with ranked excerpts and optional per-file analysis for larger changes. [Prompt routing](docs/commit-generation.md#prompt-routing)
 - **Message validation.** Validate plain-text or structured responses against the commit format and request corrections when a response is rejected. [Fallbacks and retries](docs/commit-generation.md#fallbacks-and-retries)
-- **Secret protection.** Gitleaks can block commits with potential secrets, while safe mode limits the diff context sent to Ollama. [Security controls](docs/security.md)
+- **Secret protection.** Gitleaks can block commits with potential secrets, while safe mode limits the diff context sent to Ollama. [Security controls](.github/SECURITY.md#security-controls)
 - **Isolated previews.** Use a temporary index and object database to preview a message while preserving the original index, refs, and stored Git objects. [Dry run](docs/usage.md#dry-run)
 - **Commit and push controls.** Review or edit the message before committing and use `--no-push` to keep the commit local. [CLI options](docs/usage.md#options)
 
@@ -56,9 +56,7 @@ flowchart TD
 
 The default staging command is `git add -A`. Use `--patch` for `git add -p`. `--no-stage` takes precedence and reuses staged changes. In dry-run, the CLI copies the index if it exists and writes new Git objects to a temporary object database. [Staging](docs/usage.md#staging-and-commit-review) · [Dry run](docs/usage.md#dry-run)
 
-Gitleaks scans staged additions. Findings block regular commits by default. `--dry-run` and `--allow-secret-commit` can proceed after findings, while scan failures stop the run. `--force` skips the scan and disables safe mode. `--force-diff` disables safe mode and retains the Gitleaks guard. [Security overrides](docs/security.md#overrides)
-
-Gitleaks findings and the built-in diff matcher can activate safe mode, which limits the final prompt to Git metadata and any summaries from eligible per-file analyses. The full-diff path requires safe mode to be off and the complete prompt to fit the character budget, including the reserve for corrections. The fallback can analyze eligible files in bounded chunks. [Prompt routing](docs/commit-generation.md#prompt-routing)
+Gitleaks findings and the built-in diff matcher can activate safe mode, which limits the final prompt to Git metadata and any summaries from eligible per-file analyses. The full-diff path requires safe mode to be off and the complete prompt to fit the character budget, including the reserve for corrections. The fallback can analyze eligible files in bounded chunks. [Security overrides](.github/SECURITY.md#overrides) · [Prompt routing](docs/commit-generation.md#prompt-routing)
 
 The terminal estimates AI progress using the number of staged files and shows 100% once the commit message passes validation. [Terminal output](docs/usage.md#terminal-output)
 
@@ -111,7 +109,7 @@ The preview preserves the original index, refs, and stored Git objects, skips co
 | [CLI Usage](docs/usage.md) | Commands, flags, staging, dry-run, message review, and push behavior. |
 | [Configuration](docs/configuration.md) | Config file precedence, defaults, Ollama endpoints, and worker capacity. |
 | [Commit Message Generation](docs/commit-generation.md) | Reference selection, prompt budgets, file analysis, message format, and retries. |
-| [Security](docs/security.md) | Data sent to Ollama, Gitleaks, safe mode, overrides, and debug output. |
+| [Security Policy](.github/SECURITY.md) | Vulnerability reporting, data sent to Ollama, Gitleaks, safe mode, overrides, and debug output. |
 | [Troubleshooting](docs/troubleshooting.md) | Diagnose installation, Ollama, staging, scanner, generation, and Git failures. |
 | [Architecture](docs/architecture.md) | Runtime flow, components, integration boundaries, and documentation ownership. |
 | [Verification](docs/verification.md) | Documentation checks, Bash regression suites, and isolated smoke tests. |
