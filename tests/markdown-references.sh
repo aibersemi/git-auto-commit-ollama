@@ -893,6 +893,23 @@ pass 'Main, batch, and retry prompts treat repository instructions and plans as 
 
 start_case
 stage_source
+context
+single_user_prompt=$(build_user_prompt 0)
+single_retry_prompt=$(build_quality_retry_prompt "$single_user_prompt" 'fix: preserve pending changes' 'The response contained extra prose.')
+assert_contains "$(build_system_prompt_text)" 'output only the subject line and no body' 'Single-file plain format'
+assert_contains "$(build_system_prompt_json)" 'an empty array because exactly one file is staged' 'Single-file structured format'
+for prompt in "$(build_system_prompt_text)" "$single_user_prompt" "$single_retry_prompt"; do
+  assert_absent "$prompt" 'bullet' 'Single-file plain guidance does not ask for bullets'
+done
+assert_contains "$single_retry_prompt" 'format required by the current system prompt' 'Retry follows the active format'
+stage_text notes.md "$description"
+context
+assert_contains "$(build_system_prompt_text)" "1-${MAX_BODY_BULLETS} bullet lines" 'Multiple-file plain format'
+assert_contains "$(build_system_prompt_json)" "array containing 1-${MAX_BODY_BULLETS}" 'Multiple-file structured format'
+pass 'Initial and corrective prompts follow the staged file count and response format'
+
+start_case
+stage_source
 stage_text notes.md "$description FULL_DIFF_MARKDOWN"
 TOP_FILES=1
 FILE_ANALYSIS_LIMIT=0
