@@ -57,6 +57,8 @@ This project is a Bash CLI that generates Git commit messages with Ollama. Treat
 
 For documentation changes, follow [Documentation Verification](docs/verification.md#documentation-verification).
 
+Push and pull request CI runs basic checks. See [Local Checks](docs/verification.md#local-checks) for regression suites and [Continuous Integration](docs/automation.md#continuous-integration) for full validation on GitHub.
+
 Run the basic validation after changing `git-ai.sh` or related behavior:
 
 ```bash

@@ -6,7 +6,17 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      full_validation:
+        description: Run all regression suites
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      full_validation:
+        description: Run all regression suites
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -27,11 +37,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install validation dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck jq
-
       - name: Install validated actionlint release
         run: |
           archive_path="${RUNNER_TEMP}/actionlint_1.7.12_linux_amd64.tar.gz"
@@ -45,16 +50,6 @@ jobs:
       - name: Validate GitHub Actions workflows
         run: actionlint
 
-      - name: Install validated Gitleaks release
-        run: |
-          archive_path="${RUNNER_TEMP}/gitleaks_8.30.1_linux_x64.tar.gz"
-          curl --fail --silent --show-error --location --output "$archive_path" \
-            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
-          printf '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  %s\n' "$archive_path" | sha256sum --check
-          mkdir -p "${RUNNER_TEMP}/gitleaks-bin"
-          tar -xzf "$archive_path" -C "${RUNNER_TEMP}/gitleaks-bin" gitleaks
-          echo "${RUNNER_TEMP}/gitleaks-bin" >> "$GITHUB_PATH"
-
       - name: Check Bash syntax
         run: bash -n git-ai.sh
 
@@ -66,26 +61,43 @@ jobs:
       - name: Check help output
         run: ./git-ai.sh --help >/tmp/git-ai-help.txt
 
+      - name: Install validated Gitleaks release
+        if: inputs.full_validation
+        run: |
+          archive_path="${RUNNER_TEMP}/gitleaks_8.30.1_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --output "$archive_path" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          printf '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  %s\n' "$archive_path" | sha256sum --check
+          mkdir -p "${RUNNER_TEMP}/gitleaks-bin"
+          tar -xzf "$archive_path" -C "${RUNNER_TEMP}/gitleaks-bin" gitleaks
+          echo "${RUNNER_TEMP}/gitleaks-bin" >> "$GITHUB_PATH"
+
       - name: Validate Markdown reference tests
+        if: inputs.full_validation
         run: |
           bash -n tests/markdown-references.sh
           shellcheck tests/markdown-references.sh
 
       - name: Test Markdown commit references
+        if: inputs.full_validation
         run: bash tests/markdown-references.sh
 
       - name: Validate secret scanning tests
+        if: inputs.full_validation
         run: |
           bash -n tests/secret-scanning.sh
           shellcheck tests/secret-scanning.sh
 
       - name: Test secret scanning and safe previews
+        if: inputs.full_validation
         run: bash tests/secret-scanning.sh
 
       - name: Validate real Gitleaks integration tests
+        if: inputs.full_validation
         run: |
           bash -n tests/gitleaks-integration.sh
           shellcheck tests/gitleaks-integration.sh
 
       - name: Test real Gitleaks staged scans
+        if: inputs.full_validation
         run: bash tests/gitleaks-integration.sh

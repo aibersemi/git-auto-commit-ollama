@@ -54,6 +54,8 @@ This project is a Bash CLI. Follow the existing style in `git-ai.sh`.
 
 ## Testing
 
+Push and pull request CI runs basic checks. See [Continuous Integration](../docs/automation.md#continuous-integration) to run the regression suites on GitHub for behavior changes.
+
 Follow [Verification](../docs/verification.md) for local commands, regression coverage, workflow checks, and the isolated runtime smoke test. For documentation-only changes, follow [Documentation Verification](../docs/verification.md#documentation-verification). Report which checks ran and why any applicable checks were skipped.
 
 ## Issue Guidelines
