@@ -158,9 +158,9 @@ Scanner exclusions are independent of the built-in matcher. Default Gitleaks rul
 
 ### Safe Mode
 
-Gitleaks finding paths and matches from the built-in diff matcher activate safe mode. Safe mode removes detailed diffs and diff-derived terms from the final prompt. Metadata can still be sent, and per-file requests can still send full eligible diffs from files that pass screening. Flagged files are excluded from this analysis. The matcher alone never blocks a commit.
+Gitleaks finding paths and matches from the built-in diff matcher activate safe mode. Safe mode removes detailed diffs and diff-derived terms from the final prompt. Metadata can still be sent, and per-file requests can send complete or sampled diffs from files that pass screening. Flagged files are excluded from this analysis. The matcher alone never blocks a commit.
 
-The CLI checks the whole candidate diff before ranking, truncating, or chunking it, including removed lines, displayed unchanged diff context, and hunk labels. For Markdown, the local scan expands context to recover enclosing fences, tracking old and new versions separately. This expanded scan does not change the context budget sent to Ollama. Generated, binary, and oversized exclusions apply independently of sensitive-pattern checks.
+The CLI checks the whole candidate diff before ranking, truncating, or sampling it, including removed lines, displayed unchanged diff context, and hunk labels. For Markdown, the local scan expands context to recover enclosing fences, tracking old and new versions separately. This expanded scan does not change the context budget sent to Ollama. Generated, binary, and oversized exclusions apply independently of sensitive-pattern checks.
 
 #### Built-In Matcher Scope
 

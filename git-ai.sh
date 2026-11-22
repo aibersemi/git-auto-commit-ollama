@@ -85,6 +85,8 @@ FILE_ANALYSIS_BATCH_SIZE="${FILE_ANALYSIS_BATCH_SIZE:-1}"
 FILE_ANALYSIS_NUM_PREDICT_PER_FILE="${FILE_ANALYSIS_NUM_PREDICT_PER_FILE:-192}"
 FILE_ANALYSIS_MAX_BLOB_BYTES="${FILE_ANALYSIS_MAX_BLOB_BYTES:-1048576}"
 FILE_ANALYSIS_PARALLELISM="${FILE_ANALYSIS_PARALLELISM:-auto}"
+FILE_ANALYSIS_MAX_DIFF_CHARS=3000
+FILE_ANALYSIS_TIMEOUT_SECONDS=25
 NON_AI_PARALLELISM="${NON_AI_PARALLELISM:-auto}"
 OLLAMA_PARALLELISM_HINT="${OLLAMA_PARALLELISM_HINT:-}"
 MAX_PROMPT_CHARS="${MAX_PROMPT_CHARS:-48000}"
@@ -1607,9 +1609,9 @@ markdown_reference_score() {
 }
 
 build_reference_excerpt() {
-  local full_diff="$1" category="$2" limit="$3"
+  local full_diff="$1" category="$2" limit="$3" for_analysis="${4:-false}"
   # Rank complete hunks locally, then compact context and bound Unicode text.
-  jq -Rrs --arg category "$category" --argjson limit "$limit" '
+  jq -Rrs --arg category "$category" --argjson limit "$limit" --argjson for_analysis "$for_analysis" '
     def bounded($text; $size):
       if ($text | length) <= $size then $text
       elif $size >= 14 then $text[0:($size - 14)] + "...[truncated]"
@@ -1658,8 +1660,10 @@ build_reference_excerpt() {
        else [] end) as $context |
       .marker as $marker | (.added + .removed) as $lines |
       ([$budget - ($marker | length) - 1, 0] | max) as $space |
-      ((if ($category != "markdown" and $category != "documentation") and
-          ($lines | join("\n") | length) > $space and ($lines | length) > 4 then
+      ((if ($lines | join("\n") | length) <= $space then $lines
+       elif $for_analysis then
+        .added[0:4] + sample_lines(.added[4:]; 6) + .removed[0:2] + sample_lines(.removed[2:]; 3)
+       elif ($category != "markdown" and $category != "documentation") and ($lines | length) > 4 then
         sample_lines(.added; 4) + sample_lines(.removed; 2)
        else $lines end) + $context) as $selected |
       ([($selected | length), 1] | max) as $count |
@@ -2441,14 +2445,10 @@ build_file_analysis_batch_prompt() {
   local start="$1"
   local count="$2"
   local end=$((start + count))
-  local i prompt diff_instruction
-  diff_instruction='Hunks are compacted and long source hunks may show representative lines.'
-  if [[ "$GENERATION_CONTEXT_MODE" == summaries ]]; then
-    diff_instruction='File and hunk chunks retain additions, removals, and unchanged context in their original order. A chunk can contain only part of a hunk or exceptionally long line; missing context is not evidence of new behavior.'
-  fi
+  local i prompt
 
   prompt='Analyze the following diffs. Return JSON with a "files" array in the input order. Include exactly one item for every [FILE]. Each analysis must be one specific sentence of at most 30 words. Compare additions with removals and summarize what actually changed, not existing behavior repeated on both sides. For validation changes, distinguish accepting additional inputs from restricting accepted inputs. Unchanged context describes existing behavior. A runtime rule about test credentials or fixtures is runtime behavior, not test-suite work. '
-  prompt+="${diff_instruction} Use documentation-specific summaries for guidance changes; do not claim planned work as implemented."
+  prompt+='Large diffs may show only representative lines. For an added file, describe the purpose of the file as a whole. Do not infer changes from omitted context. Use documentation-specific summaries for guidance changes; do not claim planned work as implemented.'
   prompt+=$'\n\nPrimary staged work category: '"$PRIMARY_CHANGE_KIND"
   if [[ "$PRIMARY_CHANGE_KIND" == documentation ]]; then
     prompt+=$'\nOnly documentation changed. Describe revised guidance; do not claim that commands, runtime behavior, or test coverage were introduced or implemented.'
@@ -2456,25 +2456,24 @@ build_file_analysis_batch_prompt() {
 
   for ((i=start; i<end; i++)); do
     prompt+=$'\n\n[FILE]\n'"${BATCH_ANALYSIS_FILE_NAMES[$i]}"
-    prompt+=$'\n[DIFF]\n'"${BATCH_ANALYSIS_DIFF_CHUNKS[$i]}"$'\n[/DIFF]'
+    prompt+=$'\n[DIFF]\n'"${BATCH_ANALYSIS_DIFFS[$i]}"$'\n[/DIFF]'
   done
 
   printf '%s' "$prompt"
 }
 
-run_file_analysis_request() {
+run_file_analysis_batch() {
   local batch_no="$1"
   local start="$2"
   local count="$3"
   local output_file="$4"
 
-  local schema prompt content json batch_num_predict
+  local schema prompt content json
   schema=$(build_file_analysis_batch_schema)
   prompt=$(build_file_analysis_batch_prompt "$start" "$count")
-  batch_num_predict=$((count * FILE_ANALYSIS_NUM_PREDICT_PER_FILE + 120))
-  [[ "$batch_num_predict" -lt 360 ]] && batch_num_predict=360
 
-  if ! content=$(ollama_chat "$SYSTEM_PROMPT_FILE_ANALYSIS_BATCH" "$prompt" "$schema" 60 1 "$batch_num_predict"); then
+  if ! content=$(ollama_chat "$SYSTEM_PROMPT_FILE_ANALYSIS_BATCH" "$prompt" "$schema" \
+    "$FILE_ANALYSIS_TIMEOUT_SECONDS" "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE"); then
     dbg "Analysis batch ${batch_no} failed [analysis.request_failed]; using local summaries."
   elif ! json=$(printf '%s' "$content" | jq -e . 2>/dev/null); then
     dbg "Analysis batch ${batch_no} failed [analysis.invalid_json]; using local summaries."
@@ -2488,92 +2487,6 @@ run_file_analysis_request() {
 
   printf '{"files":[]}\n' > "$output_file"
   return 1
-}
-
-split_file_diff() {
-  local limit="$1"
-  jq -Rsc --argjson limit "$limit" '
-    def pack($parts; $prefix; $bound):
-      reduce $parts[] as $part ({out: [], text: $prefix};
-        if ((.text | length) + ($part | length)) <= $bound then .text += $part
-        else .out += [.text] | .text = $prefix + $part end) |
-      .out + [.text] | map(select(length > ($prefix | length)));
-    def finish_hunk:
-      if .current == "" then . else .hunks += [.current] | .current = "" end;
-    reduce (scan("[^\n]*\n|[^\n]+$")) as $line
-      ({header: "", hunks: [], current: ""};
-        if ($line | startswith("@@ ")) then finish_hunk | .current = $line
-        elif .current == "" then .header += $line
-        else .current += $line end) |
-    finish_hunk | . as $file |
-    if ($file.header | length) >= $limit then error("Diff header exceeds chunk budget")
-    elif ($file.hunks | length) == 0 then [$file.header]
-    else
-      [$file.hunks[] |
-        if ((length) + ($file.header | length)) <= $limit then .
-        else
-          . as $hunk | (index("\n") + 1) as $offset |
-          $hunk[0:$offset] as $hunk_header |
-          ($limit - ($file.header | length) - $offset) as $width |
-          if $width < 1 then error("Hunk header exceeds chunk budget")
-          else
-            [$hunk[$offset:] | scan("[^\n]*\n|[^\n]+$") |
-              . as $line | range(0; length; $width) as $start | $line[$start:$start + $width]] |
-            pack(.; $hunk_header; $limit - ($file.header | length))[]
-          end
-        end] |
-      pack(.; $file.header; $limit)
-    end
-  '
-}
-
-run_file_analysis_batch() {
-  local batch_no="$1" start="$2" count="$3" output_file="$4"
-  if [[ "$GENERATION_CONTEXT_MODE" != summaries ]]; then
-    run_file_analysis_request "$@"
-    return $?
-  fi
-
-  # Each worker still owns one file. Its chunks are processed in diff order.
-  local -a BATCH_ANALYSIS_DIFF_CHUNKS=("${BATCH_ANALYSIS_DIFF_CHUNKS[@]}")
-  local full_diff="${BATCH_ANALYSIS_DIFF_CHUNKS[$start]}" prompt budget chunks chunk analysis
-  local chunk_output="${output_file}.chunk" summaries="" requests=0 failed=0
-  BATCH_ANALYSIS_DIFF_CHUNKS[start]=""
-  prompt=$(build_file_analysis_batch_prompt "$start" "$count")
-  budget=$((MAX_PROMPT_CHARS - ${#SYSTEM_PROMPT_FILE_ANALYSIS_BATCH} - ${#prompt} - CONTEXT_RESERVE_CHARS))
-  if [[ "$budget" -le 0 ]] || ! chunks=$(printf '%s\n' "$full_diff" | split_file_diff "$budget"); then
-    printf '{"files":[],"request_count":0}\n' > "$output_file"
-    return 1
-  fi
-
-  while IFS= read -r -d '' chunk; do
-    BATCH_ANALYSIS_DIFF_CHUNKS[start]="$chunk"
-    requests=$((requests + 1))
-    if ! run_file_analysis_request "$batch_no" "$start" "$count" "$chunk_output"; then
-      failed=1
-      break
-    fi
-    analysis=$(extract_file_analysis_from_batch "$chunk_output" "${BATCH_ANALYSIS_FILE_NAMES[$start]}")
-    if [[ -z "$analysis" || "$analysis" == "Changes in ${BATCH_ANALYSIS_FILE_NAMES[$start]}" || "$analysis" == "${BATCH_ANALYSIS_FILE_NAMES[$start]}" ]]; then
-      failed=1
-      break
-    fi
-    summaries+="${requests}. ${analysis}"$'\n'
-  done < <(jq -j '.[] | ., "\u0000"' <<<"$chunks")
-
-  if [[ "$failed" -eq 0 && "$requests" -gt 1 ]]; then
-    # Consolidate chunk summaries before the single commit-message synthesis.
-    BATCH_ANALYSIS_DIFF_CHUNKS[start]="Summaries of consecutive chunks from this file follow. Combine their supported changes into one analysis. A chunk may contain only part of a hunk; do not interpret missing context as newly introduced behavior."$'\n'"${summaries}"
-    requests=$((requests + 1))
-    run_file_analysis_request "$batch_no" "$start" "$count" "$chunk_output" || failed=1
-  fi
-  if [[ "$failed" -eq 0 ]]; then
-    jq --argjson requests "$requests" '. + {request_count: $requests}' "$chunk_output" > "$output_file"
-  else
-    jq -n --argjson requests "$requests" '{files: [], request_count: $requests}' > "$output_file"
-  fi
-  rm -f "$chunk_output"
-  [[ "$failed" -eq 0 ]]
 }
 
 extract_file_analysis_from_batch() {
@@ -2656,36 +2569,39 @@ analyze_files_individually() {
 
   FILE_ANALYSES=""
   BATCH_ANALYSIS_FILE_NAMES=()
-  BATCH_ANALYSIS_DIFF_CHUNKS=()
+  BATCH_ANALYSIS_DIFFS=()
 
-  local selected_index truncated_chunk scan_chunk scan_mode old_path
+  local selected_index diff scan_diff scan_mode old_path
   local -a pathspecs
   for selected_index in "${analysis_indices[@]}"; do
     file_name="${candidate_paths[$((selected_index - 1))]}"
-    truncated_chunk="${REFERENCE_DIFFS[$((selected_index - 1))]}"
+    diff="${REFERENCE_DIFFS[$((selected_index - 1))]}"
     old_path="${REFERENCE_OLD_PATHS[$((selected_index - 1))]:-}"
     if [[ "$GENERATION_CONTEXT_MODE" == summaries ]]; then
       pathspecs=("$file_name")
       [[ -z "$old_path" ]] || pathspecs+=("$old_path")
-      truncated_chunk=$(git --literal-pathspecs diff --cached --no-color --no-ext-diff --no-textconv -M -U3 -- "${pathspecs[@]}")
+      diff=$(git --literal-pathspecs diff --cached --no-color --no-ext-diff --no-textconv -M -U3 -- "${pathspecs[@]}")
     fi
-    [[ -n "$truncated_chunk" ]] || continue
+    [[ -n "$diff" ]] || continue
 
-    scan_chunk="$truncated_chunk"
+    scan_diff="$diff"
     scan_mode=content
     [[ "$GENERATION_CONTEXT_MODE" != summaries ]] || scan_mode="diff"
     # Markdown excerpts may omit their opening language fence. The complete
     # diff already passed reference selection; retain that context for rechecks.
     case "${file_name,,}" in
-      *.md|*.mdx) scan_chunk=$(staged_sensitive_diff "$file_name" "$old_path" 2>/dev/null || true); scan_mode="diff" ;;
+      *.md|*.mdx) scan_diff=$(staged_sensitive_diff "$file_name" "$old_path" 2>/dev/null || true); scan_mode="diff" ;;
     esac
-    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$scan_chunk" "$file_name" "$old_path" "$scan_mode"; then
+    if [[ "$FORCE_DIFF" -eq 0 ]] && has_sensitive_patterns "$scan_diff" "$file_name" "$old_path" "$scan_mode"; then
       sensitive_files_skipped=$((sensitive_files_skipped + 1))
       continue
     fi
 
+    if [[ "${#diff}" -gt "$FILE_ANALYSIS_MAX_DIFF_CHARS" ]]; then
+      diff=$(build_reference_excerpt "$diff" "${REFERENCE_CATEGORIES[$((selected_index - 1))]}" "$FILE_ANALYSIS_MAX_DIFF_CHARS" true)
+    fi
     BATCH_ANALYSIS_FILE_NAMES+=("$file_name")
-    BATCH_ANALYSIS_DIFF_CHUNKS+=("$truncated_chunk")
+    BATCH_ANALYSIS_DIFFS+=("$diff")
   done
 
   local analysis_total=${#BATCH_ANALYSIS_FILE_NAMES[@]}
@@ -2703,6 +2619,7 @@ analyze_files_individually() {
 
   local request_output_files=()
   local request_status_files=()
+  local request_start_ms=()
   local request_pids=()
   local request_done=()
   local analysis_results=()
@@ -2716,16 +2633,15 @@ analyze_files_individually() {
   ensure_ai_progress_started
   status_msg=$(ai_progress_status_text "AI file analysis" 0 "$analysis_total" 1)
   step_info "Ollama analysis capacity: ${parallelism_capacity} (${RESOLVED_FILE_ANALYSIS_PARALLELISM_SOURCE}); using up to ${parallelism} worker(s)."
-  live_status_start "$status_msg" "Sending ${analysis_total} file(s) to AI (one file per request, capacity ${parallelism_capacity}, effective parallelism ${parallelism}); large files use bounded chunks..."
+  live_status_start "$status_msg" "Sending ${analysis_total} file(s) to AI (one request per file, up to ${FILE_ANALYSIS_TIMEOUT_SECONDS}s per request, effective parallelism ${parallelism})..."
 
   local running=0
   local next_job=0
   local completed_files=0
   local failed_requests=0
   local fallback_items=0
-  local total_requests=0 request_count
   local analysis_progress_percent=0
-  local i request_output request_status analysis status made_progress job_index fallback_note
+  local i request_output request_status analysis status made_progress job_index fallback_note duration_ms duration
 
   while [[ "$completed_files" -lt "$analysis_total" ]]; do
     while [[ "$next_job" -lt "$analysis_total" && "$running" -lt "$parallelism" ]]; do
@@ -2740,6 +2656,7 @@ analyze_files_individually() {
 
       next_job=$((next_job + 1))
       running=$((running + 1))
+      request_start_ms[job_index]=$(clock_millis)
       if [[ "$parallelism" -eq 1 ]]; then
         file_analysis_status_update
         status=0
@@ -2768,10 +2685,6 @@ analyze_files_individually() {
         wait "${request_pids[$i]}" 2>/dev/null || true
       fi
       status=$(cat "${request_status_files[$i]}" 2>/dev/null || printf '1')
-      request_count=$(jq -r '.request_count | if type == "number" then
-        if . >= 0 and . <= 100000 and . == floor then . else 1 end
-        else 1 end' "${request_output_files[$i]}" 2>/dev/null || printf '1')
-      total_requests=$((total_requests + request_count))
 
       request_done[i]=1
       running=$((running - 1))
@@ -2790,8 +2703,11 @@ analyze_files_individually() {
 
       analysis_results[i]="$analysis"
       [[ "$status" -ne 0 ]] && failed_requests=$((failed_requests + 1))
+      duration_ms=$(($(clock_millis) - request_start_ms[i]))
+      [[ "$duration_ms" -ge 0 ]] || duration_ms=0
+      printf -v duration '%d.%03ds' "$((duration_ms / 1000))" "$((duration_ms % 1000))"
       file_analysis_status_update
-      live_status_print_above "  ${GREEN}→${NC} [${completed_files}/${analysis_total}] ${BOLD}${file_name}${NC}: ${DIM}${analysis}${fallback_note}${NC}"
+      live_status_print_above "  ${GREEN}→${NC} [${completed_files}/${analysis_total}] ${BOLD}${file_name}${NC}: ${DIM}${analysis}${fallback_note} · ${duration}${NC}"
     done
 
     file_analysis_status_update
@@ -2815,9 +2731,9 @@ analyze_files_individually() {
   local analysis_elapsed
   analysis_elapsed=$(elapsed_since "$analysis_start")
   if [[ "$fallback_items" -gt 0 ]]; then
-    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${total_requests} request(s) with ${fallback_items} local fallback(s) across ${failed_requests} failed file(s) (${analysis_elapsed})"
+    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${analysis_total} request(s) with ${fallback_items} local fallback(s) across ${failed_requests} failed file(s) (${analysis_elapsed})"
   else
-    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${total_requests} request(s) (${analysis_elapsed})"
+    step_ok "Analyzed ${analysis_total} of ${total_files} file(s) in ${analysis_total} request(s) (${analysis_elapsed})"
   fi
 }
 
@@ -3259,8 +3175,7 @@ ollama_chat() {
   local user_prompt="$2"
   local format_json_schema="${3:-}"   # empty = non-structured
   local max_time="${4:-120}"          # timeout curl (default 120s)
-  # The fifth argument from earlier versions is still accepted but ignored.
-  local num_predict_override="${6:-}" # empty = use AI_NUM_PREDICT
+  local num_predict_override="${5:-}" # empty = use AI_NUM_PREDICT
 
   if ! prompt_fits_context "$system_prompt" "$user_prompt"; then
     step_info "Ollama input exceeds MAX_PROMPT_CHARS (${MAX_PROMPT_CHARS}); request not sent."

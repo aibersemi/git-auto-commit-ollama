@@ -29,9 +29,9 @@ The prompt asks the model to describe completed changes, lead with implemented b
 
 ## Per-File Analysis
 
-Fallback analysis selects eligible files up to `FILE_ANALYSIS_LIMIT`. Each worker processes one file from the same index and sends its complete eligible diff in one or more bounded requests. Chunks preserve diff order and repeat file and hunk headers as needed. Splits occur at hunk boundaries, then at line boundaries within oversized hunks, then at Unicode character boundaries within exceptionally long lines. Multi-chunk analysis consolidates the chunk summaries into one result per file before final generation.
+Fallback analysis selects eligible files up to `FILE_ANALYSIS_LIMIT`. Each worker sends one request per selected file from the same index. The request includes the complete screened diff when it fits within 3,000 characters. Larger diffs use ranked hunks with leading and representative changed lines, bounded at Unicode character boundaries.
 
-Per-file analysis requests JSON Schema output with the exact file name and a one-sentence English analysis of at most 30 words. Results with no usable summary for the expected file fall back locally. If safe mode permits detailed excerpts, the local excerpt remains available. `--no-file-analysis` and `FILE_ANALYSIS_LIMIT=0` skip these requests while preserving full-diff generation and eligible local excerpts. See [Worker Capacity](configuration.md#worker-capacity) for scheduling and [Terminal Output](usage.md#terminal-output) for progress behavior.
+Per-file analysis requests JSON Schema output with the exact file name and a one-sentence English analysis of at most 30 words. Timeouts and results with no usable summary for the expected file fall back locally. If safe mode permits detailed excerpts, the local excerpt remains available. `--no-file-analysis` and `FILE_ANALYSIS_LIMIT=0` skip these requests while preserving full-diff generation and eligible local excerpts. See [Worker Capacity](configuration.md#worker-capacity) for scheduling and [Terminal Output](usage.md#terminal-output) for progress behavior.
 
 ## Ollama Request Contract
 
@@ -40,7 +40,7 @@ Per-file analysis requests JSON Schema output with the exact file name and a one
 | `GET /api/tags` | Select a reachable endpoint and match the requested model against listed names. | 10 seconds |
 | `GET /api/ps` | Check whether the selected model is loaded. A failed check proceeds to warm-up. | 10 seconds |
 | `POST /api/chat` with empty `messages` | Check readiness of a loaded model or warm up an unloaded model. Requires `done: true` and a string `model`. | 300 seconds |
-| `POST /api/chat` for per-file analysis | Analyze one file or chunk or consolidate chunk summaries. | 60 seconds |
+| `POST /api/chat` for per-file analysis | Summarize one selected file. | 25 seconds |
 | `POST /api/chat` for final generation | Generate or correct the commit message. | 120 seconds |
 
 Each request uses a five-second connection timeout. Analysis and generation send non-streaming chat requests with the model, system and user messages, sampling options, and thinking control. Structured requests also send a JSON Schema in `format`. The CLI expects a successful HTTP response with JSON containing nonempty `message.content`. It reports token counts from `prompt_eval_count` and `eval_count` when provided.

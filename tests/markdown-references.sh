@@ -88,7 +88,8 @@ ollama_chat() {
   if [[ -n "${TEST_ADAPTIVE_REQUEST_DIR:-}" ]]; then
     local adaptive_request
     adaptive_request=$(mktemp "$TEST_ADAPTIVE_REQUEST_DIR/request.XXXXXX")
-    jq -n --arg system "$1" --arg user "$2" '{system: $system, user: $user}' > "$adaptive_request"
+    jq -n --arg system "$1" --arg user "$2" --argjson timeout "$4" --argjson output_tokens "$5" \
+      '{system: $system, user: $user, timeout: $timeout, output_tokens: $output_tokens}' > "$adaptive_request"
   fi
   if [[ -n "${TEST_CONCURRENCY_DIR:-}" ]]; then
     exec {concurrency_fd}> "$TEST_CONCURRENCY_DIR/lock"
@@ -306,7 +307,7 @@ assert_contains "$conditional_excerpt" '+  has_test_marker' 'New acceptance bran
 assert_contains "$conditional_excerpt" '   if has_synthetic_marker(value):' 'Existing alternative remains visible as unchanged context'
 [[ "${#conditional_excerpt}" -le 300 ]] || fail 'Source condition context exceeds its budget'
 BATCH_ANALYSIS_FILE_NAMES=(src/scanner.py)
-BATCH_ANALYSIS_DIFF_CHUNKS=("$conditional_excerpt")
+BATCH_ANALYSIS_DIFFS=("$conditional_excerpt")
 batch_prompt=$(build_file_analysis_batch_prompt 0 1)
 assert_contains "$batch_prompt" 'accepting additional inputs from restricting accepted inputs' 'Analysis distinguishes broadening from tightening validation'
 assert_contains "$batch_prompt" '   if has_synthetic_marker(value):' 'Analysis receives existing source conditions'
@@ -941,24 +942,10 @@ assert_equal "$TOP_HUNKS" '' 'Safe mode preserves primary diff omission'
 assert_absent "$(build_user_prompt 1)" SOURCE_ONLY_MARKER 'Safe mode omits safe raw diffs from the main prompt'
 pass 'Full diff routing retains sensitive-file exclusions and global safe mode'
 
-chunk_header=$'diff --git a/src/labels.ts b/src/labels.ts\n--- a/src/labels.ts\n+++ b/src/labels.ts\n'
-hunk_header=$'@@ -1,1 +1,120 @@\n'
-chunk_body=$(for ((row=1; row<=120; row++)); do printf '+row_%03d = "🙂 label";\n' "$row"; done)
-chunked_diff=$(printf '%s%s%s\n' "$chunk_header" "$hunk_header" "$chunk_body" | split_file_diff 256)
-jq -e --arg header "$chunk_header" 'length > 1 and all(.[]; length <= 256 and startswith($header))' \
-  >/dev/null <<<"$chunked_diff" || fail 'Diff chunks lost headers or exceeded their budget'
-reassembled=$(jq -r --argjson offset "$((${#chunk_header} + ${#hunk_header}))" '[.[] | .[$offset:]] | join("")' <<<"$chunked_diff")
-assert_equal "$reassembled" "$chunk_body" 'Chunking preserves every changed line in order'
-long_unicode_line=$(printf '🙂%.0s' {1..500})
-chunked_diff=$(printf '%s%s+%s\n' "$chunk_header" "$hunk_header" "$long_unicode_line" | split_file_diff 256)
-reassembled=$(jq -r --argjson offset "$((${#chunk_header} + ${#hunk_header}))" '[.[] | .[$offset:]] | join("")' <<<"$chunked_diff")
-assert_equal "$reassembled" "+$long_unicode_line" 'Oversized Unicode lines retain every code point'
-pass 'Oversized hunks and long Unicode lines split without lost or reordered content'
-
 start_case
 MAX_PROMPT_CHARS=16384
 FILE_ANALYSIS_LIMIT=1
-large_source=$(for ((row=1; row<=900; row++)); do printf 'printf "source_row_%04d preserves full evidence\\n"\n' "$row"; done)
+large_source=$(for ((row=1; row<=900; row++)); do printf 'printf "source_row_%04d preserves Unicode 🕌 evidence\\n"\n' "$row"; done)
 stage_text src/timeout.sh "$large_source"
 stage_text notes.md "$description"
 context
@@ -968,21 +955,27 @@ assert_equal "$FULL_REFERENCE_DIFF" '' 'Overflowed complete diff is released'
 TEST_ADAPTIVE_REQUEST_DIR="$test_root/adaptive-requests"
 mkdir "$TEST_ADAPTIVE_REQUEST_DIR"
 analyze_files_individually 2> "$test_root/analysis.log"
-adaptive_requests=$(jq -s 'length' "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)
-[[ "$adaptive_requests" -gt 2 ]] || fail 'Large file was not chunked and consolidated'
-jq -se --argjson limit "$MAX_PROMPT_CHARS" 'all(.[]; ((.system | length) + (.user | length)) <= $limit)' \
-  "$TEST_ADAPTIVE_REQUEST_DIR"/request.* >/dev/null || fail 'Analysis input exceeded the configured budget'
-assert_contains "$(cat "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)" source_row_0900 'Late source evidence reaches chunk analysis'
-assert_contains "$(cat "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)" 'Summaries of consecutive chunks' 'Multiple chunks receive one file-level consolidation'
-assert_contains "$(cat "$test_root/analysis.log")" "in ${adaptive_requests} request(s)" 'Actual chunk request count is reported'
+jq -se --argjson diff_limit "$FILE_ANALYSIS_MAX_DIFF_CHARS" \
+  --argjson prompt_limit "$MAX_PROMPT_CHARS" --argjson output_tokens "$FILE_ANALYSIS_NUM_PREDICT_PER_FILE" '
+  length == 1 and (.[0] |
+    .timeout == 25 and .output_tokens == $output_tokens and
+    ((.system | length) + (.user | length)) <= $prompt_limit and
+    (.user | split("\n[DIFF]\n")[1] | split("\n[/DIFF]")[0] |
+      length <= $diff_limit and contains("🕌") and (contains("\ufffd") | not)))' \
+  "$TEST_ADAPTIVE_REQUEST_DIR"/request.* >/dev/null || fail 'Large file did not use one bounded analysis request'
+assert_contains "$(cat "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)" source_row_0001 'Early source evidence reaches analysis'
+assert_contains "$(cat "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)" source_row_0002 'Opening file context reaches analysis'
+assert_contains "$(cat "$TEST_ADAPTIVE_REQUEST_DIR"/request.*)" source_row_0900 'Late source evidence reaches analysis'
+assert_contains "$(cat "$test_root/analysis.log")" 'in 1 request(s)' 'Per-file request count is reported'
+grep -Eq '→ .* · [0-9]+\.[0-9]{3}s$' "$test_root/analysis.log" || fail 'File duration is missing'
 assert_file_counters "$test_root/analysis.log" 1
-assert_contains "$FILE_ANALYSES" 'completed timeout handling' 'Consolidated evidence reaches final synthesis'
+assert_contains "$FILE_ANALYSES" 'completed timeout handling' 'Per-file summary reaches final synthesis'
 TEST_ANALYSIS_MODE=invalid
 analyze_files_individually 2> "$test_root/analysis.log"
-assert_equal "$FILE_ANALYSES" '' 'Failed chunk analysis adds no unsupported evidence'
+assert_equal "$FILE_ANALYSES" '' 'Failed analysis adds no unsupported evidence'
 assert_contains "$TOP_HUNKS" source_row_ 'Analysis failure keeps safe fallback excerpts'
 unset TEST_ADAPTIVE_REQUEST_DIR
-pass 'Large-file analysis uses bounded complete chunks, consolidates once, and retains safe fallback excerpts'
+pass 'Large files use one bounded request with representative Unicode evidence and retain safe fallback excerpts'
 
 overlong_prompt=$(printf 'x%.0s' {1..17000})
 if native_ollama_chat '' "$overlong_prompt" '' > "$test_root/budget.out" 2> "$test_root/budget.err"; then

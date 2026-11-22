@@ -56,7 +56,7 @@ flowchart TD
 
 The default staging command is `git add -A`. Use `--patch` for `git add -p`. `--no-stage` takes precedence and reuses staged changes. In dry-run, the CLI copies the index if it exists and writes new Git objects to a temporary object database. [Staging](docs/usage.md#staging-and-commit-review) · [Dry run](docs/usage.md#dry-run)
 
-Gitleaks findings and the built-in diff matcher can activate safe mode, which limits the final prompt to Git metadata and any summaries from eligible per-file analyses. The full-diff path requires safe mode to be off and the complete prompt to fit the character budget, including the reserve for corrections. The fallback can analyze eligible files in bounded chunks. [Security overrides](.github/SECURITY.md#overrides) · [Prompt routing](docs/commit-generation.md#prompt-routing)
+Gitleaks findings and the built-in diff matcher can activate safe mode, which limits the final prompt to Git metadata and any summaries from eligible per-file analyses. The full-diff path requires safe mode to be off and the complete prompt to fit the character budget, including the reserve for corrections. Fallback analysis uses one time-limited request per eligible file and samples large diffs. [Security overrides](.github/SECURITY.md#overrides) · [Prompt routing](docs/commit-generation.md#prompt-routing)
 
 The terminal estimates AI progress using the number of staged files and shows 100% once the commit message passes validation. [Terminal output](docs/usage.md#terminal-output)
 
