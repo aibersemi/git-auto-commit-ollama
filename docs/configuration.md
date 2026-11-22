@@ -44,7 +44,7 @@ A nonempty, distinct `FALLBACK_OLLAMA_HOST` is tried only when the primary `/api
 | `TOP_FILES` | `4` | Maximum ranked references used for fallback excerpts. |
 | `MAX_HUNK_CHARS` | `1000` | Maximum characters per fallback excerpt. |
 | `MAX_TOTAL_HUNKS_CHARS` | `3500` | Total character budget for fallback excerpts, including file labels. |
-| `FILE_ANALYSIS_LIMIT` | `6` | Non-negative maximum files analyzed during fallback. `0` disables per-file requests. |
+| `FILE_ANALYSIS_LIMIT` | `6` | Non-negative maximum files analyzed during fallback, with [one file per directory group](commit-generation.md#per-file-analysis). `0` disables per-file requests. |
 | `FILE_ANALYSIS_BATCH_SIZE` | `1` | Positive compatibility setting. The CLI handles one file per worker regardless of this value. |
 | `FILE_ANALYSIS_NUM_PREDICT_PER_FILE` | `192` | Positive output-token limit for each file analysis request, capped by `AI_MAX_NUM_PREDICT`. |
 | `FILE_ANALYSIS_MAX_BLOB_BYTES` | `1048576` | Positive staged blob size limit for detailed context and per-file requests. |

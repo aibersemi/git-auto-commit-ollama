@@ -59,6 +59,7 @@ start_case() {
   RESOLVED_NON_AI_PARALLELISM=2
   RESOLVED_FILE_ANALYSIS_PARALLELISM=2
   AI_PROGRESS_START_MS=""
+  AI_PROGRESS_MIN_PERCENT=0
   FILE_ANALYSES=""
   FORCE_DIFF=0
   TEST_ANALYSIS_MODE="complete"
@@ -256,9 +257,6 @@ accept_message $'fix: preserve account recovery across refreshes\n\n- Redirect n
 TOP_FILES=1
 assert_contains "$(collect_top_hunks)" redirect_to_get 'One reference slot selects runtime'
 assert_absent "$(collect_top_hunks)" "### File: $recovery_doc" 'One slot does not displace source'
-FILE_ANALYSIS_LIMIT=1
-analyze_files_individually 2> "$test_root/analysis.log"
-assert_equal "${BATCH_ANALYSIS_FILE_NAMES[*]}" app/anggota/recovery_views.py 'One analysis request selects runtime'
 pass 'LDTQN runtime evidence survives long Markdown and supporting tests'
 
 start_case
@@ -408,15 +406,90 @@ quality_issue=$(commit_message_quality_issue 'docs: update documentation about t
 pass 'Informative Markdown-only changes retain single-file behavior'
 
 start_case
-stage_text b.md "$description"
-stage_text a.md "$description"
-stage_text z.md "$description Additional diagnostics distinguish connection failures from exhausted request budgets without discarding reviewed work."
+stage_text b/notes.md "$description"
+stage_text a/notes.md "$description"
+stage_text z/notes.md "$description Additional diagnostics distinguish connection failures from exhausted request budgets without discarding reviewed work."
 context
-assert_equal "${REFERENCE_PATHS[*]}" 'z.md a.md b.md' 'Score ranking and path tie break'
-FILE_ANALYSIS_LIMIT=2
+assert_equal "${REFERENCE_PATHS[*]}" 'z/notes.md a/notes.md b/notes.md' 'Score ranking and path tie break'
+FILE_ANALYSIS_LIMIT=3
 analyze_files_individually 2> "$test_root/analysis.log"
-assert_equal "${BATCH_ANALYSIS_FILE_NAMES[*]}" 'z.md a.md' 'Analysis follows Markdown ranking'
-pass 'Multiple Markdown references share deterministic ranking and analysis limits'
+assert_equal "${BATCH_ANALYSIS_FILE_NAMES[*]}" "${REFERENCE_PATHS[*]}" 'Sampled Markdown is queued in reference order'
+pass 'Multiple Markdown references retain deterministic order in the prompt'
+
+start_case
+group_parent=$'guides with spaces/topic\tname'
+group_one="$group_parent/"$'section\none'
+group_two="$group_parent/section-two"
+first_candidate="$group_one/examples/first.sh"
+second_candidate="$group_one/references/second.sh"
+stage_text "$first_candidate" 'printf "%s\n" first'
+stage_text "$second_candidate" 'printf "%s\n" second'
+stage_text "$group_two/examples/third.sh" 'printf "%s\n" third'
+stage_text "$group_parent/guide.md" "$description"
+stage_text 'guides with spaces/guide.md' "$description"
+stage_text root-one.md "$description"
+stage_text root-two.md "$description"
+context
+GENERATION_CONTEXT_MODE=summaries
+
+FILE_ANALYSIS_LIMIT=0
+if analyze_files_individually 2> "$test_root/analysis.log"; then fail 'A zero limit ran file analysis'; fi
+assert_equal "${#BATCH_ANALYSIS_FILE_NAMES[@]}" 0 'A zero limit selects no files'
+
+FILE_ANALYSIS_LIMIT=10
+declare -A sampled_deep_files=()
+for seed in {1..8}; do
+  RANDOM="$seed"
+  analyze_files_individually 2> "$test_root/analysis.log"
+  assert_equal "${#BATCH_ANALYSIS_FILE_NAMES[@]}" 5 'A group is used at most once even when the limit is higher'
+  root_count=0
+  deep_count=0
+  for sampled_file in "${BATCH_ANALYSIS_FILE_NAMES[@]}"; do
+    case "$sampled_file" in
+      root-one.md|root-two.md) root_count=$((root_count + 1)) ;;
+      "$first_candidate"|"$second_candidate")
+        deep_count=$((deep_count + 1))
+        sampled_deep_files["$sampled_file"]=1 ;;
+    esac
+  done
+  assert_equal "$root_count" 1 'Root files share a group'
+  assert_equal "$deep_count" 1 'Deep subdirectories share the first three components'
+done
+assert_equal "${#sampled_deep_files[@]}" 2 'Both eligible files can represent the same directory group'
+
+FILE_ANALYSIS_LIMIT=1
+declare -A sampled_groups=()
+for seed in {1..8}; do
+  RANDOM="$seed"
+  analyze_files_individually 2> "$test_root/analysis.log"
+  assert_equal "${#BATCH_ANALYSIS_FILE_NAMES[@]}" 1 'A one-file limit selects one group'
+  case "${BATCH_ANALYSIS_FILE_NAMES[0]}" in
+    "$group_one/"*) sampled_groups["$group_one"]=1 ;;
+    "$group_two/"*) sampled_groups["$group_two"]=1 ;;
+    root-one.md|root-two.md) sampled_groups[.]=1 ;;
+    *) sampled_groups["${BATCH_ANALYSIS_FILE_NAMES[0]%/*}"]=1 ;;
+  esac
+done
+[[ "${#sampled_groups[@]}" -gt 1 ]] || fail 'Different seeds must be able to choose different directory groups'
+pass 'Analysis samples one file per directory group with depth and limit boundaries'
+
+start_case
+stage_text src/module/feature/first.sh 'printf "%s\n" first'
+stage_text src/module/feature/second.sh 'printf "%s\n" second'
+context
+GENERATION_CONTEXT_MODE=summaries
+FILE_ANALYSIS_LIMIT=1
+RANDOM=31
+analyze_files_individually 2> "$test_root/analysis.log"
+first_pick="${BATCH_ANALYSIS_FILE_NAMES[0]}"
+GITLEAKS_SENSITIVE_PATHS=("$first_pick")
+RANDOM=31
+analyze_files_individually 2> "$test_root/analysis.log"
+assert_equal "${#BATCH_ANALYSIS_FILE_NAMES[@]}" 1 'Retries with another file from the same group'
+assert_absent "${BATCH_ANALYSIS_FILE_NAMES[0]}" "$first_pick" 'A failed safety recheck never reaches the worker'
+assert_contains "$(cat "$test_root/analysis.log")" '1 sensitive file(s)' 'The same seed encounters the rejected candidate first'
+GITLEAKS_SENSITIVE_PATHS=()
+pass 'Analysis replaces rejected candidates with eligible files in the same group'
 
 for word_count in 11 12; do
   start_case
@@ -441,7 +514,7 @@ assert_equal "${REFERENCE_PATHS[0]}" $'notes\twith\nseparators.md' 'Path charact
 pass 'Reference selection preserves spaces, tabs, and newlines in paths'
 
 start_case
-for number in {1..8}; do stage_text "notes-${number}.md" "$description"; done
+for number in {1..8}; do stage_text "notes-${number}/guide.md" "$description"; done
 context
 FILE_ANALYSIS_LIMIT=8
 FILE_ANALYSIS_BATCH_SIZE=3
@@ -540,7 +613,7 @@ run_file_analysis_batch() {
 for specification in '1 4 6 1' '3 4 6 3' '6 4 6 4' '8 2 3 2' '6 1 6 1' '6 1 1 1' '6 4 1 4' '6 8 6 6'; do
   read -r file_total capacity batch_limit expected_peak <<< "$specification"
   start_case
-  for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}.md" "$description"; done
+  for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}/guide.md" "$description"; done
   context
   FILE_ANALYSIS_LIMIT="$file_total"
   FILE_ANALYSIS_BATCH_SIZE="$batch_limit"
@@ -572,7 +645,7 @@ done
 eval "$(declare -f concurrency_original_batch | sed '1s/concurrency_original_batch/run_file_analysis_batch/')"
 
 test_ai_progress_intervals() {
-  local AI_PROGRESS_START_MS=1000 STAGED_FILE_COUNT
+  local AI_PROGRESS_START_MS=1000 AI_PROGRESS_MIN_PERCENT=0 STAGED_FILE_COUNT
   local specification interval_ms time_to_95_ms first_tick_ms waiting_start_ms label percent tick_ms
   local analysis_status final_status retry_status
   for specification in '0 10 950' '1 10 950' '10 100 9500' '20 200 19000'; do
@@ -603,11 +676,65 @@ test_ai_progress_intervals() {
 test_ai_progress_intervals
 pass 'Continuous AI progress uses staged-file intervals and two-second waiting ticks'
 
+(
+  start_case
+  source=$(printf 'preserve_pending_timeout_changes\n%.0s' {1..100})
+  for ((number=1; number<=6; number++)); do stage_text "module-${number}/timeout.sh" "$source"; done
+  generated_blob=$(printf 'generated output\n' | git hash-object -w --stdin)
+  for ((number=7; number<=149; number++)); do
+    printf '100644 %s\tgenerated/file-%d.js\n' "$generated_blob" "$number"
+  done | git update-index --index-info
+  MAX_PROMPT_CHARS=16384
+  USE_STRUCTURED_OUTPUT=1
+  RESOLVED_FILE_ANALYSIS_PARALLELISM=1
+  IS_TTY=1
+  progress_log="$test_root/analysis-handoff.log"
+
+  # Called indirectly by the loaded generation and progress helpers.
+  # shellcheck disable=SC2317,SC2329
+  clock_millis() {
+    if [[ -z "$AI_PROGRESS_START_MS" ]]; then printf '1000\n'; else printf '9000\n'; fi
+  }
+  # Render one frame per generation request with the production formatter.
+  # shellcheck disable=SC2317,SC2329
+  ai_progress_status_start() {
+    ai_progress_status_text "$1" >&2
+    printf '\n' >&2
+  }
+  # shellcheck disable=SC2317,SC2329
+  ollama_chat() {
+    if [[ "$1" == "$SYSTEM_PROMPT_FILE_ANALYSIS_BATCH" ]]; then
+      return 1
+    elif [[ -n "$3" ]]; then
+      printf '%s\n' '{"type":"fix","summary":42,"bullets":[]}'
+    elif [[ "$2" == *'not a commit message'* ]]; then
+      printf 'fix: preserve pending timeout changes\n\n- Preserve pending changes after interrupted Ollama requests.\n'
+    else
+      printf 'not a commit message\n'
+    fi
+  }
+
+  generate_commit_message > "$test_root/analysis-handoff.out" 2> "$progress_log"
+  assert_equal "$STAGED_FILE_COUNT" 149 'Fast analysis uses the full staged count for the timer'
+  assert_file_counters "$progress_log" 6
+  assert_contains "$(cat "$progress_log")" '5/6 5% est.' 'Incomplete analysis uses the timed estimate'
+  assert_contains "$(cat "$progress_log")" '6/6 90% est.' 'File analysis completion raises progress to 90%'
+  assert_contains "$(cat "$progress_log")" '6 local fallback(s)' 'Local fallbacks advance the completion counter'
+  generation_frames=$(sed -n 's/^AI commit message (\([^)]*\)) .* \([0-9][0-9]*%\) est\..*/\1 \2/p' "$progress_log")
+  assert_equal "$generation_frames" $'structured 90%\nplain text 90%\nplain text 90%' 'Generation, plain-text fallback, and retry retain the analysis milestone'
+  assert_contains "$(cat "$test_root/analysis-handoff.out")" 'fix: preserve pending timeout changes' 'Retry returns a validated message'
+  assert_absent "$(cat "$progress_log")" '100%' 'Progress stays below 100% during generation'
+  ai_progress_complete 'Commit message received' 2>> "$progress_log"
+  assert_contains "$(tail -n 1 "$progress_log")" '100%' 'Validated generation reaches 100%'
+  assert_equal "$AI_PROGRESS_MIN_PERCENT" 0 'Completed progress resets its minimum'
+)
+pass 'Completed file analysis keeps progress at least 90% across final generation and retries'
+
 for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 partial' '6 4 6 generic' '6 2 2 complete'; do
   read -r file_total capacity batch_limit response_mode <<< "$specification"
   (
     start_case
-    for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}.md" "$description"; done
+    for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}/guide.md" "$description"; done
     context
     FILE_ANALYSIS_LIMIT="$file_total"
     FILE_ANALYSIS_BATCH_SIZE="$batch_limit"
@@ -707,6 +834,7 @@ for specification in '6 4 6 complete' '6 4 6 failed' '6 4 6 invalid' '6 4 6 part
     assert_file_counters "$progress_dir/terminal.log" "$file_total"
     [[ "$LIVE_STATUS_FRAME" -gt 4 ]] || fail 'Spinner did not advance while waiting'
     assert_contains "$(cat "$progress_dir/terminal.log")" $'\033[?25h' 'Cursor restored after analysis'
+    assert_contains "$(ai_progress_status_text 'AI commit message' 0 0 0 0)" '99% est.' 'Generation keeps the analysis peak even when the clock moves backward'
     ai_progress_complete 'Commit message received' 2>> "$progress_dir/terminal.log"
     assert_contains "$(tail -n 1 "$progress_dir/terminal.log")" '100%' 'Final commit-message completion reaches 100%'
     assert_absent "$(tail -n 1 "$progress_dir/terminal.log")" 'est.' 'Completed progress is no longer estimated'
@@ -728,7 +856,7 @@ for specification in '6 1 complete' '6 1 failed' '1 4 complete'; do
   read -r file_total capacity response_mode <<< "$specification"
   (
     start_case
-    for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}.md" "$description"; done
+    for ((number=1; number<=file_total; number++)); do stage_text "notes-${number}/guide.md" "$description"; done
     context
     FILE_ANALYSIS_LIMIT="$file_total"
     RESOLVED_FILE_ANALYSIS_PARALLELISM="$capacity"
@@ -947,7 +1075,6 @@ MAX_PROMPT_CHARS=16384
 FILE_ANALYSIS_LIMIT=1
 large_source=$(for ((row=1; row<=900; row++)); do printf 'printf "source_row_%04d preserves Unicode 🕌 evidence\\n"\n' "$row"; done)
 stage_text src/timeout.sh "$large_source"
-stage_text notes.md "$description"
 context
 select_generation_context 0 2> "$test_root/strategy.log"
 assert_equal "$GENERATION_CONTEXT_MODE" summaries 'Large diff selects per-file analysis'

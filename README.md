@@ -21,7 +21,7 @@
 ## Features
 
 - **Flexible staging.** Stage all changes, select hunks interactively, or reuse the existing index. [Staging and commit review](docs/usage.md#staging-and-commit-review)
-- **Context-aware generation.** Use complete eligible diffs when they fit the prompt budget, with ranked excerpts and optional per-file analysis for larger changes. [Prompt routing](docs/commit-generation.md#prompt-routing)
+- **Context-aware generation.** Use complete eligible diffs when they fit the prompt budget, with ranked excerpts and optional analysis that samples one file per directory group for larger changes. [Prompt routing](docs/commit-generation.md#prompt-routing)
 - **Message validation.** Validate plain-text or structured responses against the commit format and request corrections when a response is rejected. [Fallbacks and retries](docs/commit-generation.md#fallbacks-and-retries)
 - **Secret protection.** Gitleaks can block commits with potential secrets, while safe mode limits the diff context sent to Ollama. [Security controls](.github/SECURITY.md#security-controls)
 - **Isolated previews.** Use a temporary index and object database to preview a message while preserving the original index, refs, and stored Git objects. [Dry run](docs/usage.md#dry-run)
@@ -58,7 +58,7 @@ The default staging command is `git add -A`. Use `--patch` for `git add -p`. `--
 
 Gitleaks findings and the built-in diff matcher can activate safe mode, which limits the final prompt to Git metadata and any summaries from eligible per-file analyses. The full-diff path requires safe mode to be off and the complete prompt to fit the character budget, including the reserve for corrections. Fallback analysis uses one time-limited request per eligible file and samples large diffs. [Security overrides](.github/SECURITY.md#overrides) · [Prompt routing](docs/commit-generation.md#prompt-routing)
 
-The terminal estimates AI progress using the number of staged files and shows 100% once the commit message passes validation. [Terminal output](docs/usage.md#terminal-output)
+The terminal estimates AI progress using the number of staged files, shows at least 90% when per-file analysis finishes, and reaches 100% once the commit message passes validation. [Terminal output](docs/usage.md#terminal-output)
 
 Generation stops after three invalid responses or ten attempts. Use `--interactive` to accept the generated message, edit it, or cancel the commit. With push enabled, a branch with an upstream uses plain `git push`. A branch without an upstream uses `git push -u` with `origin` or the first listed remote, if available. [Generation retries](docs/commit-generation.md#fallbacks-and-retries) · [Push behavior](docs/usage.md#push-behavior-and-hooks)
 

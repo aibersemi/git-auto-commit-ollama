@@ -50,7 +50,7 @@ With push enabled, a branch with an upstream runs plain `git push`, which follow
 | `-f`, `--force` | Skip the scan and override safe mode. See [Overrides](../.github/SECURITY.md#overrides). |
 | `-a`, `--allow-secret-commit` | Allow a commit despite a successful scan with findings. See [Overrides](../.github/SECURITY.md#overrides). |
 | `--no-file-analysis` | Disable fallback per-file requests. |
-| `--file-analysis-limit N` | Override the file analysis limit with a non-negative integer. |
+| `--file-analysis-limit N` | Analyze up to `N` files during fallback, with [one file per directory group](commit-generation.md#per-file-analysis). `0` disables per-file requests. |
 | `--file-analysis-batch-size N` | Accept a positive integer for compatibility. Each request still covers one file. |
 | `--file-analysis-parallelism N\|auto` | Set a positive worker limit or use [capacity detection](configuration.md#worker-capacity). |
 | `--non-ai-parallelism N\|auto` | Set a positive local worker limit or derive it from the logical CPU count. |
@@ -63,6 +63,6 @@ With push enabled, a branch with an upstream runs plain `git push`, which follow
 
 The CLI prints English phase statuses, the generated message, and reported token usage. Git, Ollama, and other tools may use their own language. The run displays a commit hash after a successful non-preview run.
 
-When standard error is a terminal, the CLI animates loading rows and shows an estimated AI progress bar. From 0% through 95%, the estimate advances by one point per interval. Each interval is 10 milliseconds multiplied by the total number of staged files, with a minimum of 10 milliseconds. After 95%, it advances by one point every two seconds and holds at 99%. A validated message advances the bar directly to 100% at any time. The same clock covers file analysis, generation, and retries.
+When standard error is a terminal, the CLI animates loading rows and shows an estimated AI progress bar. The time-based estimate advances by one point per interval through 95%. Each interval is 10 milliseconds multiplied by the total number of staged files, with a minimum of 10 milliseconds. After 95%, the estimate advances by one point every two seconds and holds at 99%. Finishing all selected file analyses raises the bar to at least 90% and preserves any higher analysis progress through generation and retries. The same elapsed clock covers all phases, and the bar reaches 100% once the commit message passes validation.
 
 The file counter advances once per completed file, including local fallbacks, and progress rows show active files. Each completion displays the elapsed time since the worker started. Non-terminal output prints phase statuses and numbered completions without animated frames. Set `NO_COLOR` to disable colors while preserving terminal animation.
