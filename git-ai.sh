@@ -1175,8 +1175,9 @@ scan_sensitive_content() {
       code_file = source_code_file
       test_file = code_file && is_test_path(path) && (old_path == "" || is_test_path(old_path))
       quote_chars = "\042\047"
-      # Match each identifier from its boundary, not every offset in long encoded values.
-      assignment_regex = "(^|[^a-z0-9_.-])[a-z0-9_.-]*(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret)[a-z0-9_.-]*[" quote_chars "]?[[:space:]]*[:=][[:space:]]*"
+      # Match assignment structure and keywords separately to bound regex backtracking on long identifiers.
+      assignment_regex = "(^|[^a-z0-9_.-])[a-z0-9_.-]+[" quote_chars "]?[[:space:]]*[:=][[:space:]]*"
+      assignment_keyword = "password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret"
       # Fixed minima plus * keep multi-part token matching consistent across Awk implementations.
       strong_regex = "(begin [a-z]+ private key|akia[0-9a-z]{16}|gh[pous]_[a-z0-9_]{30,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{10,}|aiza[0-9a-z_-]{35}|sk-[a-z0-9]{20,}|eyj[a-z0-9_-]{10}[a-z0-9_-]*[.][a-z0-9_-]{10}[a-z0-9_-]*[.][a-z0-9_-]{10}[a-z0-9_-]*)"
       placeholder_regex = "(placeholder|changeme|change_me|change-me|dummy|sample|example|your[-_ ]?[a-z0-9_-]*|<[^>]+>|[$][{]|[{][{][[:space:]]*secrets[.])"
@@ -1277,6 +1278,7 @@ scan_sensitive_content() {
       lower = tolower(content)
       # Token/key signatures always take precedence over expression/placeholder exemptions.
       if (lower ~ strong_regex) return 1
+      if (lower !~ assignment_keyword) return 0
       rest = lower
       while (match(rest, assignment_regex)) {
         # Restore the original assignment/prefix after consuming its optional boundary.
@@ -1286,7 +1288,7 @@ scan_sensitive_content() {
         rhs = substr(rest, RSTART + RLENGTH)
         ternary_label = is_ternary_label(substr(rest, 1, assignment_start - 1), assignment)
         rest = rhs
-        if (ternary_label) continue
+        if (assignment !~ assignment_keyword || ternary_label) continue
         # A logical reference is code, but its fallback can still be a literal
         # credential. Inspect the remaining operand instead of exempting it.
         if (code_file) {
